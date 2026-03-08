@@ -16,12 +16,13 @@ uv run wifi-file-server /path/to/folder --port 9000
 uv run wifi-file-server /path/to/folder --host 127.0.0.1 --port 9000
 ```
 
-Open the printed URL on any device on the same network.
+Scan the QR code printed in the terminal from any device on the same network.
 
 ## API
 
 - `GET /api/files` -- list root directory
 - `GET /api/files?path=subdir` -- list subdirectory
+- `GET /api/server-info` -- server IP, port, URL, QR code (SVG), all LAN IPs
 
 ## Test
 
