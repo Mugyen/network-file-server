@@ -28,12 +28,12 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. User on another device can scan a QR code from the terminal or web UI and land on the file server
   3. Shared folder contents are listed in the browser with file names, sizes, and modification dates
   4. Attempting to access files outside the shared folder is blocked (path traversal protection verified)
-**Plans**: TBD
+**Plans:** 3 plans
 
 Plans:
-- [ ] 01-01: TBD
-- [ ] 01-02: TBD
-- [ ] 01-03: TBD
+- [ ] 01-01-PLAN.md -- FastAPI backend foundation: config, path traversal guard, file listing API, CORS
+- [ ] 01-02-PLAN.md -- Discovery services: QR code generation (ASCII + SVG), IP detection, server-info API
+- [ ] 01-03-PLAN.md -- React SPA: Vite + TypeScript + Tailwind scaffold, file list UI, server info + QR display
 
 ### Phase 2: File Management
 **Goal**: Users can fully manage files through the browser -- upload, download, organize, batch operate
