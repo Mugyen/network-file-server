@@ -12,7 +12,7 @@ Transform the existing Flask+Jinja file server into a polished React+FastAPI LAN
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Foundation and Discovery** - FastAPI backend, React SPA shell, file serving, path safety, QR code connect
+- [x] **Phase 1: Foundation and Discovery** - FastAPI backend, React SPA shell, file serving, path safety, QR code connect (completed 2026-03-08)
 - [ ] **Phase 2: File Management** - Upload, download, batch ops, folder navigation, rename, delete, responsive UI
 - [ ] **Phase 3: Search, Preview, and UI Polish** - Search/filter/sort, media previews, dark mode
 - [ ] **Phase 4: Real-Time Features** - WebSocket infrastructure, notifications, clipboard sharing, file requests
@@ -28,7 +28,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. User on another device can scan a QR code from the terminal or web UI and land on the file server
   3. Shared folder contents are listed in the browser with file names, sizes, and modification dates
   4. Attempting to access files outside the shared folder is blocked (path traversal protection verified)
-**Plans:** 3 plans
+**Plans:** 3/3 plans complete
 
 Plans:
 - [ ] 01-01-PLAN.md -- FastAPI backend foundation: config, path traversal guard, file listing API, CORS
@@ -90,7 +90,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation and Discovery | 0/3 | Not started | - |
+| 1. Foundation and Discovery | 3/3 | Complete   | 2026-03-08 |
 | 2. File Management | 0/3 | Not started | - |
 | 3. Search, Preview, and UI Polish | 0/3 | Not started | - |
 | 4. Real-Time Features | 0/2 | Not started | - |
