@@ -9,7 +9,10 @@ class TestCORS:
     async def test_get_includes_cors_header(
         self, async_client: AsyncClient
     ) -> None:
-        response = await async_client.get("/api/files")
+        response = await async_client.get(
+            "/api/files",
+            headers={"origin": "http://localhost:5173"},
+        )
         assert response.status_code == 200
         assert "access-control-allow-origin" in response.headers
 
