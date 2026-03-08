@@ -28,9 +28,9 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Discovery
 
-- [ ] **DISC-01**: QR code displayed in terminal on server start (ASCII)
-- [ ] **DISC-02**: QR code displayed on web UI (SVG)
-- [ ] **DISC-03**: Local IP address auto-detected and displayed
+- [x] **DISC-01**: QR code displayed in terminal on server start (ASCII)
+- [x] **DISC-02**: QR code displayed on web UI (SVG)
+- [x] **DISC-03**: Local IP address auto-detected and displayed
 
 ### Search & Filter
 
@@ -125,9 +125,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | FOUND-02 | Phase 1 | Complete |
 | FOUND-03 | Phase 1 | Complete |
 | FOUND-04 | Phase 1 | Complete |
-| DISC-01 | Phase 1 | Pending |
-| DISC-02 | Phase 1 | Pending |
-| DISC-03 | Phase 1 | Pending |
+| DISC-01 | Phase 1 | Complete |
+| DISC-02 | Phase 1 | Complete |
+| DISC-03 | Phase 1 | Complete |
 | FILE-01 | Phase 2 | Pending |
 | FILE-02 | Phase 2 | Pending |
 | FILE-03 | Phase 2 | Pending |
