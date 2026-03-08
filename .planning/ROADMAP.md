@@ -1,0 +1,96 @@
+# Roadmap: WiFi File Server
+
+## Overview
+
+Transform the existing Flask+Jinja file server into a polished React+FastAPI LAN file sharing tool. The roadmap moves from foundation (working backend+frontend with discovery) through complete file management, then layering on search/preview/polish, and finally real-time collaborative features (clipboard, notifications, file requests). Each phase delivers a coherent, independently usable capability.
+
+## Phases
+
+**Phase Numbering:**
+- Integer phases (1, 2, 3): Planned milestone work
+- Decimal phases (2.1, 2.2): Urgent insertions (marked with INSERTED)
+
+Decimal phases appear between their surrounding integers in numeric order.
+
+- [ ] **Phase 1: Foundation and Discovery** - FastAPI backend, React SPA shell, file serving, path safety, QR code connect
+- [ ] **Phase 2: File Management** - Upload, download, batch ops, folder navigation, rename, delete, responsive UI
+- [ ] **Phase 3: Search, Preview, and UI Polish** - Search/filter/sort, media previews, dark mode
+- [ ] **Phase 4: Real-Time Features** - WebSocket infrastructure, notifications, clipboard sharing, file requests
+
+## Phase Details
+
+### Phase 1: Foundation and Discovery
+**Goal**: Users can connect to the server from any device on the LAN and see the shared files
+**Depends on**: Nothing (first phase)
+**Requirements**: FOUND-01, FOUND-02, FOUND-03, FOUND-04, DISC-01, DISC-02, DISC-03
+**Success Criteria** (what must be TRUE):
+  1. Server starts from CLI with a folder path argument and serves a React SPA at the root URL
+  2. User on another device can scan a QR code from the terminal or web UI and land on the file server
+  3. Shared folder contents are listed in the browser with file names, sizes, and modification dates
+  4. Attempting to access files outside the shared folder is blocked (path traversal protection verified)
+**Plans**: TBD
+
+Plans:
+- [ ] 01-01: TBD
+- [ ] 01-02: TBD
+- [ ] 01-03: TBD
+
+### Phase 2: File Management
+**Goal**: Users can fully manage files through the browser -- upload, download, organize, batch operate
+**Depends on**: Phase 1
+**Requirements**: FILE-01, FILE-02, FILE-03, FILE-04, FILE-05, FILE-06, FILE-07, FILE-08, FILE-09, UIUX-02, UIUX-03
+**Success Criteria** (what must be TRUE):
+  1. User can navigate into subdirectories and back via breadcrumb trail
+  2. User can drag-and-drop multiple files to upload with individual progress bars visible
+  3. User can select multiple files and download them as a single ZIP, or delete them in batch with confirmation
+  4. User can rename files and create new folders from within the browser
+  5. File browser works on mobile devices with appropriate file type icons for all files
+**Plans**: TBD
+
+Plans:
+- [ ] 02-01: TBD
+- [ ] 02-02: TBD
+- [ ] 02-03: TBD
+
+### Phase 3: Search, Preview, and UI Polish
+**Goal**: Users can find files quickly and preview media content without downloading
+**Depends on**: Phase 2
+**Requirements**: SRCH-01, SRCH-02, SRCH-03, MEDP-01, MEDP-02, MEDP-03, MEDP-04, MEDP-05, UIUX-01
+**Success Criteria** (what must be TRUE):
+  1. User can type in a search box and see file list filter instantly; can also filter by type category and sort by name/size/date/type
+  2. User can click an image to open a lightbox with zoom, and play video/audio inline with seeking
+  3. User can view PDFs, code files (with syntax highlighting), and markdown (rendered as HTML) in the browser
+  4. Dark mode activates automatically based on system preference and can be toggled manually
+**Plans**: TBD
+
+Plans:
+- [ ] 03-01: TBD
+- [ ] 03-02: TBD
+- [ ] 03-03: TBD
+
+### Phase 4: Real-Time Features
+**Goal**: Connected devices can interact in real time -- sharing text, receiving notifications, and requesting files from each other
+**Depends on**: Phase 3
+**Requirements**: RTME-01, RTME-02, RTME-03, RTME-04, RTME-05
+**Success Criteria** (what must be TRUE):
+  1. WebSocket connection is established on page load and reconnects automatically after disconnection
+  2. Toast notifications appear on all connected devices when files are uploaded or downloaded
+  3. User can type text into a shared clipboard (scratchpad) and see it appear on all other connected devices in real time
+  4. User can create a file request with a description, and another user on a different device can fulfill it by uploading a file
+**Plans**: TBD
+
+Plans:
+- [ ] 04-01: TBD
+- [ ] 04-02: TBD
+
+## Progress
+
+**Execution Order:**
+Phases execute in numeric order: 1 -> 2 -> 3 -> 4
+
+| Phase | Plans Complete | Status | Completed |
+|-------|----------------|--------|-----------|
+| 1. Foundation and Discovery | 0/3 | Not started | - |
+| 2. File Management | 0/3 | Not started | - |
+| 3. Search, Preview, and UI Polish | 0/3 | Not started | - |
+| 4. Real-Time Features | 0/2 | Not started | - |

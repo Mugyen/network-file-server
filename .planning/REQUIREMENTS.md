@@ -1,7 +1,7 @@
 # Requirements: WiFi File Server
 
 **Defined:** 2026-03-09
-**Core Value:** Any device on the same WiFi network can instantly share files with zero setup — scan QR, drop files, done.
+**Core Value:** Any device on the same WiFi network can instantly share files with zero setup -- scan QR, drop files, done.
 
 ## v1 Requirements
 
@@ -121,13 +121,44 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| (populated during roadmap creation) | | |
+| FOUND-01 | Phase 1 | Pending |
+| FOUND-02 | Phase 1 | Pending |
+| FOUND-03 | Phase 1 | Pending |
+| FOUND-04 | Phase 1 | Pending |
+| DISC-01 | Phase 1 | Pending |
+| DISC-02 | Phase 1 | Pending |
+| DISC-03 | Phase 1 | Pending |
+| FILE-01 | Phase 2 | Pending |
+| FILE-02 | Phase 2 | Pending |
+| FILE-03 | Phase 2 | Pending |
+| FILE-04 | Phase 2 | Pending |
+| FILE-05 | Phase 2 | Pending |
+| FILE-06 | Phase 2 | Pending |
+| FILE-07 | Phase 2 | Pending |
+| FILE-08 | Phase 2 | Pending |
+| FILE-09 | Phase 2 | Pending |
+| UIUX-02 | Phase 2 | Pending |
+| UIUX-03 | Phase 2 | Pending |
+| SRCH-01 | Phase 3 | Pending |
+| SRCH-02 | Phase 3 | Pending |
+| SRCH-03 | Phase 3 | Pending |
+| MEDP-01 | Phase 3 | Pending |
+| MEDP-02 | Phase 3 | Pending |
+| MEDP-03 | Phase 3 | Pending |
+| MEDP-04 | Phase 3 | Pending |
+| MEDP-05 | Phase 3 | Pending |
+| UIUX-01 | Phase 3 | Pending |
+| RTME-01 | Phase 4 | Pending |
+| RTME-02 | Phase 4 | Pending |
+| RTME-03 | Phase 4 | Pending |
+| RTME-04 | Phase 4 | Pending |
+| RTME-05 | Phase 4 | Pending |
 
 **Coverage:**
-- v1 requirements: 28 total
-- Mapped to phases: 0
-- Unmapped: 28
+- v1 requirements: 32 total
+- Mapped to phases: 32
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-09*
-*Last updated: 2026-03-09 after initial definition*
+*Last updated: 2026-03-09 after roadmap creation*
