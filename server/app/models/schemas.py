@@ -14,3 +14,13 @@ class FileEntry(BaseModel):
 class DirectoryListing(BaseModel):
     path: str
     entries: list[FileEntry]
+
+
+class ServerInfo(BaseModel):
+    """Server information including IP, port, URL, and QR code data."""
+
+    ip: str
+    port: int
+    url: str
+    qr_svg: str
+    all_ips: list[str]

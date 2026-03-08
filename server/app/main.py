@@ -12,13 +12,14 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from server.app.routers.files import router as files_router
+from server.app.routers.server_info import router as server_info_router
 
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application.
 
     - Adds CORSMiddleware with wildcard origins for LAN access.
-    - Includes the files API router.
+    - Includes the files API router and server-info router.
     - Mounts SPA static files if client/dist exists (production mode).
     """
     application = FastAPI(title="WiFi File Server")
@@ -33,6 +34,7 @@ def create_app() -> FastAPI:
     )
 
     application.include_router(files_router)
+    application.include_router(server_info_router)
 
     # SPA catch-all: mount static files if client/dist exists
     client_dist = Path("client/dist")

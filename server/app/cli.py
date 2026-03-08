@@ -9,24 +9,8 @@ import sys
 import uvicorn
 
 from server.app.config import ServerConfig, set_server_config
-
-
-def _get_local_ip() -> str:
-    """Detect the local IP address for LAN access.
-
-    Connects to a remote DNS server to determine the local IP.
-    Falls back to 127.0.0.1 if detection fails.
-    """
-    import socket
-
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.connect(("8.8.8.8", 80))
-        ip = sock.getsockname()[0]
-        sock.close()
-        return ip
-    except OSError:
-        return "127.0.0.1"
+from server.app.services.network_service import detect_primary_lan_ip
+from server.app.services.qr_service import generate_ascii_qr
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -79,11 +63,21 @@ def main() -> None:
 
     set_server_config(config)
 
-    local_ip = _get_local_ip()
-
     print(f"\nWiFi File Server Starting...")
     print(f"Sharing folder: {config.shared_folder}")
-    print(f"Server URL: http://{local_ip}:{port}")
+
+    # Display QR code and server URL for easy device connection
+    try:
+        local_ip = detect_primary_lan_ip()
+        server_url = f"http://{local_ip}:{port}"
+        ascii_qr = generate_ascii_qr(server_url)
+        print(f"\nScan this QR code to connect:\n")
+        print(ascii_qr)
+        print(f"Server URL: {server_url}")
+    except RuntimeError as exc:
+        print(f"Warning: Could not detect LAN IP ({exc})")
+        print(f"Server will be available at http://localhost:{port}")
+
     print(f"Local URL: http://localhost:{port}")
     print(f"Access from any device on the same network!")
     print(f"\nPress Ctrl+C to stop the server\n")
