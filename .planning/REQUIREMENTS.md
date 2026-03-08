@@ -9,10 +9,10 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Foundation
 
-- [ ] **FOUND-01**: Server starts with FastAPI backend serving React SPA
-- [ ] **FOUND-02**: CLI accepts folder path argument and optional port
-- [ ] **FOUND-03**: Path traversal protection on all file operations
-- [ ] **FOUND-04**: CORS configured for development (Vite proxy)
+- [x] **FOUND-01**: Server starts with FastAPI backend serving React SPA
+- [x] **FOUND-02**: CLI accepts folder path argument and optional port
+- [x] **FOUND-03**: Path traversal protection on all file operations
+- [x] **FOUND-04**: CORS configured for development (Vite proxy)
 
 ### File Management
 
@@ -121,10 +121,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| FOUND-01 | Phase 1 | Pending |
-| FOUND-02 | Phase 1 | Pending |
-| FOUND-03 | Phase 1 | Pending |
-| FOUND-04 | Phase 1 | Pending |
+| FOUND-01 | Phase 1 | Complete |
+| FOUND-02 | Phase 1 | Complete |
+| FOUND-03 | Phase 1 | Complete |
+| FOUND-04 | Phase 1 | Complete |
 | DISC-01 | Phase 1 | Pending |
 | DISC-02 | Phase 1 | Pending |
 | DISC-03 | Phase 1 | Pending |
