@@ -1,546 +1,368 @@
-# Domain Pitfalls
+# Pitfalls Research
 
-**Domain:** LAN file sharing web app (React + FastAPI + WebSocket)
-**Researched:** 2026-03-09
+**Domain:** Adding access control, sharing modes, device discovery, terminal UI, and speed test to existing LAN file server (v1.1)
+**Researched:** 2026-03-10
+**Confidence:** HIGH (based on direct codebase analysis of all 40+ source files + verified external patterns)
 
 ## Critical Pitfalls
 
-Mistakes that cause rewrites, security incidents, or broken core functionality.
+### Pitfall 1: Incomplete Write-Path Blocking in Read-Only Mode
+
+**What goes wrong:**
+Read-only mode blocks the obvious write endpoints (upload, delete, rename) but misses hidden write paths. The existing codebase has **eight distinct write surfaces** across three routers and WebSocket:
+
+1. `POST /api/files/upload` -- file upload (`files.py:89`)
+2. `DELETE /api/files` -- file/folder deletion (`files.py:208`)
+3. `PATCH /api/files/rename` -- rename (`files.py:187`)
+4. `POST /api/folders` -- create folder (`files.py:225`)
+5. `POST /api/file-requests/{id}/fulfill` -- uploads a file via `upload_file()` internally (`file_requests.py:60`)
+6. `POST /api/clipboard/` -- creates snippet, writes to `.wfs_data/clipboard.json` (`clipboard.py:26`)
+7. `DELETE /api/clipboard/{id}` -- deletes snippet (`clipboard.py:61`)
+8. WebSocket `snippet_update` message -- updates snippet content via WS, completely bypassing REST middleware (`websocket.py:61`)
+
+Missing even one turns "read-only" into a false sense of security.
+
+**Why it happens:**
+Developers check the files router and forget clipboard, file-requests, and WebSocket message handlers. The `fulfill_file_request` endpoint is particularly sneaky -- it looks like a POST to a "request" resource but internally calls `upload_file()` on line 71, making it a filesystem write operation.
+
+**How to avoid:**
+Create a FastAPI dependency that checks `config.read_only` and raises `HTTPException(403)`. Apply it via `dependencies=[Depends(require_writable)]` at the router level for all three routers. For WebSocket, add a guard in the message routing `if/elif` chain in `websocket.py` before processing `snippet_update` messages.
+
+**Warning signs:**
+- Tests only cover `/api/files/upload` and `DELETE /api/files` in read-only mode
+- No test for clipboard or file-request writes in read-only mode
+- Users can still create snippets or fulfill file requests while server says "read-only"
+
+**Phase to address:**
+Access Control phase. Must be implemented as an exhaustive write-path audit, not a flag check on two endpoints.
 
 ---
 
-### Pitfall 1: Path Traversal — Escaping the Shared Directory
+### Pitfall 2: Auth Bypass via Direct URL Access (Downloads, Preview, WebSocket, SPA)
 
-**What goes wrong:** Attackers craft filenames or URL paths containing `../` sequences (or encoded variants like `%2e%2e%2f`, `..%5c`, null bytes) to read or write files outside the shared folder. The existing codebase uses `secure_filename()` for uploads but joins unsanitized user input with `os.path.join()` for downloads, which is exploitable.
+**What goes wrong:**
+Password protection is added to API endpoints via middleware, but four distinct request patterns in the existing codebase bypass the centralized `apiFetch()` client:
 
-**Why it happens:** Developers trust `os.path.join(SHARED_FOLDER, user_input)` to stay within the shared folder. It does not. `os.path.join("/share", "/etc/passwd")` returns `/etc/passwd`. Even `secure_filename()` only sanitizes the filename itself -- it does not prevent directory components passed through URL path parameters.
+1. **`downloadFile()`** in `client/src/api/files.ts:21-28` creates a raw `<a>` tag pointing to `/api/files/download?path=...`. This is a direct browser navigation, not an XHR. Custom Authorization headers cannot be attached to anchor tag navigations.
 
-**Consequences:** Arbitrary file read from the host machine. On a LAN tool where there is no authentication (by design in v1), any device on the network can read any file the server process can access. This is a data breach waiting to happen.
+2. **`downloadAsZip()`** in `client/src/api/files.ts:34-53` uses raw `fetch()` instead of `apiFetch()`. No auth header injection point.
 
-**Prevention:**
-1. After constructing the full path, call `os.path.realpath()` (resolves symlinks) and verify the result starts with the shared folder's real path.
-2. Reject any path component containing `..` before joining.
-3. Never use raw user input in `os.path.join()` -- always sanitize first, validate after.
+3. **WebSocket connection** in `hooks/useWebSocket.ts:38-39` connects to `/ws?device_name=...`. The browser's WebSocket API does not support custom request headers on the upgrade handshake in all browsers.
 
-```python
-def safe_resolve_path(shared_folder: str, user_path: str) -> Path:
-    """Resolve user path and verify it stays within the shared folder."""
-    base = Path(shared_folder).resolve()
-    target = (base / user_path).resolve()
-    if not str(target).startswith(str(base)):
-        raise PermissionError(f"Path traversal blocked: {user_path}")
-    if not target.exists():
-        raise FileNotFoundError(f"File not found: {user_path}")
-    return target
-```
+4. **Preview URLs** are loaded as `src` attributes on `<img>`, `<video>`, `<audio>` elements (see PreviewModal and various preview components). Browsers do not send custom headers with media element source requests.
 
-**Detection:** Unit tests that attempt `../../../etc/passwd`, encoded variants, and absolute paths. Run these tests on every endpoint that accepts a filename or path.
+5. **SPA catch-all** route `/{path:path}` in `main.py:61-68` serves static files and `index.html`. If this is not behind auth, the entire UI loads without authentication.
 
-**Phase:** Must be addressed in Phase 1 (core backend). Every file operation endpoint needs this guard from day one.
+**Why it happens:**
+Header-based auth (Authorization: Bearer) works for XHR/fetch requests but fails for every other request type the browser makes. The existing client has five `api*` helper functions in `client.ts` that all go through `fetch()` -- adding an auth header there is tempting but covers only half the surface area.
 
-**Confidence:** HIGH -- this is OWASP Top 10 territory, and the existing codebase has this vulnerability.
+**How to avoid:**
+Use **cookie-based authentication**. On the LAN HTTP context (no HTTPS available), cookies are the only mechanism the browser automatically sends with every request type: XHR, anchor tag navigation, img/video/audio src loads, WebSocket upgrade handshakes, and direct URL access.
 
----
+Implementation:
+- On successful password entry, set an HttpOnly cookie with a session token
+- Validate the cookie in FastAPI middleware that runs before ALL routes (API, WebSocket, SPA catch-all)
+- For WebSocket, extract the cookie from `websocket.cookies` during the handshake
+- Note: the existing CORS middleware has `allow_credentials` NOT set to True (see `main.py:32`) -- this must remain false with `allow_origins=["*"]` per CORS spec, but cookie-based auth works because the server and frontend are same-origin in production
 
-### Pitfall 2: Large File Uploads Eating All Memory
+**Warning signs:**
+- User logs in via password screen, but pasting `/api/files/download?path=secret.txt` in an incognito window downloads the file
+- WebSocket connects and receives toasts without authentication
+- Media previews load without login
 
-**What goes wrong:** File upload endpoints load the entire file into memory before writing to disk. A 2GB video upload crashes the server or causes the OS to kill the process. Multiple concurrent uploads compound the problem.
-
-**Why it happens:** FastAPI's `bytes` annotation (`file: bytes = File()`) loads the entire file into RAM. Even `UploadFile` has a spoolfile threshold (default 1MB in Starlette) -- above that it writes to a temp file, but developers often call `await file.read()` anyway, which loads the whole thing into memory. Confirmed by FastAPI official docs: "If you declare the type as `bytes`, FastAPI will read the whole file and you will have the contents in memory. This will work well for small files."
-
-**Consequences:** Server crashes on large files. On a LAN file sharing tool where people transfer videos, disk images, and archives, this is a core workflow failure.
-
-**Prevention:**
-1. Always use `UploadFile` (never `bytes`) for file upload parameters.
-2. Stream uploads in chunks -- never call `await file.read()` without a size argument.
-3. Set explicit upload size limits and return 413 early (via middleware or manual check).
-4. Use chunked/resumable upload protocol on the frontend (tus or custom chunking).
-
-```python
-async def save_upload_streaming(upload: UploadFile, destination: Path) -> int:
-    """Stream upload to disk in chunks, never loading full file into memory."""
-    CHUNK_SIZE = 1024 * 1024  # 1MB chunks
-    total_bytes = 0
-    with open(destination, "wb") as out_file:
-        while chunk := await upload.read(CHUNK_SIZE):
-            out_file.write(chunk)
-            total_bytes += len(chunk)
-    return total_bytes
-```
-
-**Detection:** Test with files larger than available RAM. Monitor server memory during upload stress tests. If memory usage grows linearly with file size, you have this bug.
-
-**Phase:** Phase 1 (core backend). The upload endpoint is foundational.
-
-**Confidence:** HIGH -- verified against FastAPI official documentation.
+**Phase to address:**
+Access Control phase. This is the most critical architectural decision -- choosing cookies vs headers determines the entire auth implementation.
 
 ---
 
-### Pitfall 3: WebSocket Connection Manager as In-Memory Singleton
+### Pitfall 3: Dropbox/Receive Mode Allows Path Manipulation Outside Upload Directory
 
-**What goes wrong:** A `ConnectionManager` class holds all active WebSocket connections in a Python list/dict. This works for single-process deployments but completely breaks when running with multiple workers (uvicorn with `--workers N`). Connections on worker A cannot broadcast to connections on worker B.
+**What goes wrong:**
+Receive mode creates a separate upload-only interface, but the existing upload endpoint accepts a `path` query parameter (see `files.py:92`: `path: str = Query("")`). If the dropbox reuses this endpoint, an attacker can POST with `path=../../other_folder` and write files anywhere within the shared folder, not just the dropbox directory.
 
-**Why it happens:** Every FastAPI WebSocket tutorial (including the official docs) shows this pattern. The official docs explicitly warn: "Keep in mind that it will only work while the process is running, and will only work with a single process." Developers copy the pattern without reading the warning.
+The existing `resolve_safe_path()` in `file_service.py:43` validates paths against `config.shared_folder` -- it prevents escaping the shared folder entirely, but does NOT enforce a dropbox subdirectory constraint. A path like `path=documents/` is valid and writes to `shared_folder/documents/` instead of the dropbox.
 
-**Consequences:** Clipboard sync, file request notifications, and transfer notifications silently fail for some users. The bug is intermittent (depends on which worker handles which connection), making it extremely hard to diagnose.
+**Why it happens:**
+The dropbox reuses the existing `upload_file()` service function for less code duplication. But that function was designed for full-access users, not constrained uploaders.
 
-**Prevention:**
-- For v1 (single-process LAN tool): This is acceptable. Run uvicorn with `--workers 1` explicitly and document this constraint.
-- Document the limitation clearly so v2 can migrate to Redis pub/sub or PostgreSQL LISTEN/NOTIFY if multi-worker support is needed.
-- Do NOT prematurely optimize with Redis for v1 -- it adds operational complexity for a personal LAN tool.
+**How to avoid:**
+For the dropbox upload endpoint:
+1. Create a dedicated route (`POST /api/dropbox/upload`) that does NOT accept a `path` parameter
+2. Hard-code the upload destination to the dropbox directory (e.g., `shared_folder/inbox/`)
+3. The dropbox endpoint should call `upload_file()` with a fixed path, ignoring any client-provided path
 
-**Detection:** If you ever see "clipboard sync works on some devices but not others" intermittently, check the worker count.
+Do NOT expose the file listing endpoint to dropbox users -- they should see only an upload form, not the shared folder contents.
 
-**Phase:** Phase 1 (backend setup). Set worker count to 1 explicitly. Phase 2+ (WebSocket features) should keep this constraint visible.
+**Warning signs:**
+- Dropbox endpoint accepts `path` query parameter from the client
+- Tests verify upload works but do not verify path parameter is ignored
+- Files uploaded via dropbox appear in arbitrary subdirectories
 
-**Confidence:** HIGH -- directly from FastAPI official WebSocket documentation.
-
----
-
-### Pitfall 4: Clipboard API Requires Secure Context (HTTPS)
-
-**What goes wrong:** The browser Clipboard API (`navigator.clipboard.readText()` / `writeText()`) requires a "secure context" -- which means HTTPS or localhost. A LAN server accessed via `http://192.168.1.x:8000` is neither HTTPS nor localhost. The Clipboard API will be undefined or throw a permissions error.
-
-**Why it happens:** Developers test on `localhost` where the Clipboard API works fine. It breaks when accessed from another device via the LAN IP address. This is a browser security restriction, not a bug.
-
-**Consequences:** The cross-device clipboard sync feature -- positioned as a daily-use differentiator -- simply does not work on any device except the host machine. The entire feature is dead on arrival.
-
-**Prevention:**
-1. Do NOT rely on `navigator.clipboard` for the primary clipboard workflow.
-2. Use a textarea-based copy mechanism: programmatically create a textarea, set its value, select it, and call `document.execCommand('copy')` (deprecated but still widely supported and works without secure context).
-3. For reading the system clipboard: accept paste events (`document.addEventListener('paste')`) which work everywhere.
-4. The "clipboard sharing" feature should be a shared scratchpad with manual paste/copy, not system clipboard integration.
-5. If system clipboard integration is essential, add a self-signed HTTPS option (mkcert for local development) and document the setup.
-
-```typescript
-function copyToClipboard(text: string): void {
-    // Fallback that works without secure context
-    const textarea = document.createElement('textarea');
-    textarea.value = text;
-    textarea.style.position = 'fixed';
-    textarea.style.opacity = '0';
-    document.body.appendChild(textarea);
-    textarea.select();
-    document.execCommand('copy');
-    document.body.removeChild(textarea);
-}
-```
-
-**Detection:** Test the clipboard feature by accessing the app from a different device on the LAN (not localhost). If copy/paste fails, this is the cause.
-
-**Phase:** Phase 2 or whenever clipboard sharing is implemented. Must be the very first thing validated before building the feature.
-
-**Confidence:** HIGH -- well-documented browser security model.
+**Phase to address:**
+Sharing phase -- receive mode/dropbox implementation.
 
 ---
 
-### Pitfall 5: Video/Audio Streaming Without Range Request Support
+### Pitfall 4: Share Link Tokens Leaked in Logs, Broadcasts, and Browser History
 
-**What goes wrong:** HTML5 `<video>` and `<audio>` elements require HTTP range requests (partial content / `206 Partial Content`) to support seeking, scrubbing, and progressive playback. Without range support, users must download the entire file before playback starts, and seeking is impossible.
+**What goes wrong:**
+Expiring share links generate tokens embedded in URLs (e.g., `/share/abc123def456`). These tokens appear in:
 
-**Why it happens:** A naive file download endpoint uses `send_file()` or streams the whole file as a single response. This returns a `200 OK` with the full file. The browser needs the server to handle `Range: bytes=X-Y` request headers and respond with `206 Partial Content` and `Content-Range` headers.
+1. **Uvicorn access logs** -- uvicorn logs every request by default: `INFO: 192.168.1.5 - "GET /share/abc123def456 HTTP/1.1" 200`
+2. **WebSocket toast broadcasts** -- the existing pattern (see `files.py:116-126`) broadcasts file activity to all connected devices. If share link downloads broadcast too, the token leaks to all viewers
+3. **Browser history** -- the share link URL is recorded in the browser's address bar
 
-**Consequences:** Users click a video file and wait minutes for it to load. Seeking to the middle of a 1GB video re-downloads the entire file. Users assume the product is broken and use another tool.
+On a LAN where multiple people share a screen or see the server terminal, tokens in logs and broadcasts defeat the purpose of limited sharing.
 
-**Prevention:**
-1. FastAPI's `FileResponse` does NOT support range requests out of the box.
-2. Implement a custom streaming endpoint that reads the `Range` header and returns partial content.
-3. Alternatively, use `starlette.responses.FileResponse` with the `stat_result` parameter (Starlette added conditional response support), or use a library like `starlette-ranged-response`.
-4. Always set `Accept-Ranges: bytes` in the response headers.
+**Why it happens:**
+Developers focus on token generation and expiration logic. They forget that uvicorn logs every URL by default and the existing WebSocket toast pattern broadcasts file download events to all connected clients.
 
-**Detection:** Open a video in the preview, try to seek to the middle. If the seek bar is unresponsive or playback restarts from the beginning, range requests are broken.
+**How to avoid:**
+- Store tokens **server-side** with metadata (file path, expiry, remaining uses) in a dict. The token is an opaque random string; the file path is NEVER encoded in the URL
+- Do NOT include tokens or file paths in toast broadcasts for share link downloads. Just broadcast "A file was downloaded via share link"
+- Consider adding the share link path to uvicorn's log exclusion filter, or accept that the opaque token in logs reveals nothing without server-side lookup
+- Server-side storage also enables revocation
 
-**Phase:** Phase where media preview is implemented (likely Phase 3). Must be built into the streaming endpoint from the start, not retrofitted.
+**Warning signs:**
+- Token values visible in terminal output
+- Toast messages include the file path when someone downloads via share link
+- No token revocation mechanism exists
 
-**Confidence:** HIGH -- fundamental HTTP protocol requirement for media streaming.
-
----
-
-### Pitfall 6: No CORS Configuration for Cross-Origin Frontend
-
-**What goes wrong:** During development, React runs on `localhost:3000` (Vite dev server) and FastAPI runs on `localhost:8000`. The browser blocks all API calls and WebSocket connections due to CORS policy. In production, if the frontend is served from a different origin than the API (e.g., static files on a CDN or different port), the same problem occurs.
-
-**Why it happens:** CORS is disabled by default in FastAPI. Developers either forget to configure it, configure it too loosely (`allow_origins=["*"]`), or configure it for development and forget to adjust for production.
-
-**Consequences:** During development: nothing works, hours wasted debugging "network error" messages. In production: WebSocket connections fail silently.
-
-**Prevention:**
-1. Add CORS middleware in FastAPI immediately, in the first commit.
-2. For a LAN tool, `allow_origins=["*"]` is acceptable because there is no authentication and the tool is intentionally open-access.
-3. For WebSocket: CORS applies differently -- the browser sends the `Origin` header but there is no preflight. However, FastAPI's CORSMiddleware does not handle WebSocket origins. You need to validate `websocket.headers.get("origin")` manually if you care.
-
-```python
-from fastapi.middleware.cors import CORSMiddleware
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # LAN tool: open by design
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-```
-
-**Detection:** Open browser DevTools console. If you see "blocked by CORS policy" errors, this is the problem.
-
-**Phase:** Phase 1 (backend setup). Add this in the very first commit alongside `app = FastAPI()`.
-
-**Confidence:** HIGH -- universal issue in every React + separate API project.
+**Phase to address:**
+Sharing phase -- expiring share links.
 
 ---
 
-## Moderate Pitfalls
+### Pitfall 5: Terminal UI and Uvicorn Fight for stdout/stderr Control
 
-Mistakes that cause significant bugs, poor UX, or wasted development time.
+**What goes wrong:**
+A Rich terminal dashboard (live stats, connected devices, transfer progress) and uvicorn both write to the same terminal, creating three conflicts:
 
----
+1. **Interleaved output**: Rich's Live display redraws the screen with ANSI escape codes, but uvicorn prints access log lines between redraws, producing garbled output
+2. **Cursor position corruption**: Rich positions the cursor to redraw specific regions. Uvicorn's log output shifts the cursor, corrupting the dashboard layout
+3. **Signal handler conflict**: Rich's `Live` context manager, uvicorn, and the existing `cli.py:87` `KeyboardInterrupt` handler all compete for SIGINT. Three SIGINT handlers create race conditions on Ctrl+C
 
-### Pitfall 7: Object URL Memory Leaks in Media Preview
+The existing `cli.py` starts uvicorn via `uvicorn.run("server.app.main:app", host=host, port=port)` on line 86 -- this call blocks and owns the terminal.
 
-**What goes wrong:** When previewing images, videos, or PDFs, the frontend creates Object URLs via `URL.createObjectURL(blob)`. Each call allocates browser memory for the blob data. If the URLs are never revoked with `URL.revokeObjectURL()`, memory usage grows until the browser tab crashes.
+**Why it happens:**
+Uvicorn is designed to own the terminal. Rich's Live display is also designed to own the terminal. Running both simultaneously without coordination is undefined behavior.
 
-**Why it happens:** Object URLs are convenient for preview and persist until the page unloads or `revokeObjectURL()` is called. In a single-page React app, the page never unloads. Browsing through a gallery of 100 photos without cleanup can consume gigabytes of memory.
+**How to avoid:**
+- Suppress uvicorn's default logging by passing `log_config=None` to `uvicorn.run()`, then attach a `RichHandler` to uvicorn's logger that renders through the dashboard's Console object
+- Use Rich's `Console(stderr=True)` for the dashboard if you want to keep some uvicorn output on stdout
+- Alternatively, use Rich's alternate screen buffer (`Console(screen=True)`) to fully separate the dashboard from log output
+- For Ctrl+C handling, ensure the Rich Live context wraps the uvicorn run call, so cleanup order is deterministic
 
-**Prevention:**
-1. Always call `URL.revokeObjectURL()` when a preview component unmounts (React `useEffect` cleanup).
-2. For galleries/slideshows, only hold Object URLs for visible items plus a small buffer.
-3. Prefer streaming via direct URL (`/api/preview/filename`) over blob-based Object URLs where possible.
+**Warning signs:**
+- Terminal output flickers or garbles during file transfers
+- Ctrl+C does not cleanly stop the server (hangs or produces traceback)
+- Log lines appear inside the dashboard, corrupting the layout
 
-```typescript
-useEffect(() => {
-    const url = URL.createObjectURL(blob);
-    setPreviewUrl(url);
-    return () => URL.revokeObjectURL(url);
-}, [blob]);
-```
-
-**Detection:** Open browser task manager. Browse through many files in the preview. If memory climbs steadily and never drops, Object URLs are leaking.
-
-**Phase:** Media preview phase. Build cleanup into the preview component from the start.
-
-**Confidence:** HIGH -- documented by MDN: "For long-lived applications, you should revoke object URLs when they're no longer needed."
+**Phase to address:**
+Terminal UI phase. Must account for uvicorn's logging behavior from the start.
 
 ---
 
-### Pitfall 8: Upload Progress Requires XMLHttpRequest (Not Fetch)
+### Pitfall 6: mDNS Device Discovery Silently Fails on Most Networks
 
-**What goes wrong:** The standard Fetch API does not support upload progress events. Developers build a drag-and-drop upload UI with progress bars using `fetch()`, then discover the progress bars cannot work.
+**What goes wrong:**
+mDNS/Zeroconf (the standard for LAN service discovery) uses multicast UDP on port 5353. Many common network environments silently block this:
 
-**Why it happens:** The Fetch API has `ReadableStream` support for download progress but no equivalent for upload progress. MDN explicitly states: "It's usually preferable to make HTTP requests using the Fetch API instead of XMLHttpRequest. However, in this case we want to show the user the upload progress, and this feature is still not supported by the Fetch API." This is still true in 2026.
+1. **macOS firewall** in "Block all incoming connections" mode blocks mDNS responses
+2. **Corporate/university WiFi** with AP isolation prevents multicast between devices
+3. **Guest networks** almost always have client isolation enabled
+4. **Windows Defender Firewall** blocks incoming multicast on "Public" network profiles (the default for new WiFi connections)
 
-**Consequences:** Progress bars either don't work (showing 0% then jumping to 100%) or require a late-stage rewrite from `fetch()` to `XMLHttpRequest`.
+The server starts, registers its mDNS service, but zero clients discover it. No error is raised -- mDNS just silently fails. The developer tests on their home network where it works perfectly.
 
-**Prevention:**
-1. Use `XMLHttpRequest` for upload endpoints from the start if progress tracking is needed.
-2. Alternatively, use the `axios` library which wraps XHR and provides `onUploadProgress` callbacks.
-3. For chunked uploads, track progress by counting completed chunks (this works with `fetch()`).
+**Why it happens:**
+Multicast UDP is a "best effort" protocol. When blocked, there is no error -- packets are simply dropped. The `Zeroconf()` constructor and `register_service()` succeed regardless of whether any other device can actually receive the advertisements.
 
-```typescript
-function uploadWithProgress(
-    file: File,
-    url: string,
-    onProgress: (percent: number) => void
-): Promise<Response> {
-    return new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.upload.addEventListener('progress', (e) => {
-            if (e.lengthComputable) {
-                onProgress(Math.round((e.loaded / e.total) * 100));
-            }
-        });
-        xhr.addEventListener('load', () => resolve(xhr.response));
-        xhr.addEventListener('error', () => reject(new Error('Upload failed')));
-        const formData = new FormData();
-        formData.append('file', file);
-        xhr.open('POST', url);
-        xhr.send(formData);
-    });
-}
-```
+**How to avoid:**
+- Treat mDNS as a **best-effort convenience**, not a requirement. The QR code + URL approach (already working in v1.0) must remain the primary connection method
+- Add diagnostic logging: if the mDNS service registers but no browse queries are received within 10 seconds, log a warning
+- Display "Discoverable on local network" in the terminal UI only when mDNS registration succeeds. Show "Discovery unavailable -- use QR code or URL" otherwise
+- When calling `Zeroconf(interfaces=...)`, pass only the LAN IP that `detect_primary_lan_ip()` already identifies. Do NOT use the default (all interfaces), which registers on VPN, Docker bridge, and loopback
 
-**Detection:** Test the upload UI with a large file (100MB+). If the progress bar jumps from 0% to 100%, you are using `fetch()`.
+**Warning signs:**
+- Feature works in development but users report "can't find server"
+- No error messages when discovery fails
+- Test suite only tests mDNS registration, not actual discovery
 
-**Phase:** Drag-and-drop upload phase. Decide on XHR vs chunked approach before building the upload component.
-
-**Confidence:** HIGH -- verified in MDN File API documentation.
+**Phase to address:**
+Connectivity phase -- device discovery. Must include graceful fallback.
 
 ---
 
-### Pitfall 9: WebSocket Reconnection Not Handled
+### Pitfall 7: Speed Test Saturates LAN, Disrupts Active Transfers and WebSocket
 
-**What goes wrong:** WebSocket connections drop silently when a device sleeps, changes WiFi networks, or the server restarts. The frontend shows no indication that real-time features (clipboard sync, notifications) have stopped working. Users paste text and it never arrives.
+**What goes wrong:**
+A network speed test works by sending large payloads to measure throughput. On a shared LAN link, this deliberately saturates bandwidth. If file transfers are in progress:
 
-**Why it happens:** The browser `WebSocket` API fires an `onclose` event but does not auto-reconnect. Developers implement the initial connection but forget to handle disconnection and reconnection with exponential backoff.
+1. Active uploads/downloads slow to a crawl or time out
+2. The speed test reports inaccurate results (bandwidth is shared with transfers)
+3. WebSocket connections may drop -- the existing `ConnectionManager.broadcast()` catches send exceptions and disconnects dead connections (`connection_manager.py:35-38`). During bandwidth saturation, slow sends can trigger these false-positive disconnections
 
-**Consequences:** Every real-time feature silently degrades. Clipboard sync stops working. File request notifications stop arriving. Transfer notifications stop. Users must manually refresh the page to restore functionality.
+**Why it happens:**
+Internet speed tests (speedtest.net) are designed for idle connections. A LAN file server is actively transferring files. The shared LAN link (typically 100 Mbps or 1 Gbps) has no QoS -- the speed test traffic competes equally with file transfer traffic.
 
-**Prevention:**
-1. Implement reconnection logic with exponential backoff (1s, 2s, 4s, 8s, cap at 30s).
-2. Show a visible connection status indicator in the UI (green dot = connected, red = disconnected, yellow = reconnecting).
-3. On reconnection, re-sync state (fetch latest clipboard items, pending file requests, etc.).
-4. Use a library like `reconnecting-websocket` or build a custom hook.
+**How to avoid:**
+- Check for active transfers before starting a speed test. The frontend has `useUpload.isUploading` and the backend has `manager.active_connections` to detect activity
+- Use a small payload (5-10 MB, completing in 1-2 seconds) rather than a sustained saturation test. LAN speed is stable and can be estimated from a brief burst
+- Run the speed test on a separate HTTP request, not the existing WebSocket connection, to avoid disrupting real-time notifications
+- Display the result as "estimated" since LAN speed varies by WiFi vs ethernet, concurrent activity, and device capabilities
 
-```typescript
-function useReconnectingWebSocket(url: string): WebSocket | null {
-    const wsRef = useRef<WebSocket | null>(null);
-    const retriesRef = useRef(0);
+**Warning signs:**
+- Users report uploads failing or stalling when speed test runs
+- WebSocket disconnects during speed test (visible as "reconnecting" banner)
+- Speed test reports wildly different numbers on consecutive runs
 
-    const connect = useCallback(() => {
-        const ws = new WebSocket(url);
-        ws.onopen = () => { retriesRef.current = 0; };
-        ws.onclose = () => {
-            const delay = Math.min(1000 * Math.pow(2, retriesRef.current), 30000);
-            retriesRef.current += 1;
-            setTimeout(connect, delay);
-        };
-        wsRef.current = ws;
-    }, [url]);
-
-    useEffect(() => { connect(); return () => wsRef.current?.close(); }, [connect]);
-    return wsRef.current;
-}
-```
-
-**Detection:** Put a device to sleep for 30 seconds, wake it. If clipboard sync or notifications stop working without any visible indication, reconnection is not handled.
-
-**Phase:** Phase where WebSocket infrastructure is built. Reconnection logic must be in the base WebSocket hook, not retrofitted per feature.
-
-**Confidence:** HIGH -- universal WebSocket challenge, well-documented.
+**Phase to address:**
+Connectivity phase -- speed test implementation.
 
 ---
 
-### Pitfall 10: File Name Conflicts and Overwrite Behavior
-
-**What goes wrong:** Two devices upload a file with the same name simultaneously. Or a user uploads `report.pdf` when one already exists. Without clear conflict resolution, files get silently overwritten, data is lost, or users get confusing errors.
-
-**Why it happens:** The current codebase rejects duplicate filenames outright (`File 'X' already exists`). This is safe but frustrating. The opposite extreme -- silently overwriting -- causes data loss. Neither is good UX.
-
-**Consequences:** Data loss (if overwriting) or frustrated users (if rejecting). In a collaborative LAN environment where multiple people upload files, name collisions are frequent.
-
-**Prevention:**
-1. Implement an explicit conflict resolution strategy: rename with suffix (`report (1).pdf`, `report (2).pdf`).
-2. On the frontend, detect conflicts before upload and prompt the user: "File exists. Replace, rename, or cancel?"
-3. On the backend, the rename strategy should be the default for API calls without explicit user input (never silently overwrite).
-4. Consider adding a timestamp or short hash suffix for batch uploads.
-
-**Detection:** Upload the same file twice. If the second upload silently fails, overwrites, or gives a generic error, conflict handling is missing.
-
-**Phase:** Core upload phase (Phase 1). Conflict resolution is part of the upload contract.
-
-**Confidence:** HIGH -- observed in the existing codebase.
-
----
-
-### Pitfall 11: Folder Navigation Enables Symlink Escape
-
-**What goes wrong:** When implementing folder browsing (navigating into subdirectories), symbolic links inside the shared folder can point to arbitrary locations on the filesystem. A symlink `/shared/link -> /etc` lets users browse the entire system.
-
-**Why it happens:** `os.listdir()` and `os.path.isdir()` follow symlinks transparently. Developers implement directory traversal without checking whether a path component is a symlink pointing outside the shared root.
-
-**Consequences:** Same as path traversal (Pitfall 1) but through a different vector. The shared folder appears to contain a harmless subdirectory that is actually a portal to the entire filesystem.
-
-**Prevention:**
-1. Use `os.path.realpath()` on every path before serving content and verify it is under the shared root.
-2. Optionally, refuse to follow symlinks entirely (`os.path.islink()` check).
-3. The `safe_resolve_path` function from Pitfall 1 handles this automatically if used consistently.
-
-**Detection:** Create a symlink inside the shared folder pointing to `/etc` or `~`. Navigate to it through the UI. If you can see files outside the shared folder, this is broken.
-
-**Phase:** Phase 1 (core backend). Same mitigation as Pitfall 1.
-
-**Confidence:** HIGH -- well-known filesystem security issue.
-
----
-
-### Pitfall 12: Batch ZIP Download Holding Memory
-
-**What goes wrong:** The "Download selected files as ZIP" feature creates the ZIP file in memory, then sends it. For 10 selected files totaling 2GB, the server needs 2GB+ of RAM just for that one download.
-
-**Why it happens:** Python's `zipfile.ZipFile` with a `BytesIO` target accumulates the entire archive in memory. Developers build the ZIP, then return it as a response.
-
-**Consequences:** Server crashes or OOM kills when users select many or large files for batch download.
-
-**Prevention:**
-1. Use streaming ZIP generation. Write ZIP content to a `StreamingResponse` as it is generated.
-2. Python's `zipfile` module supports writing to a file-like object. Use a generator that yields chunks.
-3. Consider the `zipstream-ng` library which is designed for streaming ZIP creation.
-
-```python
-import zipfile
-from io import BytesIO
-from starlette.responses import StreamingResponse
-
-async def stream_zip(file_paths: list[Path]):
-    """Stream a ZIP file without loading all files into memory."""
-    # Use a streaming approach with zipstream-ng or manual chunked writing
-    buffer = BytesIO()
-    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_STORED) as zf:
-        for path in file_paths:
-            zf.write(path, path.name)
-            # For true streaming, use zipstream-ng instead
-    buffer.seek(0)
-    return StreamingResponse(
-        buffer,
-        media_type="application/zip",
-        headers={"Content-Disposition": "attachment; filename=download.zip"}
-    )
-```
-
-**Detection:** Select 20+ large files for batch download. Monitor server memory. If it spikes by the total size of the selected files, the ZIP is being built in memory.
-
-**Phase:** Batch operations phase. Design the ZIP endpoint as streaming from the start.
-
-**Confidence:** HIGH -- standard Python memory management issue with zipfile.
-
----
-
-## Minor Pitfalls
-
-Mistakes that cause polish issues, minor bugs, or suboptimal behavior.
-
----
-
-### Pitfall 13: MIME Type Detection Based on Extension Only
-
-**What goes wrong:** The server determines file types (for preview routing, icons, Content-Type headers) based solely on the file extension. A `.txt` file containing HTML could be rendered as HTML. A `.jpg` file with a wrong extension gets the wrong Content-Type and fails to preview.
-
-**Prevention:**
-1. Use Python's `mimetypes.guess_type()` as the primary detector (extension-based, fast).
-2. For preview features, add `python-magic` (libmagic wrapper) as a fallback to detect actual file content type.
-3. Always set `X-Content-Type-Options: nosniff` header to prevent browser MIME sniffing on downloads.
-
-**Phase:** Media preview phase.
-
-**Confidence:** MEDIUM -- relevant but minor for a LAN tool.
-
----
-
-### Pitfall 14: Local IP Detection Unreliable on Multi-Interface Machines
-
-**What goes wrong:** The existing `get_local_ip()` function connects to `8.8.8.8:80` to determine the local IP. This fails on machines without internet, returns the wrong interface on machines with multiple network adapters (VPN, Docker bridge, USB tethering), and does not work at all on air-gapped networks.
-
-**Prevention:**
-1. Enumerate all network interfaces and display all non-loopback IPs.
-2. Let the user select or specify the correct interface.
-3. Prefer interfaces with default gateway routes.
-4. Fallback to `0.0.0.0` binding and display all candidate IPs in the QR code / startup output.
-
-```python
-import netifaces
-
-def get_all_lan_ips() -> list[str]:
-    """Return all non-loopback IPv4 addresses."""
-    ips = []
-    for iface in netifaces.interfaces():
-        addrs = netifaces.ifaddresses(iface)
-        for addr in addrs.get(netifaces.AF_INET, []):
-            ip = addr['addr']
-            if not ip.startswith('127.'):
-                ips.append(ip)
-    return ips
-```
-
-**Phase:** Phase 1 (server startup). Important for QR code generation and connection instructions.
-
-**Confidence:** HIGH -- the existing code has this issue and the `8.8.8.8` approach is a well-known anti-pattern for air-gapped networks.
-
----
-
-### Pitfall 15: Browser Notification API Permission Complexity
-
-**What goes wrong:** Browser Push Notifications (`Notification.requestPermission()`) require user interaction (button click) to prompt, are blocked by default in many browsers, persist permission state per-origin, and do not work in HTTP contexts on most browsers.
-
-**Prevention:**
-1. Use in-app toast notifications as the primary notification mechanism (no permissions needed).
-2. Offer browser notifications as an opt-in enhancement, not a requirement.
-3. Handle all three permission states: `granted`, `denied`, `default`.
-4. Never call `requestPermission()` on page load -- only on explicit user action.
-
-**Phase:** Notification phase.
-
-**Confidence:** HIGH -- well-documented browser API limitation.
-
----
-
-### Pitfall 16: React Dev Server Proxying WebSocket Incorrectly
-
-**What goes wrong:** During development, Vite's proxy configuration handles regular HTTP requests but WebSocket upgrade requests need explicit `ws: true` configuration. Developers configure `/api` proxy but forget the WebSocket proxy, leading to WebSocket connections failing only in development.
-
-**Prevention:**
-In `vite.config.ts`:
-```typescript
-export default defineConfig({
-    server: {
-        proxy: {
-            '/api': {
-                target: 'http://localhost:8000',
-                changeOrigin: true,
-            },
-            '/ws': {
-                target: 'ws://localhost:8000',
-                ws: true,
-            },
-        },
-    },
-});
-```
-
-**Phase:** Phase 1 (project setup). Configure this alongside the initial Vite project creation.
-
-**Confidence:** HIGH -- every Vite + WebSocket project hits this.
-
----
-
-### Pitfall 17: File Upload Drops Non-ASCII Filenames
-
-**What goes wrong:** `secure_filename()` from Werkzeug strips all non-ASCII characters. A file named `resume-2024.pdf` becomes `resume-2024.pdf` (fine), but `curriculum-vitae.pdf` (fine), but `report.pdf` becomes `report.pdf` (fine). However, files with CJK characters, emoji, or diacritics get mangled or reduced to empty strings.
-
-**Prevention:**
-1. Use `secure_filename()` to sanitize path separators and special characters.
-2. If the result is empty or too short, generate a UUID-based filename preserving the original extension.
-3. Store the original filename in metadata (database or sidecar file) for display purposes.
-4. Consider using `unicodedata.normalize()` before sanitization to preserve more character variety.
-
-**Phase:** Core upload phase (Phase 1).
-
-**Confidence:** HIGH -- documented Werkzeug behavior.
-
----
-
-### Pitfall 18: Concurrent File Operations Without Locking
-
-**What goes wrong:** Two users rename the same file simultaneously. One user downloads a file while another deletes it. One user uploads while another creates a folder with the same name. Without any file operation locking, race conditions cause errors or data corruption.
-
-**Prevention:**
-1. Use `asyncio.Lock` per-file-path for write operations (rename, delete, move).
-2. Do not lock reads (downloads, listings) -- readers can proceed concurrently.
-3. Use a lock registry keyed by normalized file path.
-4. Keep locks short-lived -- hold only during the actual filesystem operation, not during the entire upload stream.
-
-**Phase:** Core backend phase. Add locking primitives early, use them in every mutation endpoint.
-
-**Confidence:** MEDIUM -- less critical for a personal LAN tool with few concurrent users, but important for correctness.
-
----
-
-## Phase-Specific Warnings
-
-| Phase Topic | Likely Pitfall | Mitigation |
-|-------------|---------------|------------|
-| Backend setup | Path traversal (1, 11), CORS (6), memory uploads (2) | Build `safe_resolve_path()`, add CORS middleware, stream uploads from day one |
-| WebSocket infrastructure | Single-process constraint (3), no reconnection (9), dev proxy (16) | Set `--workers 1`, build reconnection into base hook, configure Vite proxy |
-| File upload/download UI | Progress needs XHR (8), filename conflicts (10), non-ASCII filenames (17) | Use XHR or axios for uploads, implement conflict resolution, handle unicode |
-| Media preview | Range requests required (5), Object URL leaks (7), MIME detection (13) | Build range support into streaming endpoint, cleanup in useEffect, use libmagic |
-| Clipboard sharing | Clipboard API needs HTTPS (4) | Use textarea fallback, design as shared scratchpad not system clipboard hook |
-| Batch operations | ZIP memory (12) | Use streaming ZIP generation |
-| Notifications | Browser notification permissions (15) | Default to in-app toasts, browser notifications as opt-in |
-| File requests | WebSocket state after reconnect | Re-sync pending requests on reconnect |
+## Technical Debt Patterns
+
+| Shortcut | Immediate Benefit | Long-term Cost | When Acceptable |
+|----------|-------------------|----------------|-----------------|
+| Checking `read_only` per-endpoint instead of router-level dependency | Faster to implement | Every new endpoint needs the check; forgotten endpoints are security holes | Never -- use `dependencies=[Depends(require_writable)]` on the router |
+| Storing CLI password in plaintext in `ServerConfig` | Simple parsing, direct comparison | Process args visible via `ps aux`; config object holds cleartext | Acceptable for v1.1 -- password is transient (not persisted to disk), LAN context has limited threat model |
+| In-memory dict for share link tokens | No database, instant lookups | Tokens lost on server restart; cannot scale to multiple workers | Acceptable for v1.1 -- single-worker LAN server. Restart = all links expire early, which is safe |
+| Hard-coding dropbox directory to `shared_folder/inbox/` | Simple, predictable | Not configurable per-user | Acceptable for v1.1 -- add `--dropbox-dir` CLI flag later if needed |
+| Reusing `upload_file()` for dropbox without wrapper | Less code duplication | Caller must remember to override path param; dropbox constraints not enforced by the function | Never -- create `dropbox_upload()` wrapper that enforces the fixed path and delegates |
+
+## Integration Gotchas
+
+| Integration | Common Mistake | Correct Approach |
+|-------------|----------------|------------------|
+| Password auth + WebSocket | Adding auth middleware to HTTP routes only; WebSocket connects unauthenticated | Check auth cookie in `websocket_endpoint()` before `await websocket.accept()`. Reject with `websocket.close(code=4001)` |
+| Password auth + file downloads | Auth header in XHR, but `downloadFile()` at `files.ts:21` uses `<a href=...>` which sends no headers | Cookie-based auth. Browser sends cookies with anchor tag navigations |
+| Password auth + media preview | Auth on API calls, but `<img src="/api/files/preview?path=...">` sends no custom headers | Cookie-based auth covers all same-origin media loads |
+| Password auth + SPA catch-all | Auth on `/api/*` routes, but SPA at `/{path:path}` serves `index.html` unprotected | Include SPA catch-all in auth middleware scope. Without password, return login page, not app |
+| Read-only + clipboard WS | REST clipboard endpoints blocked, but `snippet_update` WS message at `websocket.py:61` still writes | Add read-only guard in WebSocket message routing before processing `snippet_update` |
+| Read-only + file request fulfill | `fulfill_file_request()` at `file_requests.py:60` calls `upload_file()` internally | Block the fulfill endpoint in read-only mode |
+| Read-only + frontend UI | Server blocks writes but UI still shows upload button, delete button, rename option | Server should expose `read_only` flag via `/api/info` endpoint; frontend hides write controls when true |
+| Terminal UI + uvicorn | Both write to stdout simultaneously | Suppress uvicorn's `log_config`, redirect through Rich Console |
+| Speed test + active transfers | Speed test saturates bandwidth during file transfer | Check `manager.active_connections` count and warn before starting |
+| mDNS + multiple interfaces | `Zeroconf()` defaults to all interfaces; registers on VPN, Docker, loopback | Pass `interfaces=[lan_ip]` using the IP from `detect_primary_lan_ip()` |
+| Share links + CORS | Share links may be accessed from different origin if shared via messaging | Share link routes should not require CORS since they serve files directly; ensure `Content-Disposition` is set |
+| Dropbox + existing upload | Dropbox reuses `/api/files/upload` which accepts `path` query param | Dedicated `/api/dropbox/upload` endpoint that ignores path |
+
+## Performance Traps
+
+| Trap | Symptoms | Prevention | When It Breaks |
+|------|----------|------------|----------------|
+| Share link token linear scan | Imperceptible at 10 links | Use dict keyed by token, not a list | 1000+ active links (possible with automation) |
+| mDNS browse callback fires per-device | Each callback triggers WebSocket broadcast | Debounce discovery updates; batch-broadcast at most once per second | 20+ devices on network continuously joining/leaving |
+| Speed test pre-allocates payload in memory | Server memory spikes during test | Stream random bytes from `os.urandom()` generator, do not pre-allocate | Payload > available RAM |
+| Terminal UI re-renders per WebSocket event | Dashboard flickers, CPU spikes | Throttle to 2-4 FPS. Batch state changes, redraw on timer | 5+ concurrent uploading devices |
+| Password check on every request | Adds latency to all API calls | Cache session validation result in middleware; check cookie signature, not database | Not a real issue for LAN but good practice |
+
+## Security Mistakes
+
+| Mistake | Risk | Prevention |
+|---------|------|------------|
+| Password in URL query parameter (`?password=secret`) | Visible in browser history, server logs, proxy logs | Send via POST body for initial auth; use cookie for subsequent requests |
+| Encoding file path in share link token (JWT-style) | Token decoded reveals file structure; no revocation possible | Store tokens server-side. Token is opaque random string; path stored in server dict |
+| No rate limiting on password attempts | Brute force on simple passwords takes seconds on LAN | 5 attempts per IP per minute. Progressive delay via `asyncio.sleep()` |
+| Password comparison via `==` | Timing attack reveals password character by character | Use `hmac.compare_digest()` for constant-time comparison |
+| Share tokens survive server restart (if accidentally persisted) | Stale tokens provide access without current password | Tie tokens to server session. In-memory storage naturally expires on restart |
+| Dropbox upload accepts executable files | Malicious uploads on shared LAN | Acceptable for LAN context -- host controls what they do with files. Document the risk |
+| Auth cookie without expiry | Browser remembers password forever | Set cookie `max-age` to session lifetime (e.g., 24 hours) |
+| Auth cookie accessible to JavaScript | XSS can steal session | Set `HttpOnly` flag on auth cookie |
+
+## UX Pitfalls
+
+| Pitfall | User Impact | Better Approach |
+|---------|-------------|-----------------|
+| Password prompt on every page load (no session persistence) | Unusable -- entering password for every navigation | Set session cookie on first auth; persists for browser session |
+| Read-only mode hides upload button but API still accepts writes | Users with dev tools or API knowledge can bypass | Server blocks writes AND frontend hides controls. Server is the authority |
+| Dropbox link shows full file browser | Defeats purpose -- uploader sees all existing files | Dropbox has its own minimal page: upload area only, no file list, no navigation |
+| Share link shows "expired" with dead-end page | User stuck with no action available | Show "This link has expired" with server URL and QR code so they can request a new link |
+| Device discovery lists stale/phantom devices | Confusing device list with entries for disconnected devices | Set TTL on discovered services; remove after 30s of no mDNS advertisement; cross-reference with WebSocket `active_connections` |
+| Speed test shows raw bytes/second | Meaningless to non-technical users | Show "Fast (94 MB/s)" with qualitative label plus estimated time for common file sizes |
+| Terminal dashboard unreadable on 80-column terminals | Dashboard wraps and becomes gibberish | Detect terminal width via `shutil.get_terminal_size()`. Show compact view below 100 columns |
+| Password-protected server still shows QR code that leads to login wall | User scans QR, gets confused by password prompt on phone | QR code page or terminal should indicate "Password protected" visually |
+
+## "Looks Done But Isn't" Checklist
+
+- [ ] **Password protection:** Incognito browser cannot access `/api/files/download?path=file.txt` without auth cookie
+- [ ] **Password protection:** WebSocket connection rejected without auth cookie (check `websocket.cookies`)
+- [ ] **Password protection:** Media preview `<img src="/api/files/preview?...">` requires auth
+- [ ] **Password protection:** SPA `index.html` requires auth (catch-all route is protected)
+- [ ] **Password protection:** Login page itself does NOT require auth (infinite redirect otherwise)
+- [ ] **Password protection:** Share link routes work WITHOUT password (they have their own token auth)
+- [ ] **Read-only mode:** Clipboard snippet creation returns 403
+- [ ] **Read-only mode:** WebSocket `snippet_update` message is silently rejected (no crash)
+- [ ] **Read-only mode:** File request fulfillment (`POST /api/file-requests/{id}/fulfill`) returns 403
+- [ ] **Read-only mode:** Drag-and-drop upload is blocked (not just the upload button hidden)
+- [ ] **Read-only mode:** Folder creation returns 403
+- [ ] **Read-only mode:** Frontend hides ALL write controls (upload, delete, rename, new folder, clipboard create)
+- [ ] **Dropbox:** `path` query parameter is ignored -- uploads always go to dropbox directory
+- [ ] **Dropbox:** File listing endpoint is NOT accessible from the dropbox URL
+- [ ] **Dropbox:** Dropbox page works WITHOUT server password (if password-protected, dropbox should still be open for uploads)
+- [ ] **Share links:** Expired link returns 410 Gone (not 404 -- different semantics)
+- [ ] **Share links:** Token is NOT visible in WebSocket toast broadcasts
+- [ ] **Share links:** All tokens expire on server restart (in-memory store)
+- [ ] **Share links:** Share links work without password auth (their own token is the auth)
+- [ ] **Device discovery:** mDNS failure does not crash server or block startup
+- [ ] **Device discovery:** Works when device has multiple network interfaces (VPN, Docker bridge)
+- [ ] **Terminal UI:** Ctrl+C cleanly stops both dashboard and uvicorn (no traceback, no hang)
+- [ ] **Terminal UI:** Output not garbled when uploads trigger log messages during dashboard rendering
+- [ ] **Terminal UI:** Dashboard gracefully degrades on narrow terminals (< 80 columns)
+- [ ] **Speed test:** Does not cause WebSocket disconnections
+- [ ] **Speed test:** Shows warning if active transfers detected before running
+
+## Recovery Strategies
+
+| Pitfall | Recovery Cost | Recovery Steps |
+|---------|---------------|----------------|
+| Incomplete read-only blocking | LOW | Add router-level `Depends(require_writable)` -- no data model changes |
+| Auth bypass via direct URL | MEDIUM | Retrofit cookie-based auth. Change all `apiFetch/apiPost` to include `credentials: 'same-origin'`. Add cookie-setting endpoint. Add middleware for ALL routes |
+| Dropbox path manipulation | LOW | Override path parameter to fixed value in dedicated endpoint |
+| Token leak in logs | LOW | Token is opaque -- leak reveals nothing. But filter toast broadcasts |
+| Terminal UI garbling | MEDIUM | Restructure logging through Rich Console. Change how `uvicorn.run()` is called in `cli.py` |
+| mDNS silent failure | LOW | Add timeout diagnostic and fallback messaging |
+| Speed test disrupting transfers | LOW | Add pre-check for active transfers. Small code change |
+| Password in header vs cookie (wrong choice) | HIGH | Retrofitting from header-based to cookie-based auth touches every API call, download function, preview component, and WebSocket connection. Make this decision FIRST |
+
+## Pitfall-to-Phase Mapping
+
+| Pitfall | Prevention Phase | Verification |
+|---------|------------------|--------------|
+| Incomplete read-only blocking | Access Control | Test all 8 write endpoints return 403 in read-only mode |
+| Auth bypass via direct URL | Access Control | Incognito browser test: direct URL access to every resource type |
+| Password timing attack | Access Control | Code review: verify `hmac.compare_digest()` usage |
+| Password brute force | Access Control | Test: 6th failed attempt within 60s returns 429 |
+| Dropbox path manipulation | Sharing | Test: `curl -X POST /api/dropbox/upload?path=../../` writes to inbox only |
+| Share token in logs | Sharing | Visual check: token is opaque in terminal output |
+| Share token in broadcasts | Sharing | Test: WebSocket toast for share download contains no token or file path |
+| Share link + password interaction | Sharing | Test: share link works in incognito without server password |
+| Terminal UI + uvicorn conflict | Terminal UI | Visual test: upload file while dashboard is running |
+| Terminal UI on narrow terminal | Terminal UI | Test: resize terminal to 60 columns during operation |
+| mDNS silent failure | Device Discovery | Test on network with client isolation (or mock multicast failure) |
+| Speed test disruption | Speed Test | Test: run speed test during active upload; verify upload completes |
+| Speed test + WebSocket | Speed Test | Test: verify no WebSocket disconnects during speed test |
 
 ## Sources
 
-- FastAPI official documentation: Request Files (https://fastapi.tiangolo.com/tutorial/request-files/) -- confirmed `bytes` vs `UploadFile` memory behavior, `python-multipart` requirement, form/JSON incompatibility [HIGH confidence]
-- FastAPI official documentation: WebSockets (https://fastapi.tiangolo.com/advanced/websockets/) -- confirmed single-process limitation, `WebSocketDisconnect` handling, dependency injection differences [HIGH confidence]
-- MDN: Using files from web applications (https://developer.mozilla.org/en-US/docs/Web/API/File_API/Using_files_from_web_applications) -- confirmed Fetch API lacks upload progress, Object URL memory management requirements [HIGH confidence]
-- OWASP Path Traversal documentation -- path traversal attack patterns and mitigation [HIGH confidence, well-established security knowledge]
-- MDN Clipboard API documentation -- secure context requirements [HIGH confidence, well-established browser security model]
-- Existing codebase analysis (`wifi_file_server.py`) -- identified path traversal vulnerability, `secure_filename` limitations, `8.8.8.8` IP detection anti-pattern [HIGH confidence, direct observation]
+- Direct codebase analysis: `server/app/routers/files.py` (7 write endpoints), `clipboard.py` (2 write endpoints), `file_requests.py` (fulfill calls `upload_file`), `websocket.py` (WS message routing bypasses REST middleware)
+- Direct codebase analysis: `client/src/api/client.ts` (centralized API helpers), `files.ts` (`downloadFile` anchor tag bypass, `downloadAsZip` raw fetch bypass), `hooks/useWebSocket.ts` (WS connection has no auth), `hooks/useUpload.ts` (XHR upload has no auth cookie handling)
+- Direct codebase analysis: `server/app/main.py` (SPA catch-all at line 61, CORS config at line 30-37)
+- [FastAPI Security Tutorial](https://fastapi.tiangolo.com/tutorial/security/)
+- [FastAPI WebSocket Authentication Patterns](https://medium.com/@keshariaditya90/secure-fastapi-websocket-fixing-dependency-injection-errors-26fd10f97be1)
+- [Implementing Auth on WebSocket with FastAPI](https://peterbraden.co.uk/article/websocket-auth-fastapi/)
+- [OWASP Path Traversal](https://owasp.org/www-community/attacks/Path_Traversal)
+- [Tokenized URLs and Expiring Links](https://www.verimatrix.com/anti-piracy/faq/understanding-tokenized-urls-and-expiring-links-for-secure-access/)
+- [Auth0 Token Best Practices](https://auth0.com/docs/secure/tokens/token-best-practices)
+- [Python Zeroconf Library](https://github.com/python-zeroconf/python-zeroconf)
+- [Rich Terminal Console in Background Threads](https://github.com/Textualize/rich/issues/2665)
+- [Unified Logging for Uvicorn/FastAPI](https://pawamoy.github.io/posts/unify-logging-for-a-gunicorn-uvicorn-app/)
+- [Uvicorn Settings -- log_config](https://www.uvicorn.org/settings/)
+- [LAN Bandwidth Speed Testing](https://www.junian.net/tech/local-area-network-bandwidth-speed-test/)
+- [Confluence Read-Only Mode API Design](https://developer.atlassian.com/server/confluence/how-to-make-your-add-on-compatible-with-read-only-mode/)
+
+---
+*Pitfalls research for: WiFi File Server v1.1 feature additions*
+*Researched: 2026-03-10*

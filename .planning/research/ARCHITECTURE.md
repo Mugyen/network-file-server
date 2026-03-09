@@ -1,587 +1,632 @@
 # Architecture Patterns
 
-**Domain:** LAN file sharing web application (React + FastAPI)
-**Researched:** 2026-03-09
+**Domain:** WiFi File Server v1.1 -- Access Control, Sharing Modes, Device Discovery, Terminal UI, Speed Test
+**Researched:** 2026-03-10
 
-## Recommended Architecture
+## Existing Architecture Summary
 
-A two-process development architecture (Vite dev server + FastAPI), collapsing to a single-process production architecture (FastAPI serves built React assets via StaticFiles mount). Communication flows through REST endpoints for CRUD operations and a single multiplexed WebSocket for all real-time features (clipboard sync, transfer notifications, file request updates).
+The current v1.0 system follows a clean layered architecture:
 
 ```
-+----------------------------------------------------+
-|                  Client (Browser)                   |
-|                                                     |
-|  +-------------+  +-----------+  +---------------+  |
-|  | File Browser |  | Clipboard |  | Media Preview |  |
-|  | (React)      |  | (React)   |  | (React)       |  |
-|  +------+------+  +-----+-----+  +-------+-------+  |
-|         |               |                |           |
-|  +------+---------------+----------------+-------+   |
-|  |          React App Shell (Router, State)       |  |
-|  |   - Zustand store (files, clipboard, notifs)   |  |
-|  |   - WebSocket client (single connection)       |  |
-|  |   - XHR upload with progress tracking          |  |
-|  +-----+--------------------+--------------------+   |
-+--------|--------------------|-----------------------+
-         | REST (HTTP)        | WebSocket (WS)
-         |                    |
-+--------|--------------------|-----------------------+
-|        v                    v         FastAPI        |
-|  +-----------+     +----------------+                |
-|  | REST API  |     | WS Manager     |                |
-|  | Routers   |     | (ConnectionMgr)|                |
-|  +-----+-----+     +-------+--------+                |
-|        |                    |                         |
-|  +-----+--------------------+--------+                |
-|  |         Core Services              |               |
-|  |  +------------+  +-------------+  |               |
-|  |  | FileService|  | ClipService |  |               |
-|  |  +------+-----+  +------+------+  |               |
-|  |         |               |         |               |
-|  |  +------+---------------+------+  |               |
-|  |  |    Filesystem / State       |  |               |
-|  |  +-----------------------------+  |               |
-|  +-----------------------------------+               |
-|                                                      |
-|  +------------------+                                |
-|  | StaticFiles mount| (serves React build in prod)   |
-|  +------------------+                                |
-+------------------------------------------------------+
+CLI (cli.py)
+  -> ServerConfig (config.py) -- global module-level singleton
+  -> FastAPI App (main.py) -- create_app() factory
+       -> Routers: files, clipboard, file_requests, server_info, websocket
+       -> Services: file_service, clipboard_service, file_request_service,
+                    connection_manager, network_service, qr_service, persistence
+       -> Models: enums.py, schemas.py (Pydantic)
+       -> Exceptions: PathTraversalError, FileConflictError, InvalidFileNameError
+
+React SPA (client/)
+  -> App.tsx -- monolith component, all state via hooks
+  -> hooks/ -- useWebSocket, useUpload, useClipboard, useFileRequests, etc.
+  -> api/ -- client.ts (apiFetch/apiPost/apiPatch/apiDelete + XHR upload)
+  -> components/ -- 25 components, flat structure + preview/ subdirectory
+  -> types/ -- files.ts, websocket.ts, clipboard.ts, fileRequests.ts, etc.
 ```
 
-### Component Boundaries
+Key architectural properties:
+- **No database** -- clipboard persisted via JSON file, file requests in-memory
+- **Global config singleton** -- `get_server_config()` returns module-level `_config`
+- **Single WebSocket endpoint** `/ws` -- multiplexed via `type` field in JSON messages
+- **ConnectionManager** -- tracks `active_connections: dict[str, WebSocket]` and `device_names: dict[str, str]`
+- **CORS wildcard** -- `allow_origins=["*"]` for LAN access, no credentials
+- **SPA catch-all** -- `/{path:path}` route serves `index.html` for non-API, non-asset paths
+
+## How Each Feature Integrates
+
+### 1. Password Protection
+
+**Integration point:** FastAPI middleware layer, between CORS and router dispatch.
+
+**New components:**
+
+| Component | Layer | Type | Purpose |
+|-----------|-------|------|---------|
+| `server/app/middleware/auth.py` | Backend | NEW file | Middleware checking session cookie on every request |
+| `server/app/routers/auth.py` | Backend | NEW file | `POST /api/auth/login` and `POST /api/auth/logout` |
+| `server/app/services/auth_service.py` | Backend | NEW file | Password verification, session token generation/validation |
+| `client/src/components/LoginPage.tsx` | Frontend | NEW file | Password entry form |
+| `client/src/hooks/useAuth.ts` | Frontend | NEW file | Auth state management, session check |
+| `client/src/api/auth.ts` | Frontend | NEW file | Login/logout API calls |
+
+**Modifications to existing files:**
+
+| File | Change |
+|------|--------|
+| `server/app/config.py` | Add `password_hash: str \| None` field to `ServerConfig` |
+| `server/app/cli.py` | Add `--password` CLI argument, hash with bcrypt before storing |
+| `server/app/main.py` | Add auth middleware in `create_app()` |
+| `client/src/App.tsx` | Wrap content in auth gate -- show LoginPage when 401 |
+| `client/src/api/client.ts` | Handle 401 responses globally (trigger login state) |
+
+**Data flow:**
+
+```
+1. CLI: --password "secret" -> bcrypt.hash("secret") -> ServerConfig.password_hash
+2. Request arrives -> AuthMiddleware checks:
+   a. password_hash is None? -> pass through (no auth configured)
+   b. Path is /api/auth/* or /s/*? -> pass through (login + share links)
+   c. Has valid session cookie? -> pass through
+   d. Otherwise -> 401
+3. POST /api/auth/login: {password} -> bcrypt.verify(password, hash) -> set signed cookie
+4. Cookie: itsdangerous URLSafeTimedSerializer signs {authenticated: true} -> HttpOnly cookie
+```
+
+**Architecture decision -- itsdangerous over JWT:** For a single shared password (no user identity to encode), itsdangerous `URLSafeTimedSerializer` is simpler than JWT. It handles signing + timestamp-based expiry in one call. No PyJWT dependency needed. itsdangerous is already a transitive dependency of Starlette's SessionMiddleware.
+
+**Architecture decision -- middleware over per-route dependency:** A middleware intercepts ALL requests including static files and the SPA catch-all. A `Depends(require_auth)` approach would require adding the dependency to every router, which is error-prone (one missed route = security hole). Middleware with an explicit allowlist of unauthenticated paths is the correct pattern for a server-wide gate.
+
+**CORS interaction (CRITICAL):** Password protection via cookies requires `allow_credentials=True` in CORS, which is mutually exclusive with `allow_origins=["*"]`. Since the SPA is served from the same origin in production (FastAPI serves built React), CORS is not involved for same-origin requests. The existing wildcard CORS config is only needed for development (Vite dev server on different port). In dev mode with auth enabled, set origin explicitly to `http://localhost:5173` and add `allow_credentials=True`. This is the most subtle integration detail in the entire v1.1 plan.
+
+**WebSocket auth:** Browsers send cookies (but not custom headers) with WebSocket upgrade requests. The auth middleware validates the session cookie on WS upgrades automatically since it intercepts before the route handler.
+
+### 2. Read-Only Mode
+
+**Integration point:** Middleware layer, blocking write operations.
+
+**New components:**
+
+| Component | Layer | Type | Purpose |
+|-----------|-------|------|---------|
+| `server/app/middleware/read_only.py` | Backend | NEW file | Middleware rejecting write operations |
+
+**Modifications to existing files:**
+
+| File | Change |
+|------|--------|
+| `server/app/config.py` | Add `read_only: bool` field to `ServerConfig` |
+| `server/app/cli.py` | Add `--read-only` CLI flag |
+| `server/app/main.py` | Add read-only middleware |
+| `server/app/models/schemas.py` | Add `read_only: bool` to `ServerInfo` |
+| `server/app/routers/server_info.py` | Return `read_only` from config in response |
+| `client/src/types/serverInfo.ts` | Add `read_only: boolean` |
+| `client/src/App.tsx` | Conditionally hide upload/delete/rename/create-folder UI |
+
+**Architecture decision -- middleware over per-route checks:** A middleware checking HTTP method + path is cleaner than adding `if config.read_only: raise 403` to every write endpoint. The middleware intercepts:
+
+```
+Blocked when read_only=True:
+  POST   /api/files/upload
+  DELETE /api/files
+  PATCH  /api/files/rename
+  POST   /api/folders
+  POST   /api/clipboard/
+  PATCH  /api/clipboard/{id}
+  DELETE /api/clipboard/{id}
+  POST   /api/file-requests/
+  POST   /api/file-requests/{id}/fulfill
+
+Allowed always (reads):
+  GET    /api/files
+  GET    /api/files/download
+  GET    /api/files/preview
+  GET    /api/files/search
+  POST   /api/files/download-zip  (POST but read-only semantics)
+  GET    /api/server-info
+  GET    /api/clipboard/
+  GET    /api/file-requests/
+  WS     /ws
+```
+
+**Frontend integration:** The `/api/server-info` response already flows to App.tsx via `fetchServerInfo()`. Adding `read_only: boolean` to this response lets the frontend conditionally render write UI. Backend middleware is the enforcement layer; frontend hiding is UX polish.
+
+### 3. Receive Mode / Drop Box
+
+**Integration point:** Parallel UI mode with separate entry point and stripped-down interface.
+
+**New components:**
+
+| Component | Layer | Type | Purpose |
+|-----------|-------|------|---------|
+| `server/app/routers/dropbox.py` | Backend | NEW file | `POST /api/dropbox/upload`, `GET /api/dropbox/config` |
+| `server/app/services/dropbox_service.py` | Backend | NEW file | Drop box config, upload folder management |
+| `client/src/drop-main.tsx` | Frontend | NEW file | Separate entry point for drop box SPA |
+| `client/src/DropBox.tsx` | Frontend | NEW file | Root component for drop box interface |
+| `client/src/components/dropbox/DropZone.tsx` | Frontend | NEW file | Upload-only drag-and-drop area |
+| `client/src/components/dropbox/UploadConfirmation.tsx` | Frontend | NEW file | Thank-you message after upload |
+
+**Modifications to existing files:**
+
+| File | Change |
+|------|--------|
+| `server/app/cli.py` | Add `--receive` CLI flag |
+| `server/app/config.py` | Add `receive_mode: bool`, `receive_message: str` |
+| `server/app/main.py` | Mount drop box route, serve `drop.html` at `/drop` |
+| `client/vite.config.ts` | Add multi-page entry for `drop.html` |
+
+**Architecture decision -- separate entry point, not a mode in App.tsx:** The drop box UI is fundamentally different from the file browser. It shows ONLY an upload zone, a welcome message, and confirmation. Embedding this as a conditional branch in App.tsx (already 500 lines) would bloat the main component and couple unrelated concerns.
+
+1. Backend serves `/drop` route that renders `drop.html`
+2. Vite builds a second entry via `client/src/drop-main.tsx`
+3. Drop box is a lightweight standalone React app with its own minimal component tree
+4. Shared code (api client, upload with XHR progress) is imported from existing modules
+
+**Upload destination:** Drop box uploads go to `_received/` within the shared folder, organized by timestamp subfolder. The `dropbox_service` creates `_received/{YYYY-MM-DD_HH-MM}/` directories.
+
+**Data flow:**
+
+```
+1. Server starts with --receive -> config.receive_mode = True
+2. Client visits /drop -> served drop.html -> renders DropBox app
+3. User drops files -> POST /api/dropbox/upload (reuses XHR upload pattern)
+4. Backend: dropbox_service saves to _received/{timestamp}/
+5. WebSocket broadcast: "New drop box upload from {device_name}"
+```
+
+**Interaction with password protection:** If both `--password` and `--receive` are set, the drop box page requires authentication too. The auth middleware applies uniformly. This is intentional -- if you password-protected the server, you probably do not want anonymous uploads either.
+
+### 4. Expiring Share Links
+
+**Integration point:** New token-based route bypassing normal file access.
+
+**New components:**
+
+| Component | Layer | Type | Purpose |
+|-----------|-------|------|---------|
+| `server/app/routers/share.py` | Backend | NEW file | `POST /api/share/create`, `GET /s/{token}` |
+| `server/app/services/share_service.py` | Backend | NEW file | Token generation/validation via itsdangerous |
+| `client/src/components/ShareDialog.tsx` | Frontend | NEW file | Dialog to create share link with expiry |
+| `client/src/api/share.ts` | Frontend | NEW file | Create share link API |
+
+**Modifications to existing files:**
+
+| File | Change |
+|------|--------|
+| `server/app/main.py` | Include share router; register `/s/{token}` BEFORE SPA catch-all |
+| `server/app/models/enums.py` | Add `ShareLinkExpiry` enum (1h, 6h, 24h, 7d) |
+| `client/src/components/FileRow.tsx` | Add "Share" action button |
+
+**Token architecture using itsdangerous:**
+
+```python
+from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
+
+serializer = URLSafeTimedSerializer(secret_key)
+
+# Create: encode file path + max_age into signed token
+token = serializer.dumps({"path": "docs/report.pdf", "max_age": 3600})
+
+# Validate: unsign + check embedded timestamp vs max_age
+try:
+    data = serializer.loads(token, max_age=3600)
+except SignatureExpired:
+    # Token is older than max_age
+    raise HTTPException(status_code=410, detail="Link has expired")
+except BadSignature:
+    raise HTTPException(status_code=403, detail="Invalid link")
+```
+
+**Architecture decision -- stateless tokens over in-memory store:** Since we have no database, tokens are self-contained. The file path and expiry duration are encoded in the signed token. The server validates the signature and checks the embedded timestamp. No server-side storage needed. Tradeoff: tokens cannot be revoked before expiry. For a LAN tool with 1h-7d lifetimes, this is acceptable.
+
+**Route placement (CRITICAL):** The `/s/{token}` route MUST be registered BEFORE the SPA catch-all `/{path:path}` in `main.py`. FastAPI matches routes in registration order. If the catch-all is first, `/s/...` requests serve `index.html` instead of triggering the file download. Currently the SPA catch-all is registered via `@application.get("/{path:path}")` inside `create_app()`. The share router must be included before this registration.
+
+**Auth bypass:** Share links work WITHOUT authentication. The auth middleware must exclude `/s/*` paths. The token IS the authentication for that specific file.
+
+### 5. Device Discovery
+
+**Integration point:** Extends existing ConnectionManager + new mDNS service.
+
+**New components:**
+
+| Component | Layer | Type | Purpose |
+|-----------|-------|------|---------|
+| `server/app/services/device_service.py` | Backend | NEW file | Device tracking, User-Agent parsing |
+| `server/app/services/mdns_service.py` | Backend | NEW file | mDNS/Bonjour via python-zeroconf |
+| `server/app/routers/devices.py` | Backend | NEW file | `GET /api/devices` endpoint |
+| `client/src/components/DevicePanel.tsx` | Frontend | NEW file | Connected devices list |
+| `client/src/hooks/useDevices.ts` | Frontend | NEW file | Device list state |
+| `client/src/api/devices.ts` | Frontend | NEW file | Fetch devices API |
+
+**Modifications to existing files:**
+
+| File | Change |
+|------|--------|
+| `server/app/services/connection_manager.py` | Add User-Agent, IP, timestamp storage per device |
+| `server/app/routers/websocket.py` | Pass request headers/scope to ConnectionManager on connect |
+| `server/app/models/enums.py` | Add `DeviceType` enum, `WSMessageType.DEVICE_LIST_UPDATED` |
+| `client/src/App.tsx` | Add DevicePanel toggle in header |
+| `client/src/types/websocket.ts` | Add `DEVICE_LIST_UPDATED` message type |
+
+**ConnectionManager extension:**
+
+```python
+# Current state:
+active_connections: dict[str, WebSocket]  # device_id -> ws
+device_names: dict[str, str]              # device_id -> name
+
+# Extended to include:
+device_info: dict[str, DeviceInfo]        # device_id -> full info
+```
+
+Where `DeviceInfo` holds: `device_id`, `device_name`, `device_type` (from User-Agent), `ip_address` (from WebSocket scope), `connected_at`, `user_agent`.
+
+**User-Agent parsing:** Lightweight regex, not a full library:
+- "iPhone" or "iPad" -> PHONE / TABLET
+- "Android" + "Mobile" -> PHONE
+- "Android" without "Mobile" -> TABLET
+- "Macintosh" or "Windows" or "Linux" -> DESKTOP
+- Fallback -> UNKNOWN
+
+**mDNS broadcast:** `python-zeroconf` registers the server as `_wififileserver._tcp.local.` so it appears in network service browsers. Registration at startup, unregistration at shutdown. Runs in its own background thread (zeroconf manages its event loop internally).
+
+```python
+from zeroconf import ServiceInfo, Zeroconf
+info = ServiceInfo(
+    "_wififileserver._tcp.local.",
+    "WiFi File Server._wififileserver._tcp.local.",
+    addresses=[socket.inet_aton(ip)],
+    port=port,
+    properties={"path": "/"},
+)
+zeroconf = Zeroconf()
+zeroconf.register_service(info)
+```
+
+**Real-time updates:** On connect/disconnect, broadcast the full device list to all clients via `DEVICE_LIST_UPDATED` WebSocket message. Frontend `useDevices` hook updates accordingly.
+
+### 6. Terminal UI
+
+**Integration point:** Replaces `print()` calls in `cli.py` with a Rich Live display.
+
+**New components:**
+
+| Component | Layer | Type | Purpose |
+|-----------|-------|------|---------|
+| `server/app/services/terminal_ui.py` | Backend | NEW file | Rich-based terminal dashboard |
+| `server/app/services/stats_collector.py` | Backend | NEW file | Thread-safe server metrics aggregation |
+
+**Modifications to existing files:**
+
+| File | Change |
+|------|--------|
+| `server/app/cli.py` | Replace `print()` with terminal UI; add `--no-tui` for plain output |
+| `server/app/main.py` | Add lifespan event to start/stop terminal UI |
+| `server/app/routers/files.py` | Report upload/download events to stats_collector |
+| `server/app/services/connection_manager.py` | Report connect/disconnect to stats_collector |
+
+**Architecture decision -- Rich over Textual:** Textual is a full TUI framework for interactive terminal apps. The WiFi File Server terminal is a read-only dashboard -- it displays information but the user does not interact beyond Ctrl+C. Rich's `Live` display is the right tool: it updates a rendered Layout in-place without requiring an event loop takeover.
+
+**Terminal dashboard layout:**
+
+```
++---------------------------------------------------+
+| WiFi File Server v1.1                             |
++---------------------------------------------------+
+| URL: http://192.168.1.5:8000    Devices: 3        |
+| QR: [ascii QR code]                               |
++---------------------------------------------------+
+| Connected Devices              | Stats             |
+| - Swift Fox (iPhone, 1m ago)   | Uploads: 12       |
+| - Brave Owl (MacBook, 5m ago)  | Downloads: 34     |
+| - Keen Hawk (Windows, 2m ago)  | Bandwidth: 1.2 GB |
++---------------------------------------------------+
+| Recent Activity                                   |
+| [12:01] Swift Fox uploaded photo.jpg (2.3 MB)     |
+| [12:00] Brave Owl downloaded report.pdf (1.1 MB)  |
+| [11:58] Keen Hawk connected                       |
++---------------------------------------------------+
+```
+
+**StatsCollector pattern:** Thread-safe singleton with `threading.Lock`. Routers call `stats_collector.record_upload(filename, size)` etc. Terminal UI polls at 1-second intervals via Rich Live refresh.
+
+**uvicorn log integration:** When TUI is active, uvicorn access logs must be suppressed to avoid corrupting the Rich display. Set `uvicorn.run(log_level="warning")` when TUI is active, route access events through `stats_collector` instead.
+
+**Architecture decision -- no async in terminal UI:** Rich's `Live` uses a background thread. StatsCollector uses `threading.Lock`. This avoids coupling the TUI to asyncio. The separation is clean: async request handlers write to StatsCollector, synchronous TUI thread reads from it.
+
+### 7. Speed Test
+
+**Integration point:** New API endpoint + frontend component for bandwidth measurement.
+
+**New components:**
+
+| Component | Layer | Type | Purpose |
+|-----------|-------|------|---------|
+| `server/app/routers/speedtest.py` | Backend | NEW file | `GET /api/speedtest/download`, `POST /api/speedtest/upload` |
+| `client/src/components/SpeedTest.tsx` | Frontend | NEW file | Speed test UI with progress |
+| `client/src/hooks/useSpeedTest.ts` | Frontend | NEW file | Speed test execution logic |
+| `client/src/api/speedtest.ts` | Frontend | NEW file | Speed test API |
+
+**Modifications to existing files:**
+
+| File | Change |
+|------|--------|
+| `server/app/main.py` | Include speedtest router |
+| `server/app/models/enums.py` | Add `SpeedTestSize` enum (1MB, 5MB, 10MB, 50MB) |
+| `client/src/App.tsx` | Add speed test button in header/settings |
+
+**Implementation -- XHR-based measurement, not WebSocket:**
+
+**Download test:**
+```
+1. Frontend starts timer
+2. GET /api/speedtest/download?size=10485760
+3. Server streams os.urandom() chunks via StreamingResponse
+4. Frontend receives all data, stops timer
+5. Speed = size / elapsed_time
+```
+
+**Upload test:**
+```
+1. Frontend generates random ArrayBuffer
+2. Starts timer
+3. POST /api/speedtest/upload with data as body
+4. Server reads and discards, returns {bytes_received, server_time_ms}
+5. Speed = size / elapsed_time (client-side timing)
+```
+
+**Architecture decision -- XHR over WebSocket:** XHR measures real HTTP transfer including TCP overhead, which matches what users experience during actual file transfers. WebSocket measures a different protocol path. The app already uses XHR for uploads, so this is consistent.
+
+**Architecture decision -- streaming response over temp files:** Generating random data on-the-fly via `StreamingResponse` avoids temp files and works for any test size. Yield 64KB chunks of `os.urandom()`.
+
+## Component Boundaries
 
 | Component | Responsibility | Communicates With |
 |-----------|---------------|-------------------|
-| **React App Shell** | Routing, layout, theme (dark mode), global state container | All frontend components |
-| **File Browser UI** | Directory listing, navigation, search/filter/sort, selection, drag-and-drop zone | REST API (`/api/files`), Upload Service |
-| **Upload Service (frontend)** | XHR-based file upload with progress tracking, chunked upload for large files | REST API (`/api/upload`), WebSocket (progress broadcast) |
-| **Clipboard UI** | Text input, clipboard history display, one-click copy | WebSocket (`clipboard` channel) |
-| **Media Preview UI** | Lightbox for images, HTML5 player for video/audio, PDF viewer, code viewer | REST API (`/api/files/{path}/content`) for streaming |
-| **Notification Toast System** | Renders toast notifications from WebSocket events | WebSocket (`notification` channel) |
-| **QR Code Display** | Renders server URL as QR code on the landing page | REST API (`/api/server-info`) |
-| **FastAPI REST Routers** | HTTP endpoints for files, upload, download, server info | Core Services |
-| **WebSocket Manager** | Accepts connections, routes messages by type, broadcasts events | All connected clients, Core Services |
-| **FileService** | Filesystem operations: list, read, write, delete, rename, mkdir, zip | Filesystem |
-| **ClipboardService** | In-memory clipboard history, broadcast to subscribers | WebSocket Manager |
-| **QR Code Generator** | Generates QR code as SVG/PNG from server URL | Called by REST router |
+| AuthMiddleware | Gate all requests when password set | ServerConfig, AuthService |
+| AuthService | Hash verification, token signing | itsdangerous, bcrypt |
+| ReadOnlyMiddleware | Block write operations | ServerConfig |
+| DropBoxService | Drop box uploads, folder organization | FileService, ConnectionManager |
+| ShareService | Token generation/validation | itsdangerous |
+| DeviceService | Device tracking, User-Agent parsing | ConnectionManager |
+| mDNSService | Network service registration | python-zeroconf |
+| StatsCollector | Server metrics aggregation | Called by routers/services |
+| TerminalUI | Rich Live dashboard | StatsCollector, ConnectionManager |
+| SpeedTestRouter | Bandwidth measurement endpoints | StreamingResponse |
 
-### Data Flow
+## Middleware Stack Order
 
-**File Browse Flow:**
-```
-Browser                    FastAPI
-  |                          |
-  |-- GET /api/files?path= ->|
-  |                          |-- FileService.list_directory(path)
-  |                          |<- [{name, size, type, modified}, ...]
-  |<- JSON file listing -----|
-```
+Middleware executes in onion style in FastAPI (last registered = outermost). Register in this order:
 
-**File Upload Flow (with progress):**
-```
-Browser                           FastAPI                    All Clients
-  |                                 |                           |
-  |-- XHR POST /api/upload ------->|                           |
-  |   (multipart/form-data)        |                           |
-  |<- XHR progress events ---------|                           |
-  |   (browser-native, per file)   |-- FileService.save()      |
-  |                                |-- WS broadcast ---------->|
-  |                                |   {type: "file_uploaded",  |
-  |                                |    name, size, uploader}   |
-  |<- 200 OK -------------------- |                           |
+```python
+# In create_app():
+
+# 1. ReadOnly (innermost -- only reached after auth passes)
+if config.read_only:
+    application.add_middleware(ReadOnlyMiddleware)
+
+# 2. Auth (middle -- checks before read-only)
+if config.password_hash is not None:
+    application.add_middleware(AuthMiddleware, password_hash=config.password_hash)
+
+# 3. CORS (outermost -- already exists, handles preflight OPTIONS)
+application.add_middleware(CORSMiddleware, ...)
 ```
 
-**File Download Flow (streaming):**
-```
-Browser                           FastAPI
-  |                                 |
-  |-- GET /api/files/{path}/dl --->|
-  |                                |-- FileResponse(path)
-  |<- Streamed file (chunked) -----|
-  |   Content-Disposition: attach  |
+Request flow: CORS -> Auth -> ReadOnly -> Router.
+
+## Data Flow Changes
+
+### ServerConfig expansion
+
+```python
+class ServerConfig:
+    shared_folder: Path
+    port: int
+    # v1.1 additions:
+    password_hash: str | None    # bcrypt hash, None = no auth
+    read_only: bool              # True = block all writes
+    receive_mode: bool           # True = enable /drop endpoint
+    receive_message: str         # Welcome message for drop box
 ```
 
-**Media Preview Flow (range requests):**
-```
-Browser                           FastAPI
-  |                                 |
-  |-- GET /api/files/{path}/content|
-  |   Range: bytes=0-1048575       |
-  |                                |-- FileResponse with range support
-  |<- 206 Partial Content --------|
+### ServerInfo response expansion
+
+```python
+class ServerInfo(BaseModel):
+    ip: str
+    port: int
+    url: str
+    qr_svg: str
+    all_ips: list[str]
+    # v1.1 additions:
+    read_only: bool              # Frontend hides write UI
+    password_protected: bool     # Frontend shows lock icon
+    receive_mode: bool           # Frontend shows drop box link
 ```
 
-**Clipboard Sync Flow:**
-```
-Client A                  FastAPI WS Manager           Client B
-  |                            |                          |
-  |-- WS: {type: "clipboard",  |                          |
-  |        text: "hello"}  --->|                          |
-  |                            |-- store in history       |
-  |                            |-- broadcast ----------->|
-  |                            |   {type: "clipboard",    |
-  |                            |    text: "hello",        |
-  |                            |    from: "Client A"}     |
-```
+### WebSocket message types expansion
 
-**File Request Flow:**
-```
-Requester                 FastAPI WS Manager           All Clients
-  |                            |                          |
-  |-- WS: {type: "file_req",   |                          |
-  |        desc: "Q4 report"}->|                          |
-  |                            |-- store request          |
-  |                            |-- broadcast ----------->|
-  |                            |   {type: "file_req",     |
-  |                            |    id, desc, status}     |
-  |                            |                          |
-  |                            |    (someone uploads)     |
-  |                            |<- POST /api/upload ------|
-  |                            |   ?request_id=X          |
-  |<- WS: {type: "req_filled"} |                          |
+```python
+class WSMessageType(str, Enum):
+    # existing...
+    TOAST = "toast"
+    SNIPPET_UPDATED = "snippet_updated"
+    # ...
+    # v1.1 additions:
+    DEVICE_LIST_UPDATED = "device_list_updated"
+    DROPBOX_UPLOAD = "dropbox_upload"
 ```
 
 ## Patterns to Follow
 
-### Pattern 1: Single Multiplexed WebSocket
-**What:** One WebSocket connection per client, with message routing by `type` field.
-**When:** Always. Do not open separate WebSocket connections per feature.
-**Why:** Reduces connection overhead. LAN tool will have few clients (2-10 typically), but connection management should still be clean.
+### Pattern 1: Middleware for Cross-Cutting Concerns
 
-```typescript
-// Frontend: single WebSocket with type-based dispatch
-type WSMessage =
-  | { type: "clipboard"; text: string; from: string }
-  | { type: "notification"; event: string; detail: object }
-  | { type: "file_request"; id: string; desc: string; status: string }
-  | { type: "file_request_fulfilled"; requestId: string; filename: string };
-
-function useWebSocket(url: string): void {
-  const ws = useRef<WebSocket>(null);
-
-  useEffect(() => {
-    ws.current = new WebSocket(url);
-    ws.current.onmessage = (event: MessageEvent) => {
-      const msg: WSMessage = JSON.parse(event.data);
-      switch (msg.type) {
-        case "clipboard":
-          clipboardStore.addEntry(msg);
-          break;
-        case "notification":
-          notificationStore.push(msg);
-          break;
-        case "file_request":
-          requestStore.upsert(msg);
-          break;
-      }
-    };
-    return () => ws.current?.close();
-  }, [url]);
-}
-```
+**What:** Use Starlette middleware for concerns that apply to ALL endpoints.
+**When:** Auth gating, read-only enforcement.
 
 ```python
-# Backend: ConnectionManager with typed message routing
-from enum import Enum
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
-class MessageType(str, Enum):
-    CLIPBOARD = "clipboard"
-    NOTIFICATION = "notification"
-    FILE_REQUEST = "file_request"
-    FILE_REQUEST_FULFILLED = "file_request_fulfilled"
+class AuthMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app, password_hash: str) -> None:
+        super().__init__(app)
+        self.password_hash = password_hash
 
-class ConnectionManager:
+    async def dispatch(self, request: Request, call_next):
+        # Skip auth for login endpoint and share links
+        if request.url.path.startswith("/api/auth") or request.url.path.startswith("/s/"):
+            return await call_next(request)
+
+        session_cookie = request.cookies.get("wfs_session")
+        if session_cookie is None:
+            return JSONResponse(status_code=401, content={"error": "Authentication required"})
+
+        # Validate signed cookie via itsdangerous
+        return await call_next(request)
+```
+
+### Pattern 2: Config-Driven Feature Flags
+
+**What:** Feature availability determined by ServerConfig fields set at CLI parse time.
+**When:** Features toggled via CLI flags (--password, --read-only, --receive).
+
+```python
+# In create_app():
+config = get_server_config()
+if config.password_hash is not None:
+    app.add_middleware(AuthMiddleware, password_hash=config.password_hash)
+if config.read_only:
+    app.add_middleware(ReadOnlyMiddleware)
+if config.receive_mode:
+    app.include_router(dropbox_router)
+```
+
+### Pattern 3: Stateless Signed Tokens
+
+**What:** itsdangerous `URLSafeTimedSerializer` for tokens with embedded payload and expiry.
+**When:** Session cookies (auth) and share link tokens.
+
+```python
+from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
+
+serializer = URLSafeTimedSerializer(secret_key)
+token = serializer.dumps({"path": "file.pdf"})
+
+try:
+    data = serializer.loads(token, max_age=3600)
+except SignatureExpired:
+    raise HTTPException(status_code=410, detail="Link has expired")
+except BadSignature:
+    raise HTTPException(status_code=403, detail="Invalid link")
+```
+
+### Pattern 4: Stats Collector Singleton
+
+**What:** Thread-safe singleton aggregating server metrics, polled by terminal UI.
+**When:** Terminal UI needs upload/download counts, bandwidth, activity log.
+
+```python
+import threading
+from collections import deque
+
+class StatsCollector:
     def __init__(self) -> None:
-        self.active_connections: list[WebSocket] = []
+        self._lock = threading.Lock()
+        self.upload_count: int = 0
+        self.download_count: int = 0
+        self.total_bytes: int = 0
+        self.recent_activity: deque[str] = deque(maxlen=20)
 
-    async def connect(self, websocket: WebSocket) -> None:
-        await websocket.accept()
-        self.active_connections.append(websocket)
-
-    def disconnect(self, websocket: WebSocket) -> None:
-        self.active_connections.remove(websocket)
-
-    async def broadcast(self, message: dict) -> None:
-        for connection in self.active_connections:
-            await connection.send_json(message)
-
-    async def broadcast_except(self, message: dict, exclude: WebSocket) -> None:
-        for connection in self.active_connections:
-            if connection is not exclude:
-                await connection.send_json(message)
+    def record_upload(self, filename: str, size: int) -> None:
+        with self._lock:
+            self.upload_count += 1
+            self.total_bytes += size
+            self.recent_activity.appendleft(f"Uploaded {filename}")
 ```
-
-**Confidence:** HIGH -- FastAPI's own documentation recommends exactly this ConnectionManager pattern for WebSocket broadcasting.
-
-### Pattern 2: XHR for Uploads (Not Fetch)
-**What:** Use `XMLHttpRequest` for file uploads, not the Fetch API.
-**When:** Any upload that needs progress tracking.
-**Why:** The Fetch API has no native upload progress tracking. `XMLHttpRequest.upload.onprogress` provides real progress events with `loaded` and `total` bytes. This is well-established (supported since 2015) and reliable.
-
-```typescript
-function uploadFile(
-  file: File,
-  path: string,
-  onProgress: (percent: number) => void
-): Promise<UploadResult> {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    const formData = new FormData();
-    formData.append("file", file);
-    formData.append("path", path);
-
-    xhr.upload.addEventListener("progress", (e: ProgressEvent) => {
-      if (e.lengthComputable) {
-        onProgress(Math.round((e.loaded / e.total) * 100));
-      }
-    });
-
-    xhr.addEventListener("load", () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        resolve(JSON.parse(xhr.responseText));
-      } else {
-        reject(new UploadError(xhr.status, xhr.responseText));
-      }
-    });
-
-    xhr.addEventListener("error", () => reject(new UploadError(0, "Network error")));
-    xhr.open("POST", "/api/upload");
-    xhr.send(formData);
-  });
-}
-```
-
-**Confidence:** HIGH -- MDN confirms Fetch API lacks upload progress; XHR.upload.onprogress is the standard approach.
-
-### Pattern 3: FastAPI UploadFile for Server-Side
-**What:** Use FastAPI's `UploadFile` (not `bytes`) for receiving file uploads.
-**When:** Always for file uploads.
-**Why:** `UploadFile` uses spooled temporary files -- stores small files in memory, automatically spills to disk for large files. `bytes` loads the entire file into memory, which will crash the server on large video files.
-
-```python
-from fastapi import APIRouter, UploadFile
-from pathlib import Path
-
-router = APIRouter(prefix="/api", tags=["files"])
-
-@router.post("/upload")
-async def upload_file(file: UploadFile, path: str) -> dict:
-    target = resolve_safe_path(base_dir, path, file.filename)
-    content = await file.read()
-    target.write_bytes(content)
-    await file.close()
-    return {"filename": file.filename, "size": len(content)}
-```
-
-**Confidence:** HIGH -- FastAPI official documentation explicitly states UploadFile is recommended for large files.
-
-### Pattern 4: Path Traversal Guard
-**What:** Every filesystem operation must resolve the requested path and validate it stays within the shared directory.
-**When:** Every file operation endpoint -- list, read, write, download, delete, rename.
-**Why:** Without this, an attacker on the LAN can read/write arbitrary files on the host machine via `../../etc/passwd` style paths.
-
-```python
-from pathlib import Path
-
-class PathTraversalError(Exception):
-    pass
-
-def resolve_safe_path(base_dir: Path, *segments: str) -> Path:
-    """Resolve a path ensuring it stays within base_dir. Raises on traversal."""
-    resolved = base_dir.joinpath(*segments).resolve()
-    if not resolved.is_relative_to(base_dir.resolve()):
-        raise PathTraversalError(
-            f"Path {resolved} escapes base directory {base_dir}"
-        )
-    return resolved
-```
-
-**Confidence:** HIGH -- standard security pattern, existing codebase uses `secure_filename` from werkzeug but lacks full traversal guard for nested paths.
-
-### Pattern 5: FileResponse for Downloads, StreamingResponse for Generated Content
-**What:** Use `FileResponse` for serving existing files, `StreamingResponse` for dynamically generated content (zip archives).
-**When:** Downloads use `FileResponse`. Batch download (zip) uses `StreamingResponse` with a generator.
-**Why:** `FileResponse` automatically sets `Content-Length`, `ETag`, and `Last-Modified` headers, enabling browser caching and range requests for media streaming. `StreamingResponse` is needed for zip archives where the total size is unknown upfront.
-
-```python
-from fastapi.responses import FileResponse, StreamingResponse
-import zipfile
-import io
-
-@router.get("/files/{file_path:path}/download")
-async def download_file(file_path: str) -> FileResponse:
-    safe_path = resolve_safe_path(base_dir, file_path)
-    return FileResponse(
-        path=safe_path,
-        filename=safe_path.name,
-        media_type="application/octet-stream",
-    )
-
-@router.post("/files/download-zip")
-async def download_zip(file_paths: list[str]) -> StreamingResponse:
-    def generate_zip():
-        buffer = io.BytesIO()
-        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-            for fp in file_paths:
-                safe = resolve_safe_path(base_dir, fp)
-                zf.write(safe, safe.name)
-        buffer.seek(0)
-        yield buffer.read()
-
-    return StreamingResponse(
-        generate_zip(),
-        media_type="application/zip",
-        headers={"Content-Disposition": "attachment; filename=files.zip"},
-    )
-```
-
-**Confidence:** HIGH -- FastAPI documentation confirms FileResponse auto-sets headers for caching/range-requests.
-
-### Pattern 6: Zustand for Frontend State (Not Redux, Not Context-only)
-**What:** Use Zustand for global state management in React.
-**When:** For file list state, clipboard history, notification queue, upload progress tracking, theme preference.
-**Why:** Zustand is minimal (< 1KB), has no boilerplate (unlike Redux), supports subscriptions outside React (useful for the WebSocket handler), and avoids the re-render problems of React Context for high-frequency updates (upload progress, clipboard sync). React Context + useReducer is fine for simple state but causes unnecessary re-renders when used as a global store.
-
-```typescript
-import { create } from "zustand";
-
-interface FileEntry {
-  name: string;
-  size: number;
-  type: "file" | "directory";
-  modified: string;
-}
-
-interface FileStore {
-  files: FileEntry[];
-  currentPath: string;
-  setFiles: (files: FileEntry[]) => void;
-  setCurrentPath: (path: string) => void;
-}
-
-const useFileStore = create<FileStore>((set) => ({
-  files: [],
-  currentPath: "/",
-  setFiles: (files: FileEntry[]) => set({ files }),
-  setCurrentPath: (path: string) => set({ currentPath: path }),
-}));
-```
-
-**Confidence:** MEDIUM -- Zustand is the widely adopted lightweight state manager for React. React Context + useReducer is a viable alternative per React docs, but Zustand is a better fit here due to WebSocket integration outside component tree and high-frequency progress updates.
 
 ## Anti-Patterns to Avoid
 
-### Anti-Pattern 1: Separate WebSocket Connections Per Feature
-**What:** Opening `/ws/clipboard`, `/ws/notifications`, `/ws/requests` as separate connections.
-**Why bad:** Wastes resources, complicates connection lifecycle management, creates race conditions on connect/disconnect. The app has few real-time features -- a single multiplexed connection with message type routing is simpler and more reliable.
-**Instead:** Single `/ws` endpoint, JSON messages with a `type` field, dispatch on the frontend.
+### Anti-Pattern 1: Per-Route Auth Checks
 
-### Anti-Pattern 2: Polling for File List Updates
-**What:** `setInterval(() => fetchFiles(), 3000)` to keep the file list current.
-**Why bad:** Wasteful, laggy (up to 3s delay), hammers the filesystem. The server already knows when files change because uploads and deletes go through API endpoints.
-**Instead:** After any file mutation (upload, delete, rename, mkdir), broadcast a `{type: "notification", event: "files_changed"}` via WebSocket. The frontend re-fetches the file list only when notified.
+**What:** Adding `Depends(require_auth)` to each router endpoint.
+**Why bad:** Easy to forget a route. A new endpoint added without the dependency is silently unprotected. Auth is a server-wide policy, not per-endpoint.
+**Instead:** Middleware with explicit allowlist of unauthenticated paths.
 
-### Anti-Pattern 3: Storing Files in Memory or Database
-**What:** Reading files into Python memory or storing file metadata in SQLite.
-**Why bad:** The filesystem IS the database for this application. Files already exist on disk. Duplicating metadata into a database creates sync issues. Reading large files into memory crashes the server.
-**Instead:** Read the filesystem directly on each request. Use `os.scandir()` (not `os.listdir()`) for efficient directory listing with metadata. Cache nothing -- LAN latency is sub-millisecond, filesystem reads are fast.
+### Anti-Pattern 2: Storing Password as Plaintext in Config
 
-### Anti-Pattern 4: Building a Custom Media Player
-**What:** Writing custom video/audio player controls from scratch.
-**Why bad:** Browser-native `<video>` and `<audio>` elements with `controls` attribute handle playback, seeking, volume, fullscreen. Custom players are hundreds of lines of code for worse UX.
-**Instead:** Use native HTML5 media elements. FastAPI's `FileResponse` supports range requests via `ETag`/`Last-Modified` headers, enabling seek. The browser handles the rest.
+**What:** `ServerConfig.password = "mysecret"` instead of storing the hash.
+**Why bad:** Password lives in memory for the server's lifetime. Debug endpoints or error handlers could leak it.
+**Instead:** Hash at CLI parse time: `bcrypt.hashpw(password.encode(), bcrypt.gensalt())`. Discard plaintext immediately.
 
-### Anti-Pattern 5: Monolithic FastAPI Application File
-**What:** Putting all endpoints in a single `main.py`.
-**Why bad:** The existing Flask app is ~200 lines in one file. The rewrite will be 5-10x larger with WebSocket handling, file operations, clipboard, QR code, and file requests. A single file becomes unmaintainable past ~500 lines.
-**Instead:** Use FastAPI's `APIRouter` pattern. One router per domain: `files.py`, `clipboard.py`, `server_info.py`, `websocket.py`. A `main.py` that imports and mounts them.
+### Anti-Pattern 3: Embedding Drop Box in App.tsx
 
-## Recommended Backend Project Structure
+**What:** Adding `mode === "dropbox"` conditional branch inside App.tsx.
+**Why bad:** Drop box shares almost nothing with the file browser. Conditional rendering for an entirely different interface bloats App.tsx (already 500 lines) and couples unrelated concerns.
+**Instead:** Separate Vite entry point (`drop-main.tsx`) and root component (`DropBox.tsx`). Shared utilities imported, but component tree is independent.
 
-```
-server/
-  app/
-    __init__.py
-    main.py                  # FastAPI app, mounts routers + static files
-    config.py                # Server configuration (shared folder, port, host)
-    routers/
-      __init__.py
-      files.py               # File CRUD: list, upload, download, delete, rename
-      clipboard.py           # Clipboard REST endpoints (history, clear)
-      server_info.py         # Server info, QR code generation
-      websocket.py           # WebSocket endpoint + ConnectionManager
-    services/
-      __init__.py
-      file_service.py        # Filesystem operations, path resolution
-      clipboard_service.py   # In-memory clipboard history
-      qr_service.py          # QR code generation (SVG/PNG)
-    models/
-      __init__.py
-      schemas.py             # Pydantic models for request/response
-      enums.py               # MessageType, FileType, RequestStatus enums
-    exceptions.py            # Custom exceptions (PathTraversalError, etc.)
-```
+### Anti-Pattern 4: Database for Token Storage
 
-## Recommended Frontend Project Structure
+**What:** Adding SQLite to store share link tokens for revocation.
+**Why bad:** The project has no database. Adding one for a single feature is scope creep.
+**Instead:** Stateless tokens via itsdangerous. Accept no pre-expiry revocation. For a LAN tool with short-lived tokens, this is fine. If revocation becomes critical, use an in-memory set of revoked IDs (cleared on restart).
+
+### Anti-Pattern 5: Running Terminal UI on asyncio Event Loop
+
+**What:** Making Rich Live an async task alongside uvicorn.
+**Why bad:** Rich Live is designed for synchronous use with a background thread. Forcing it into async adds complexity with no benefit.
+**Instead:** Run TUI refresh in a daemon thread. Use thread-safe StatsCollector for communication between async handlers and synchronous TUI.
+
+## Suggested Build Order
+
+Based on dependency analysis between features:
 
 ```
-client/
-  src/
-    main.tsx                 # Entry point, mounts React app
-    App.tsx                  # Router setup, layout, theme provider
-    api/
-      client.ts              # Base HTTP client (fetch wrapper)
-      files.ts               # File API calls
-      serverInfo.ts          # Server info API calls
-    hooks/
-      useWebSocket.ts        # WebSocket connection + message dispatch
-      useFileUpload.ts       # XHR upload with progress tracking
-    stores/
-      fileStore.ts           # Zustand: file list, current path, selection
-      clipboardStore.ts      # Zustand: clipboard entries
-      notificationStore.ts   # Zustand: toast queue
-      uploadStore.ts         # Zustand: upload progress per file
-      themeStore.ts          # Zustand: dark/light mode preference
-    components/
-      layout/
-        AppShell.tsx         # Header, sidebar, main content area
-        Navbar.tsx           # Navigation between file browser, clipboard
-      files/
-        FileBrowser.tsx      # File list with selection, sort, filter
-        FileRow.tsx          # Single file entry
-        BreadcrumbNav.tsx    # Path breadcrumbs for folder navigation
-        UploadZone.tsx       # Drag-and-drop zone + upload progress
-        UploadProgress.tsx   # Individual file upload progress bar
-      clipboard/
-        ClipboardPanel.tsx   # Clipboard input + history
-        ClipboardEntry.tsx   # Single clipboard item
-      preview/
-        PreviewModal.tsx     # Modal wrapper for all preview types
-        ImagePreview.tsx     # Image lightbox with zoom
-        VideoPreview.tsx     # HTML5 video player
-        AudioPreview.tsx     # HTML5 audio player
-        CodePreview.tsx      # Syntax-highlighted code viewer
-        PdfPreview.tsx       # PDF viewer
-      notifications/
-        ToastContainer.tsx   # Toast notification stack
-        Toast.tsx            # Individual toast
-      qr/
-        QrCodeDisplay.tsx    # QR code SVG render
-      requests/
-        FileRequestForm.tsx  # Create file request
-        FileRequestList.tsx  # Active requests display
-    types/
-      files.ts               # FileEntry, UploadResult types
-      websocket.ts           # WSMessage union type
-      clipboard.ts           # ClipboardEntry type
-      requests.ts            # FileRequest type
-    utils/
-      formatSize.ts          # Human-readable file sizes
-      mimeTypes.ts           # MIME type to preview type mapping
+Phase 1: Access Control (establishes middleware + config patterns)
+  1. Password Protection -- middleware, CLI, config expansion, itsdangerous
+  2. Read-Only Mode -- second middleware, same patterns, quick to add
+
+Phase 2: Sharing Features (uses itsdangerous from Phase 1)
+  3. Expiring Share Links -- reuses itsdangerous serializer pattern
+  4. Receive Mode / Drop Box -- separate entry point, uses upload infra
+
+Phase 3: Server UX (independent of Phases 1-2)
+  5. Device Discovery -- extends ConnectionManager, adds mDNS
+  6. Terminal UI -- needs StatsCollector, benefits from device info
+  7. Speed Test -- independent endpoint, simplest feature
 ```
 
-## Suggested Build Order (Dependencies)
-
-The architecture has clear dependency layers. Build from bottom up.
-
-### Phase 1: Foundation (no real-time features)
-**Build:** Backend project structure, FileService with path traversal guard, file listing REST endpoint, React app shell with router, basic file browser UI (list only), file download via FileResponse.
-**Why first:** Everything else depends on the file browsing and serving infrastructure. This replaces the existing Flask app's core functionality.
-**Dependencies:** None.
-
-### Phase 2: Upload Infrastructure
-**Build:** Upload endpoint (UploadFile), drag-and-drop zone, XHR upload with progress bars, multi-file upload.
-**Why second:** Uploads are the second core operation. The XHR progress pattern is independent of WebSocket.
-**Dependencies:** Phase 1 (file listing must work to verify uploads).
-
-### Phase 3: WebSocket Infrastructure + Notifications
-**Build:** ConnectionManager, single `/ws` endpoint, message type routing, notification toast system, broadcast on file upload/download events.
-**Why third:** WebSocket is shared infrastructure for clipboard and file requests. Building it with notifications is the simplest way to verify it works end-to-end.
-**Dependencies:** Phase 2 (notifications need file events to broadcast).
-
-### Phase 4: Clipboard Sharing
-**Build:** ClipboardService, clipboard UI panel, WebSocket clipboard channel, clipboard history.
-**Why fourth:** First consumer of WebSocket bidirectional communication (notifications were broadcast-only).
-**Dependencies:** Phase 3 (WebSocket infrastructure).
-
-### Phase 5: File Operations (Batch, Folders, Search)
-**Build:** Delete, rename, mkdir, folder navigation, batch select, batch download as zip, search/filter/sort.
-**Why fifth:** These are independent of real-time features. Can be built in parallel with Phase 4 if desired.
-**Dependencies:** Phase 1 (basic file operations), Phase 3 (broadcast file changes).
-
-### Phase 6: Media Preview
-**Build:** PreviewModal with type detection, image lightbox, video/audio player (HTML5 native), code syntax highlighting, PDF viewer.
-**Why sixth:** Purely additive UI feature. Each file type preview is independent work that can be incremental.
-**Dependencies:** Phase 1 (file content serving with range request support).
-
-### Phase 7: QR Code + Server Info
-**Build:** QR code generation (backend), QR display component, server info endpoint.
-**Why seventh:** Small, self-contained feature. Nice polish but not a dependency for anything else.
-**Dependencies:** Phase 1 (server must be running to have a URL to encode).
-
-### Phase 8: File Request System + Dark Mode + Polish
-**Build:** File request model, request form, request broadcasting, fulfillment flow, dark mode toggle with system detection, UI polish.
-**Why last:** File requests are the most complex real-time feature (stateful + bidirectional + linked to uploads). Dark mode is pure theming.
-**Dependencies:** Phase 3 (WebSocket), Phase 2 (upload linked to request fulfillment).
+**Rationale:**
+- Password protection FIRST because it establishes the middleware pattern, itsdangerous usage, and config expansion approach that other features reuse.
+- Read-only pairs with auth since both are middleware using the same base class.
+- Share links reuse itsdangerous from auth, so serializer pattern is already established.
+- Drop box is more complex (separate SPA, upload organization) but benefits from auth middleware being in place.
+- Device discovery extends ConnectionManager; doing it before TUI means the dashboard can display device info.
+- Terminal UI needs StatsCollector, which is touched by upload/download/device tracking -- so it comes after those exist.
+- Speed test is the simplest, most independent feature. Can slot anywhere.
 
 ## Scalability Considerations
 
-| Concern | At 2-5 devices (typical) | At 10-20 devices (classroom) | At 50+ devices (unlikely for v1) |
-|---------|--------------------------|------------------------------|----------------------------------|
-| WebSocket connections | In-memory list, no issues | In-memory list, no issues | Consider connection limits, may need async broadcast batching |
-| File listing | `os.scandir()` per request, fast | Same, fast | Consider caching directory listings with short TTL |
-| Upload throughput | Single-threaded uvicorn, fine | May bottleneck on large files | Run uvicorn with `--workers 2-4`, but WebSocket state must be shared (needs Redis or similar) |
-| Clipboard history | In-memory list, fine | Same | Same, keep bounded (last 50 entries) |
-
-**For v1 (LAN tool, 2-10 devices):** Single-process uvicorn is sufficient. No database, no Redis, no external dependencies. The in-memory ConnectionManager pattern from FastAPI docs is the right fit.
-
-## Development vs Production Architecture
-
-### Development
-- **Frontend:** Vite dev server on `localhost:5173` with HMR
-- **Backend:** FastAPI via `uvicorn` on `localhost:8000`
-- **CORS:** FastAPI CORSMiddleware allowing `localhost:5173` origin
-- **Proxy:** Vite config proxies `/api/*` and `/ws` to FastAPI (preferred over CORS for WebSocket)
-
-### Production
-- **Single process:** FastAPI serves built React assets via `StaticFiles(directory="client/dist", html=True)` mounted at `/`
-- **API routes** mounted at `/api` take precedence over static file catch-all
-- **No CORS needed:** Same origin
-- **Start command:** `uv run uvicorn app.main:app --host 0.0.0.0 --port 8080`
-
-```python
-# app/main.py - production static file serving
-from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
-from pathlib import Path
-
-app = FastAPI()
-
-# API routers first (take precedence)
-app.include_router(files_router)
-app.include_router(clipboard_router)
-app.include_router(server_info_router)
-
-# WebSocket endpoint
-app.include_router(websocket_router)
-
-# React SPA catch-all (must be last)
-client_dist = Path(__file__).parent.parent / "client" / "dist"
-if client_dist.exists():
-    app.mount("/", StaticFiles(directory=str(client_dist), html=True), name="spa")
-```
-
-**Confidence:** HIGH -- FastAPI docs confirm `StaticFiles(html=True)` serves `index.html` for unmatched routes, enabling SPA client-side routing.
+| Concern | At 3 devices | At 20 devices | At 100+ devices |
+|---------|-------------|--------------|-----------------|
+| WebSocket connections | Trivial | Fine, ~20 sockets | May need heartbeat tuning |
+| Auth middleware | Negligible | Negligible | Cookie validation is O(1) |
+| Device tracking | In-memory dict | In-memory dict | Paginate device list API |
+| Share link tokens | Stateless | Stateless | No concern |
+| mDNS broadcast | Single registration | Single registration | No concern |
+| Terminal UI | 1s refresh | Same | Same |
+| Speed test | One at a time | Concurrent possible | Rate-limit to prevent saturation |
+| Drop box uploads | Direct to filesystem | Upload queue advisable | Upload size limits |
 
 ## Sources
 
-- FastAPI WebSocket documentation: https://fastapi.tiangolo.com/advanced/websockets/ -- ConnectionManager pattern, broadcast, WebSocketDisconnect handling (HIGH confidence)
-- FastAPI file upload documentation: https://fastapi.tiangolo.com/tutorial/request-files/ -- UploadFile vs bytes, spooled file behavior (HIGH confidence)
-- FastAPI project structure: https://fastapi.tiangolo.com/tutorial/bigger-applications/ -- APIRouter pattern, modular project layout (HIGH confidence)
-- FastAPI custom responses: https://fastapi.tiangolo.com/advanced/custom-response/ -- FileResponse, StreamingResponse for file serving (HIGH confidence)
-- FastAPI static files: https://fastapi.tiangolo.com/tutorial/static-files/ -- StaticFiles mount, html=True for SPA (HIGH confidence)
-- MDN XMLHttpRequest.upload: https://developer.mozilla.org/en-US/docs/Web/API/XMLHttpRequest/upload -- upload progress events (HIGH confidence)
-- MDN Fetch API: https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API/Using_Fetch -- confirms Fetch lacks upload progress (HIGH confidence)
-- React state management: https://react.dev/learn/managing-state -- useReducer, Context, state patterns (HIGH confidence)
-- Zustand recommendation: MEDIUM confidence -- based on training data, not verified via official source in this session. Alternative (React Context + useReducer) is documented by React team.
+- [FastAPI Response Cookies](https://fastapi.tiangolo.com/advanced/response-cookies/) -- cookie patterns (HIGH confidence)
+- [itsdangerous documentation](https://itsdangerous.palletsprojects.com/en/stable/timed/) -- URLSafeTimedSerializer (HIGH confidence)
+- [Rich Live Display](https://rich.readthedocs.io/en/latest/live.html) -- terminal dashboard (HIGH confidence)
+- [Rich Progress Display](https://rich.readthedocs.io/en/latest/progress.html) -- progress bars (HIGH confidence)
+- [python-zeroconf](https://github.com/python-zeroconf/python-zeroconf) -- mDNS discovery (HIGH confidence)
+- [OpenSpeedTest](https://github.com/openspeedtest/Speed-Test) -- browser speed test reference (MEDIUM confidence)
+- [FastAPI middleware discussion](https://github.com/fastapi/fastapi/issues/996) -- JWT cookie patterns (MEDIUM confidence)
+- [Starlette SessionMiddleware](https://github.com/fastapi/fastapi/issues/754) -- session support (MEDIUM confidence)
