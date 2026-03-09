@@ -3,11 +3,16 @@
   "granularity": "coarse",
   "parallelization": true,
   "commit_docs": true,
-  "model_profile": "quality",
+  "model_profile": "balanced",
   "workflow": {
     "research": true,
     "plan_check": true,
-    "verifier": true,
-    "nyquist_validation": true
+    "verifier": false,
+    "auto_advance": true,
+    "nyquist_validation": true,
+    "_auto_chain_active": true
+  },
+  "git": {
+    "branching_strategy": "milestone"
   }
 }
