@@ -39,11 +39,12 @@ Full details: `.planning/milestones/v1.0-ROADMAP.md`
   3. User starting server with `--receive` sees only a minimal drop-box interface with drag-and-drop upload, file picker, and progress -- no file listing or navigation
   4. User starting server with `--read-only --receive` sees a clear CLI error and the server does not start
   5. User accessing a password-protected server from a second browser must authenticate independently
-**Plans**: TBD
+**Plans:** 3 plans
 
 Plans:
-- [ ] 05-01: TBD
-- [ ] 05-02: TBD
+- [ ] 05-01-PLAN.md -- CLI flags, config extension, auth service (backend foundation)
+- [ ] 05-02-PLAN.md -- Auth middleware, route guards, server-info extension (backend enforcement)
+- [ ] 05-03-PLAN.md -- Login page, drop box page, mode badges, read-only UI (frontend)
 
 ### Phase 6: Expiring Share Links
 **Goal**: Users can generate temporary, self-expiring links to share specific files, and recipients can download without needing server access
@@ -85,6 +86,6 @@ Phases execute in numeric order: 5 -> 6 -> 7
 | 2. File Management | v1.0 | 4/4 | Complete | 2026-03-09 |
 | 3. Search, Preview, and UI Polish | v1.0 | 3/3 | Complete | 2026-03-09 |
 | 4. Real-Time Features | v1.0 | 3/3 | Complete | 2026-03-09 |
-| 5. Access Control | v1.1 | 0/? | Not started | - |
+| 5. Access Control | v1.1 | 0/3 | Planned | - |
 | 6. Expiring Share Links | v1.1 | 0/? | Not started | - |
 | 7. Device Discovery | v1.1 | 0/? | Not started | - |
