@@ -28,6 +28,22 @@ def tmp_shared_folder(tmp_path: Path) -> Path:
     empty_dir = tmp_path / "empty_dir"
     empty_dir.mkdir()
 
+    # Sample files for preview testing
+    # Minimal valid PNG: magic bytes + IHDR chunk (enough for MIME detection by extension)
+    png_magic = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+    image_file = tmp_path / "image.png"
+    image_file.write_bytes(png_magic)
+
+    code_file = tmp_path / "code.py"
+    code_file.write_text('print("hello")')
+
+    doc_file = tmp_path / "doc.md"
+    doc_file.write_text("# Hello\n\nWorld")
+
+    # Dummy video file (MIME detection uses extension, not content)
+    video_file = tmp_path / "video.mp4"
+    video_file.write_bytes(b"\x00" * 64)
+
     return tmp_path
 
 

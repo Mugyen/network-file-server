@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A polished, cross-platform LAN file sharing tool that lets any device on the same network browse, share, preview, and request files through a modern web UI. Think AirDrop but browser-based, cross-platform, and feature-rich. Built with a React frontend and FastAPI backend — designed to be a real product others install and use.
+A polished, cross-platform LAN file sharing tool that lets any device on the same network browse, upload, preview, and request files through a modern web UI with real-time collaboration. Think AirDrop but browser-based, cross-platform, and feature-rich — with shared clipboard, file requests, and media preview. Built with React + FastAPI + WebSocket.
 
 ## Core Value
 
@@ -12,45 +12,46 @@ Any device on the same WiFi network can instantly share files with zero setup �
 
 ### Validated
 
-- ✓ Basic file listing and browsing — existing
-- ✓ File download — existing
-- ✓ Single file upload — existing
-- ✓ CLI with folder path argument — existing
-- ✓ Local IP detection and display — existing
+- ✓ Basic file listing and browsing — v1.0
+- ✓ File download — v1.0
+- ✓ Single file upload — v1.0
+- ✓ CLI with folder path argument — v1.0
+- ✓ Local IP detection and display — v1.0
+- ✓ In-browser media preview — images, video, audio, PDF, code — v1.0
+- ✓ Dark mode with system detection — v1.0
+- ✓ Search, filter, and sort for file browser — v1.0
+- ✓ Full rewrite with React UI + FastAPI backend — v1.0
+- ✓ QR code instant connect — v1.0
+- ✓ Cross-device clipboard sharing with real-time sync — v1.0
+- ✓ Drag-and-drop upload with progress bars, batch download/delete, folder navigation — v1.0
+- ✓ Real-time transfer notifications via WebSocket toasts — v1.0
+- ✓ File request system — request files from connected devices — v1.0
 
 ### Active
 
-- [ ] Full rewrite with React UI + FastAPI backend
-- [ ] QR code instant connect (feature #01)
-- [ ] Cross-device clipboard sharing with real-time sync (feature #02)
-- [ ] In-browser media preview — images, video, audio, PDF, code (feature #03)
-- [ ] Drag-and-drop upload with progress bars, batch download/delete, folder navigation (feature #04)
-- [ ] Dark mode with system detection (feature #18)
-- [ ] Search, filter, and sort for file browser (feature #19)
-- [ ] Real-time transfer notifications via WebSocket toasts (feature #20)
-- [ ] File request system — request files from connected devices (feature #31)
+(None — define for next milestone with `/gsd:new-milestone`)
 
 ### Out of Scope
 
 - E2E encryption — deferred to v2, too complex for initial release
-- WebRTC P2P transfers (#06) — v2+
-- Secure tunnel / remote access (#07) — v2+
-- Auto-sync (#09) — v2+
-- Admin dashboard (#10) — v2+
-- PWA / mobile app (#11, #29) — v2+
-- Desktop tray app (#12) — v2+
-- Plugin system (#13) — v2+
-- File versioning (#15) — v2+
-- Custom theming beyond dark mode (#18 pro) — v2+
+- WebRTC P2P transfers — v2+
+- Secure tunnel / remote access — v2+, LAN-only is core value
+- Auto-sync (#09) — fundamentally different from file sharing
+- Admin dashboard — no auth in v1, no admin role needed
+- PWA / mobile app — v2+, web works well on mobile
+- Desktop tray app — separate project (Electron/Tauri)
+- Plugin system — over-engineering for v1
+- File versioning — needs database, filesystem doesn't support natively
+- Custom theming beyond dark mode — v2+
 - pip/brew/docker packaging — v1 just needs to work locally
 
 ## Context
 
-- Existing codebase is ~200 lines of Flask + Jinja templates — functional but minimal
-- Full rewrite to React + FastAPI gives a clean foundation for all 35 planned features
-- WebSocket infrastructure is shared between clipboard sync, notifications, and file requests
+- Shipped v1.0 with ~9,600 LOC (4,700 Python + 4,900 TypeScript)
+- Tech stack: React + Tailwind CSS v4 (frontend), FastAPI + uvicorn (backend), WebSocket (real-time)
+- WebSocket infrastructure shared between clipboard sync, notifications, and file requests
 - Target audience: general public who want easy LAN file sharing
-- "Done" for v1 = works locally on the developer's LAN, solid and usable
+- v1.0 built in a single day — 4 phases, 13 plans, ~29 tasks
 - Codebase map available at `.planning/codebase/`
 
 ## Constraints
@@ -65,11 +66,18 @@ Any device on the same WiFi network can instantly share files with zero setup �
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Full rewrite over incremental upgrade | Clean foundation for 35 planned features; Flask+Jinja won't scale | — Pending |
-| React + FastAPI over Flask + htmx | Modern stack, better DX, reusable component model for complex features | — Pending |
-| Defer E2E encryption to v2 | Touches every file operation, too complex for v1 | — Pending |
-| WebSocket for real-time features | Shared infra for clipboard, notifications, and file requests | — Pending |
-| No authentication in v1 | LAN tool — open access is a feature, not a bug | — Pending |
+| Full rewrite over incremental upgrade | Clean foundation for 35 planned features; Flask+Jinja won't scale | ✓ Good — clean codebase, all features delivered |
+| React + FastAPI over Flask + htmx | Modern stack, better DX, reusable component model for complex features | ✓ Good — component reuse across all phases |
+| Defer E2E encryption to v2 | Touches every file operation, too complex for v1 | ✓ Good — correct scope for v1 |
+| WebSocket for real-time features | Shared infra for clipboard, notifications, and file requests | ✓ Good — ConnectionManager shared across 3 features |
+| No authentication in v1 | LAN tool — open access is a feature, not a bug | ✓ Good — zero-setup is core value |
+| Starlette FileResponse for preview | Native Range request support eliminates custom 206 streaming code | ✓ Good — zero custom streaming code |
+| PrismLight tree-shaking | 23 individual language imports vs full Prism — keeps bundle manageable | ✓ Good |
+| Tailwind v4 @custom-variant dark mode | CSS-first dark mode with FOUC prevention inline script | ✓ Good |
+| 3-state theme toggle | SYSTEM/DARK/LIGHT cycle instead of simple on/off | ✓ Good |
+| XHR for upload progress | fetch() lacks upload.onprogress support | ✓ Good — reliable progress bars |
+| Native URLSearchParams navigation | No React Router needed for simple path-based navigation | ✓ Good — minimal dependency |
+| Textarea scratchpad over Clipboard API | Clipboard API requires HTTPS; textarea works on HTTP LAN | ✓ Good — correct for LAN context |
 
 ---
-*Last updated: 2026-03-09 after initialization*
+*Last updated: 2026-03-09 after v1.0 milestone*

@@ -720,6 +720,7 @@ dependencies = [
     { name = "python-multipart" },
     { name = "qrcode" },
     { name = "uvicorn", extra = ["standard"] },
+    { name = "zipstream-ng" },
 ]
 
 [package.dev-dependencies]
@@ -739,6 +740,7 @@ requires-dist = [
     { name = "python-multipart", specifier = ">=0.0.20" },
     { name = "qrcode", specifier = ">=8.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34.0" },
+    { name = "zipstream-ng", specifier = ">=1.9.0" },
 ]
 
 [package.metadata.requires-dev]
@@ -747,4 +749,13 @@ dev = [
     { name = "pytest", specifier = ">=8.3.0" },
     { name = "pytest-asyncio", specifier = ">=0.25.0" },
     { name = "ruff", specifier = ">=0.9.0" },
+]
+
+[[package]]
+name = "zipstream-ng"
+version = "1.9.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/11/f2/690a35762cf8366ce6f3b644805de970bd6a897ca44ce74184c7b2bc94e7/zipstream_ng-1.9.0.tar.gz", hash = "sha256:a0d94030822d137efbf80dfdc680603c42f804696f41147bb3db895df667daea", size = 37963, upload-time = "2025-08-29T01:03:36.323Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/de/62/c2da1c495291a52e561257d017585e08906d288035d025ccf636f6b9a266/zipstream_ng-1.9.0-py3-none-any.whl", hash = "sha256:31dc2cf617abdbf28d44f2e08c0d14c8eee2ea0ec26507a7e4d5d5f97c564b7a", size = 24852, upload-time = "2025-08-29T01:03:35.046Z" },
 ]

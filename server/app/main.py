@@ -11,8 +11,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from server.app.routers.clipboard import router as clipboard_router
+from server.app.routers.file_requests import router as file_requests_router
 from server.app.routers.files import router as files_router
 from server.app.routers.server_info import router as server_info_router
+from server.app.routers.websocket import router as websocket_router
 
 
 def create_app() -> FastAPI:
@@ -33,11 +36,17 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    application.include_router(clipboard_router)
+    application.include_router(file_requests_router)
     application.include_router(files_router)
     application.include_router(server_info_router)
+    application.include_router(websocket_router)
 
     # SPA catch-all: mount static files if client/dist exists
-    client_dist = Path("client/dist")
+    # Resolve relative to the project root (two levels up from this file),
+    # not the CWD, so the server works regardless of where it's launched from.
+    project_root = Path(__file__).resolve().parent.parent.parent
+    client_dist = project_root / "client" / "dist"
     if client_dist.exists() and client_dist.is_dir():
         assets_dir = client_dist / "assets"
         if assets_dir.exists():
