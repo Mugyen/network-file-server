@@ -45,12 +45,13 @@ Plans:
   3. User can select multiple files and download them as a single ZIP, or delete them in batch with confirmation
   4. User can rename files and create new folders from within the browser
   5. File browser works on mobile devices with appropriate file type icons for all files
-**Plans**: TBD
+**Plans:** 4 plans
 
 Plans:
-- [ ] 02-01: TBD
-- [ ] 02-02: TBD
-- [ ] 02-03: TBD
+- [ ] 02-01-PLAN.md -- Backend API endpoints: upload, download, ZIP, rename, delete, mkdir with tests
+- [ ] 02-02-PLAN.md -- Folder navigation: breadcrumbs, URL sync, file type icons, responsive layout
+- [ ] 02-03-PLAN.md -- Upload experience: drag-and-drop, progress panel, conflict resolution
+- [ ] 02-04-PLAN.md -- Selection and file actions: batch ops, inline rename, create folder, wiring
 
 ### Phase 3: Search, Preview, and UI Polish
 **Goal**: Users can find files quickly and preview media content without downloading
@@ -91,6 +92,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation and Discovery | 3/3 | Complete   | 2026-03-08 |
-| 2. File Management | 0/3 | Not started | - |
+| 2. File Management | 0/4 | Not started | - |
 | 3. Search, Preview, and UI Polish | 0/3 | Not started | - |
 | 4. Real-Time Features | 0/2 | Not started | - |
