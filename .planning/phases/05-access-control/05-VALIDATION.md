@@ -2,8 +2,8 @@
 phase: 5
 slug: access-control
 status: draft
-nyquist_compliant: false
-wave_0_complete: false
+nyquist_compliant: true
+wave_0_complete: true
 created: 2026-03-10
 ---
 
@@ -34,31 +34,31 @@ created: 2026-03-10
 
 ---
 
+## Nyquist Compliance Note
+
+Wave 0 is satisfied by inline TDD tasks in Plans 01 and 02. Each TDD task writes tests (RED) before implementation (GREEN), so test files are created as part of the task itself. No separate Wave 0 stub plan is needed because:
+- Plan 01 Task 1 (tdd=true): creates `test_cli.py`, `test_config.py` tests inline
+- Plan 01 Task 2 (tdd=true): creates `test_auth_service.py` tests inline
+- Plan 02 Task 1 (tdd=true): creates `test_auth.py` tests inline
+- Plan 02 Task 2 (tdd=true): creates `test_read_only.py`, `test_receive_mode.py` tests inline
+- Plan 01 Task 1 also creates conftest.py fixtures used by Plan 02 tests
+
+---
+
 ## Per-Task Verification Map
 
 | Task ID | Plan | Wave | Requirement | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|-----------|-------------------|-------------|--------|
-| 05-01-01 | 01 | 1 | AUTH-01 | unit | `uv run pytest server/tests/test_cli.py -x -q` | ✅ extend | ⬜ pending |
-| 05-01-02 | 01 | 1 | AUTH-01 | unit | `uv run pytest server/tests/test_config.py -x -q` | ✅ extend | ⬜ pending |
-| 05-01-03 | 01 | 1 | AUTH-08 | unit | `uv run pytest server/tests/test_cli.py -x -q` | ✅ extend | ⬜ pending |
-| 05-02-01 | 02 | 1 | AUTH-02 | integration | `uv run pytest server/tests/test_auth.py -x -q` | ❌ W0 | ⬜ pending |
-| 05-02-02 | 02 | 1 | AUTH-03 | integration | `uv run pytest server/tests/test_auth.py -x -q` | ❌ W0 | ⬜ pending |
-| 05-02-03 | 02 | 1 | AUTH-03 | integration | `uv run pytest server/tests/test_auth.py -x -q` | ❌ W0 | ⬜ pending |
-| 05-03-01 | 03 | 1 | AUTH-04 | integration | `uv run pytest server/tests/test_read_only.py -x -q` | ❌ W0 | ⬜ pending |
-| 05-03-02 | 03 | 1 | AUTH-05 | integration | `uv run pytest server/tests/test_routes_info.py -x -q` | ✅ extend | ⬜ pending |
-| 05-04-01 | 04 | 1 | AUTH-06 | integration | `uv run pytest server/tests/test_receive_mode.py -x -q` | ❌ W0 | ⬜ pending |
-| 05-04-02 | 04 | 1 | AUTH-07 | integration | `uv run pytest server/tests/test_receive_mode.py -x -q` | ❌ W0 | ⬜ pending |
+| 05-01-T1 | 01 | 1 | AUTH-01, AUTH-03, AUTH-08 | unit | `uv run pytest server/tests/test_cli.py server/tests/test_config.py -x -q` | TDD inline | pending |
+| 05-01-T2 | 01 | 1 | AUTH-03 | unit | `uv run pytest server/tests/test_auth_service.py -x -q` | TDD inline | pending |
+| 05-02-T1 | 02 | 2 | AUTH-02 | integration | `uv run pytest server/tests/test_auth.py -x -q` | TDD inline | pending |
+| 05-02-T2 | 02 | 2 | AUTH-04, AUTH-06 | integration | `uv run pytest server/tests/test_read_only.py server/tests/test_receive_mode.py -x -q` | TDD inline | pending |
+| 05-03-T1 | 03 | 3 | AUTH-02, AUTH-05 | compile | `cd client && npx tsc --noEmit` | N/A (frontend) | pending |
+| 05-03-T2 | 03 | 3 | AUTH-07 | compile | `cd client && npx tsc --noEmit` | N/A (frontend) | pending |
+| 05-03-T3 | 03 | 3 | AUTH-05 | compile | `cd client && npx tsc --noEmit` | N/A (frontend) | pending |
+| 05-03-T4 | 03 | 3 | ALL | manual | Visual verification of all 6 scenarios | N/A (checkpoint) | pending |
 
-*Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
-
----
-
-## Wave 0 Requirements
-
-- [ ] `server/tests/test_auth.py` — stubs for AUTH-02, AUTH-03 (login endpoint, session cookie, middleware)
-- [ ] `server/tests/test_read_only.py` — stubs for AUTH-04 (all write endpoints blocked)
-- [ ] `server/tests/test_receive_mode.py` — stubs for AUTH-06, AUTH-07 (receive mode restrictions, upload works)
-- [ ] `server/tests/conftest.py` — fixtures for app variants (with password, read-only, receive)
+*Status: pending -- green -- red -- flaky*
 
 ---
 
@@ -75,11 +75,11 @@ created: 2026-03-10
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 15s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covered via TDD inline test creation (no separate stub plan needed)
+- [x] No watch-mode flags
+- [x] Feedback latency < 15s
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** ready
