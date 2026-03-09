@@ -29,7 +29,18 @@ Any device on the same WiFi network can instantly share files with zero setup �
 
 ### Active
 
-(None — define for next milestone with `/gsd:new-milestone`)
+#### Access Control
+- [ ] Password protection via `--password` CLI flag
+- [ ] Read-only mode via `--read-only` CLI flag
+
+#### Sharing
+- [ ] Receive mode / digital drop box
+- [ ] Expiring share links
+
+#### Connectivity & UX
+- [ ] Automatic device discovery
+- [ ] Rich terminal UI
+- [ ] Network speed test
 
 ### Out of Scope
 
@@ -44,6 +55,19 @@ Any device on the same WiFi network can instantly share files with zero setup �
 - File versioning — needs database, filesystem doesn't support natively
 - Custom theming beyond dark mode — v2+
 - pip/brew/docker packaging — v1 just needs to work locally
+
+## Current Milestone: v1.1 Share & Access Control
+
+**Goal:** Add access control (password, read-only), new sharing modes (dropbox, expiring links), and server UX improvements (device discovery, terminal UI, speed test).
+
+**Target features:**
+- Password Protection — server-wide password gate via CLI flag
+- Read-Only Mode — disable all write operations via CLI flag
+- Receive Mode / Drop Box — upload-only interface for collecting files
+- Expiring Share Links — temporary links for specific files/folders
+- Device Discovery — track and display connected devices
+- Terminal UI — rich terminal dashboard with live server stats
+- Speed Test — built-in network speed measurement
 
 ## Context
 
@@ -80,4 +104,4 @@ Any device on the same WiFi network can instantly share files with zero setup �
 | Textarea scratchpad over Clipboard API | Clipboard API requires HTTPS; textarea works on HTTP LAN | ✓ Good — correct for LAN context |
 
 ---
-*Last updated: 2026-03-09 after v1.0 milestone*
+*Last updated: 2026-03-10 after v1.1 milestone start*

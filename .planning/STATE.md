@@ -1,50 +1,34 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.0
-milestone_name: MVP
-status: milestone_complete
-stopped_at: Milestone v1.0 archived
-last_updated: "2026-03-09T16:17:15.065Z"
-last_activity: 2026-03-09 -- Milestone v1.0 MVP completed and archived
+milestone: v1.1
+milestone_name: Share & Access Control
+status: defining_requirements
+stopped_at: Defining requirements
+last_updated: "2026-03-10"
+last_activity: 2026-03-10 -- Milestone v1.1 started
 progress:
-  total_phases: 4
-  completed_phases: 4
-  total_plans: 13
-  completed_plans: 13
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-03-09)
+See: .planning/PROJECT.md (updated 2026-03-10)
 
-**Core value:** Any device on the same WiFi network can instantly share files with zero setup -- scan QR, drop files, done.
-**Current focus:** Planning next milestone
+**Core value:** Any device on the same WiFi network can instantly share files with zero setup — scan QR, drop files, done.
+**Current focus:** Defining requirements for v1.1 Share & Access Control
 
 ## Current Position
 
-Milestone v1.0 MVP shipped 2026-03-09.
-Next: `/gsd:new-milestone` to define v1.1 or v2.0.
-
-Progress: [██████████] 13/13 plans (100%) — v1.0 complete
-
-## Performance Metrics
-
-**Velocity:**
-- Total plans completed: 13
-- Average duration: ~5min
-- Total execution time: ~1.1 hours
-
-**By Phase:**
-
-| Phase | Plans | Total | Avg/Plan |
-|-------|-------|-------|----------|
-| 1 | 3 | 15min | 5min |
-| 2 | 4 | 22min | 5.5min |
-| 3 | 3 | 13min | 4.3min |
-| 4 | 3 | 20min | 6.7min |
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-03-10 — Milestone v1.1 started
 
 ## Accumulated Context
 
@@ -59,10 +43,10 @@ None.
 
 ### Blockers/Concerns
 
-None — v1.0 shipped.
+None.
 
 ## Session Continuity
 
-Last session: 2026-03-09
-Stopped at: Milestone v1.0 MVP archived
+Last session: 2026-03-10
+Stopped at: Milestone v1.1 started — defining requirements
 Resume file: None
