@@ -1,7 +1,7 @@
 # Requirements: WiFi File Server v1.1
 
 **Defined:** 2026-03-10
-**Core Value:** Any device on the same WiFi network can instantly share files with zero setup — scan QR, drop files, done.
+**Core Value:** Any device on the same WiFi network can instantly share files with zero setup -- scan QR, drop files, done.
 
 ## v1.1 Requirements
 
@@ -61,7 +61,7 @@ Requirements for Share & Access Control milestone. Each maps to roadmap phases.
 |---------|--------|
 | Per-user accounts / multi-password | Turns simple LAN tool into IAM system. Contradicts "zero setup" core value. |
 | HTTPS / TLS | Certificate management is massive friction for LAN tool. Password protects against casual access, not sniffing. |
-| Persistent share links (survive restart) | Requires database. In-memory is a feature — no stale links. |
+| Persistent share links (survive restart) | Requires database. In-memory is a feature -- no stale links. |
 | Full Textual TUI framework | Event loop conflicts with uvicorn. Rich `Live` is the correct lighter alternative. |
 | Rate limiting on password | LAN requires physical network proximity. bcrypt work factor is sufficient. |
 | File-level permissions / ACLs | Way beyond v1.1 scope. Server-wide mode covers use cases. |
@@ -74,31 +74,31 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| AUTH-01 | — | Pending |
-| AUTH-02 | — | Pending |
-| AUTH-03 | — | Pending |
-| AUTH-04 | — | Pending |
-| AUTH-05 | — | Pending |
-| AUTH-06 | — | Pending |
-| AUTH-07 | — | Pending |
-| AUTH-08 | — | Pending |
-| SHARE-01 | — | Pending |
-| SHARE-02 | — | Pending |
-| SHARE-03 | — | Pending |
-| SHARE-04 | — | Pending |
-| SHARE-05 | — | Pending |
-| SHARE-06 | — | Pending |
-| SHARE-07 | — | Pending |
-| DISC-01 | — | Pending |
-| DISC-02 | — | Pending |
-| DISC-03 | — | Pending |
-| DISC-04 | — | Pending |
+| AUTH-01 | Phase 5 | Pending |
+| AUTH-02 | Phase 5 | Pending |
+| AUTH-03 | Phase 5 | Pending |
+| AUTH-04 | Phase 5 | Pending |
+| AUTH-05 | Phase 5 | Pending |
+| AUTH-06 | Phase 5 | Pending |
+| AUTH-07 | Phase 5 | Pending |
+| AUTH-08 | Phase 5 | Pending |
+| SHARE-01 | Phase 6 | Pending |
+| SHARE-02 | Phase 6 | Pending |
+| SHARE-03 | Phase 6 | Pending |
+| SHARE-04 | Phase 6 | Pending |
+| SHARE-05 | Phase 6 | Pending |
+| SHARE-06 | Phase 6 | Pending |
+| SHARE-07 | Phase 6 | Pending |
+| DISC-01 | Phase 7 | Pending |
+| DISC-02 | Phase 7 | Pending |
+| DISC-03 | Phase 7 | Pending |
+| DISC-04 | Phase 7 | Pending |
 
 **Coverage:**
 - v1.1 requirements: 19 total
-- Mapped to phases: 0
-- Unmapped: 19
+- Mapped to phases: 19
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-10*
-*Last updated: 2026-03-10 after initial definition*
+*Last updated: 2026-03-10 after roadmap creation*
