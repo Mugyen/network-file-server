@@ -1,632 +1,597 @@
-# Architecture Patterns
+# Architecture Research
 
-**Domain:** WiFi File Server v1.1 -- Access Control, Sharing Modes, Device Discovery, Terminal UI, Speed Test
-**Researched:** 2026-03-10
+**Domain:** Remote mount relay server for WiFi file sharing app
+**Researched:** 2026-03-11
+**Confidence:** HIGH
 
-## Existing Architecture Summary
-
-The current v1.0 system follows a clean layered architecture:
-
-```
-CLI (cli.py)
-  -> ServerConfig (config.py) -- global module-level singleton
-  -> FastAPI App (main.py) -- create_app() factory
-       -> Routers: files, clipboard, file_requests, server_info, websocket
-       -> Services: file_service, clipboard_service, file_request_service,
-                    connection_manager, network_service, qr_service, persistence
-       -> Models: enums.py, schemas.py (Pydantic)
-       -> Exceptions: PathTraversalError, FileConflictError, InvalidFileNameError
-
-React SPA (client/)
-  -> App.tsx -- monolith component, all state via hooks
-  -> hooks/ -- useWebSocket, useUpload, useClipboard, useFileRequests, etc.
-  -> api/ -- client.ts (apiFetch/apiPost/apiPatch/apiDelete + XHR upload)
-  -> components/ -- 25 components, flat structure + preview/ subdirectory
-  -> types/ -- files.ts, websocket.ts, clipboard.ts, fileRequests.ts, etc.
-```
-
-Key architectural properties:
-- **No database** -- clipboard persisted via JSON file, file requests in-memory
-- **Global config singleton** -- `get_server_config()` returns module-level `_config`
-- **Single WebSocket endpoint** `/ws` -- multiplexed via `type` field in JSON messages
-- **ConnectionManager** -- tracks `active_connections: dict[str, WebSocket]` and `device_names: dict[str, str]`
-- **CORS wildcard** -- `allow_origins=["*"]` for LAN access, no credentials
-- **SPA catch-all** -- `/{path:path}` route serves `index.html` for non-API, non-asset paths
-
-## How Each Feature Integrates
-
-### 1. Password Protection
-
-**Integration point:** FastAPI middleware layer, between CORS and router dispatch.
-
-**New components:**
-
-| Component | Layer | Type | Purpose |
-|-----------|-------|------|---------|
-| `server/app/middleware/auth.py` | Backend | NEW file | Middleware checking session cookie on every request |
-| `server/app/routers/auth.py` | Backend | NEW file | `POST /api/auth/login` and `POST /api/auth/logout` |
-| `server/app/services/auth_service.py` | Backend | NEW file | Password verification, session token generation/validation |
-| `client/src/components/LoginPage.tsx` | Frontend | NEW file | Password entry form |
-| `client/src/hooks/useAuth.ts` | Frontend | NEW file | Auth state management, session check |
-| `client/src/api/auth.ts` | Frontend | NEW file | Login/logout API calls |
-
-**Modifications to existing files:**
-
-| File | Change |
-|------|--------|
-| `server/app/config.py` | Add `password_hash: str \| None` field to `ServerConfig` |
-| `server/app/cli.py` | Add `--password` CLI argument, hash with bcrypt before storing |
-| `server/app/main.py` | Add auth middleware in `create_app()` |
-| `client/src/App.tsx` | Wrap content in auth gate -- show LoginPage when 401 |
-| `client/src/api/client.ts` | Handle 401 responses globally (trigger login state) |
-
-**Data flow:**
+## System Overview
 
 ```
-1. CLI: --password "secret" -> bcrypt.hash("secret") -> ServerConfig.password_hash
-2. Request arrives -> AuthMiddleware checks:
-   a. password_hash is None? -> pass through (no auth configured)
-   b. Path is /api/auth/* or /s/*? -> pass through (login + share links)
-   c. Has valid session cookie? -> pass through
-   d. Otherwise -> 401
-3. POST /api/auth/login: {password} -> bcrypt.verify(password, hash) -> set signed cookie
-4. Cookie: itsdangerous URLSafeTimedSerializer signs {authenticated: true} -> HttpOnly cookie
+                        INTERNET
+    ┌──────────────────────────────────────────────────────────┐
+    │                                                          │
+    │   ┌──────────────────────────────────────────────┐       │
+    │   │          RELAY SERVER (separate process)     │       │
+    │   │                                              │       │
+    │   │  ┌────────────┐   ┌───────────────────┐      │       │
+    │   │  │ Mount      │   │ HTTP Router       │      │       │
+    │   │  │ Registry   │   │ /m/{code}/*       │      │       │
+    │   │  │            │   │                   │      │       │
+    │   │  │ code->ws   │   │ Extracts code     │      │       │
+    │   │  │ mapping    │   │ from URL, proxies │      │       │
+    │   │  └─────┬──────┘   │ to agent tunnel   │      │       │
+    │   │        │          └────────┬──────────┘      │       │
+    │   │        │                   │                 │       │
+    │   │  ┌─────┴───────────────────┴──────────┐      │       │
+    │   │  │     Tunnel Manager                 │      │       │
+    │   │  │                                    │      │       │
+    │   │  │  Multiplexes HTTP requests over    │      │       │
+    │   │  │  agent WebSocket connections        │      │       │
+    │   │  └──────────────┬─────────────────────┘      │       │
+    │   │                 │ WebSocket                   │       │
+    │   └─────────────────┼────────────────────────────┘       │
+    │                     │                                    │
+    │   Browser           │              Agent (behind NAT)    │
+    │   ┌──────────┐      │              ┌──────────────────┐  │
+    │   │ React    │ HTTP │              │ Tunnel Client    │  │
+    │   │ SPA      │──────┘              │                  │  │
+    │   │          │                     │ WS ──────────────┘  │
+    │   │ Served   │                     │ (outbound to relay) │
+    │   │ by relay │                     │                     │
+    │   └──────────┘                     │ ┌────────────────┐  │
+    │                                    │ │ Local FastAPI   │  │
+    │                                    │ │ Server          │  │
+    │                                    │ │ (reuses         │  │
+    │                                    │ │  create_app())  │  │
+    │                                    │ └────────────────┘  │
+    │                                    └─────────────────────┘
+    └──────────────────────────────────────────────────────────┘
 ```
 
-**Architecture decision -- itsdangerous over JWT:** For a single shared password (no user identity to encode), itsdangerous `URLSafeTimedSerializer` is simpler than JWT. It handles signing + timestamp-based expiry in one call. No PyJWT dependency needed. itsdangerous is already a transitive dependency of Starlette's SessionMiddleware.
+### Separation Decision: Relay = Separate Process, Agent = New CLI Command
 
-**Architecture decision -- middleware over per-route dependency:** A middleware intercepts ALL requests including static files and the SPA catch-all. A `Depends(require_auth)` approach would require adding the dependency to every router, which is error-prone (one missed route = security hole). Middleware with an explicit allowlist of unauthenticated paths is the correct pattern for a server-wide gate.
+The relay server MUST be a separate FastAPI process (not integrated into the existing LAN server) because:
 
-**CORS interaction (CRITICAL):** Password protection via cookies requires `allow_credentials=True` in CORS, which is mutually exclusive with `allow_origins=["*"]`. Since the SPA is served from the same origin in production (FastAPI serves built React), CORS is not involved for same-origin requests. The existing wildcard CORS config is only needed for development (Vite dev server on different port). In dev mode with auth enabled, set origin explicitly to `http://localhost:5173` and add `allow_credentials=True`. This is the most subtle integration detail in the entire v1.1 plan.
+1. **Deployment target differs.** The relay runs on a cloud VM. The LAN server runs on the user's machine. They have different lifecycles, configs, and network contexts.
+2. **No shared state needed.** The relay has its own mount registry; the LAN server has its own file_service config. Merging them creates coupling with zero benefit.
+3. **Security boundary.** The relay is internet-facing; the LAN server is LAN-only. Mixing them in one process means the LAN server inherits internet-attack surface.
 
-**WebSocket auth:** Browsers send cookies (but not custom headers) with WebSocket upgrade requests. The auth middleware validates the session cookie on WS upgrades automatically since it intercepts before the route handler.
+The agent is a new CLI subcommand (`wifi-file-server mount ...`) that reuses `create_app()` to spin up a local FastAPI server and connects outbound to the relay via WebSocket.
 
-### 2. Read-Only Mode
+## Component Responsibilities
 
-**Integration point:** Middleware layer, blocking write operations.
+| Component | Responsibility | New vs Modified |
+|-----------|----------------|-----------------|
+| **Relay Server** | Accept agent WS connections, route browser HTTP to correct agent, serve landing page + SPA | NEW process |
+| **Mount Registry** | Map mount codes to agent WS connections, track TTL/password, generate codes | NEW module in relay |
+| **Tunnel Manager** | Multiplex HTTP request/response pairs over a single WS per agent | NEW module in relay |
+| **Tunnel Protocol** | Binary framing for request/response over WS (headers + body streaming) | NEW shared module |
+| **Agent CLI** | `mount` subcommand: connect to relay, handle tunneled requests using local server | NEW CLI command |
+| **Agent Tunnel Client** | Maintain WS to relay, receive framed requests, proxy to local FastAPI, stream responses back | NEW module |
+| **Landing Page** | Code entry + QR scan page served by relay at `/` | NEW Jinja2 template |
+| **React SPA** | Existing SPA served by relay for `/m/{code}/` routes, API calls prefixed with mount path | MODIFIED (base URL awareness) |
+| **file_service.py** | File operations (list, download, upload, etc.) | UNCHANGED (reused by agent's local server) |
+| **connection_manager.py** | LAN WebSocket management | UNCHANGED (LAN only) |
+| **config.py / ServerConfig** | LAN server config | UNCHANGED |
 
-**New components:**
-
-| Component | Layer | Type | Purpose |
-|-----------|-------|------|---------|
-| `server/app/middleware/read_only.py` | Backend | NEW file | Middleware rejecting write operations |
-
-**Modifications to existing files:**
-
-| File | Change |
-|------|--------|
-| `server/app/config.py` | Add `read_only: bool` field to `ServerConfig` |
-| `server/app/cli.py` | Add `--read-only` CLI flag |
-| `server/app/main.py` | Add read-only middleware |
-| `server/app/models/schemas.py` | Add `read_only: bool` to `ServerInfo` |
-| `server/app/routers/server_info.py` | Return `read_only` from config in response |
-| `client/src/types/serverInfo.ts` | Add `read_only: boolean` |
-| `client/src/App.tsx` | Conditionally hide upload/delete/rename/create-folder UI |
-
-**Architecture decision -- middleware over per-route checks:** A middleware checking HTTP method + path is cleaner than adding `if config.read_only: raise 403` to every write endpoint. The middleware intercepts:
+## Recommended Project Structure
 
 ```
-Blocked when read_only=True:
-  POST   /api/files/upload
-  DELETE /api/files
-  PATCH  /api/files/rename
-  POST   /api/folders
-  POST   /api/clipboard/
-  PATCH  /api/clipboard/{id}
-  DELETE /api/clipboard/{id}
-  POST   /api/file-requests/
-  POST   /api/file-requests/{id}/fulfill
+server/
+├── app/                          # EXISTING - LAN server (unchanged)
+│   ├── cli.py                    # MODIFIED - add `mount` subcommand
+│   ├── config.py                 # UNCHANGED
+│   ├── main.py                   # UNCHANGED
+│   ├── routers/                  # UNCHANGED
+│   ├── services/
+│   │   ├── file_service.py       # UNCHANGED (reused by agent)
+│   │   ├── connection_manager.py # UNCHANGED
+│   │   └── ...
+│   └── middleware/               # UNCHANGED
+│
+├── relay/                        # NEW - relay server package
+│   ├── __init__.py
+│   ├── main.py                   # FastAPI app factory for relay
+│   ├── cli.py                    # `wifi-relay-server` entry point
+│   ├── config.py                 # RelayConfig (host, port, max_mounts)
+│   ├── registry.py               # MountRegistry: code -> AgentConnection
+│   ├── tunnel_manager.py         # Multiplex HTTP over agent WS
+│   └── routers/
+│       ├── landing.py            # GET / -- code entry page
+│       ├── agent_ws.py           # WS /agent/connect -- agent tunnel endpoint
+│       └── proxy.py              # /m/{code}/{path:path} -- proxy to agent
+│
+├── agent/                        # NEW - tunnel agent package
+│   ├── __init__.py
+│   ├── tunnel_client.py          # WS connection to relay, reconnect logic
+│   └── request_handler.py        # Forward tunneled requests to local server
+│
+└── tunnel/                       # NEW - shared tunnel protocol
+    ├── __init__.py
+    ├── protocol.py               # Frame types, serialization, constants
+    └── frames.py                 # RequestFrame, ResponseFrame, DataChunk
 
-Allowed always (reads):
-  GET    /api/files
-  GET    /api/files/download
-  GET    /api/files/preview
-  GET    /api/files/search
-  POST   /api/files/download-zip  (POST but read-only semantics)
-  GET    /api/server-info
-  GET    /api/clipboard/
-  GET    /api/file-requests/
-  WS     /ws
+templates/
+├── landing.html                  # NEW - mount code entry page
+└── ...                           # EXISTING share templates
 ```
 
-**Frontend integration:** The `/api/server-info` response already flows to App.tsx via `fetchServerInfo()`. Adding `read_only: boolean` to this response lets the frontend conditionally render write UI. Backend middleware is the enforcement layer; frontend hiding is UX polish.
+### Structure Rationale
 
-### 3. Receive Mode / Drop Box
+- **`relay/`**: Completely separate FastAPI app. Can be deployed independently. No imports from `app/` except shared tunnel protocol.
+- **`agent/`**: Thin orchestration layer. The agent starts a local FastAPI server using `create_app()` and proxies tunneled requests to it. This avoids duplicating any file operation logic.
+- **`tunnel/`**: Shared between relay and agent. Defines the wire protocol. No dependencies on either relay or agent internals.
+- **`app/` untouched**: The existing LAN server sees zero changes except `cli.py` gaining a `mount` subcommand that imports from `agent/`.
 
-**Integration point:** Parallel UI mode with separate entry point and stripped-down interface.
+## Architectural Patterns
 
-**New components:**
+### Pattern 1: Request-Response Multiplexing Over Single WebSocket
 
-| Component | Layer | Type | Purpose |
-|-----------|-------|------|---------|
-| `server/app/routers/dropbox.py` | Backend | NEW file | `POST /api/dropbox/upload`, `GET /api/dropbox/config` |
-| `server/app/services/dropbox_service.py` | Backend | NEW file | Drop box config, upload folder management |
-| `client/src/drop-main.tsx` | Frontend | NEW file | Separate entry point for drop box SPA |
-| `client/src/DropBox.tsx` | Frontend | NEW file | Root component for drop box interface |
-| `client/src/components/dropbox/DropZone.tsx` | Frontend | NEW file | Upload-only drag-and-drop area |
-| `client/src/components/dropbox/UploadConfirmation.tsx` | Frontend | NEW file | Thank-you message after upload |
+**What:** Each agent maintains ONE WebSocket to the relay. Multiple concurrent browser requests for that mount are multiplexed over this single connection using request IDs.
 
-**Modifications to existing files:**
+**When to use:** Always. One WS per agent is simpler than connection pooling and avoids NAT/firewall issues with multiple outbound connections.
 
-| File | Change |
-|------|--------|
-| `server/app/cli.py` | Add `--receive` CLI flag |
-| `server/app/config.py` | Add `receive_mode: bool`, `receive_message: str` |
-| `server/app/main.py` | Mount drop box route, serve `drop.html` at `/drop` |
-| `client/vite.config.ts` | Add multi-page entry for `drop.html` |
+**Trade-offs:** Simpler connection management, but requires careful framing. Head-of-line blocking is possible if one large file transfer saturates the WS. Mitigation: chunk data frames into 64KB to allow interleaving of concurrent requests.
 
-**Architecture decision -- separate entry point, not a mode in App.tsx:** The drop box UI is fundamentally different from the file browser. It shows ONLY an upload zone, a welcome message, and confirmation. Embedding this as a conditional branch in App.tsx (already 500 lines) would bloat the main component and couple unrelated concerns.
-
-1. Backend serves `/drop` route that renders `drop.html`
-2. Vite builds a second entry via `client/src/drop-main.tsx`
-3. Drop box is a lightweight standalone React app with its own minimal component tree
-4. Shared code (api client, upload with XHR progress) is imported from existing modules
-
-**Upload destination:** Drop box uploads go to `_received/` within the shared folder, organized by timestamp subfolder. The `dropbox_service` creates `_received/{YYYY-MM-DD_HH-MM}/` directories.
-
-**Data flow:**
-
-```
-1. Server starts with --receive -> config.receive_mode = True
-2. Client visits /drop -> served drop.html -> renders DropBox app
-3. User drops files -> POST /api/dropbox/upload (reuses XHR upload pattern)
-4. Backend: dropbox_service saves to _received/{timestamp}/
-5. WebSocket broadcast: "New drop box upload from {device_name}"
-```
-
-**Interaction with password protection:** If both `--password` and `--receive` are set, the drop box page requires authentication too. The auth middleware applies uniformly. This is intentional -- if you password-protected the server, you probably do not want anonymous uploads either.
-
-### 4. Expiring Share Links
-
-**Integration point:** New token-based route bypassing normal file access.
-
-**New components:**
-
-| Component | Layer | Type | Purpose |
-|-----------|-------|------|---------|
-| `server/app/routers/share.py` | Backend | NEW file | `POST /api/share/create`, `GET /s/{token}` |
-| `server/app/services/share_service.py` | Backend | NEW file | Token generation/validation via itsdangerous |
-| `client/src/components/ShareDialog.tsx` | Frontend | NEW file | Dialog to create share link with expiry |
-| `client/src/api/share.ts` | Frontend | NEW file | Create share link API |
-
-**Modifications to existing files:**
-
-| File | Change |
-|------|--------|
-| `server/app/main.py` | Include share router; register `/s/{token}` BEFORE SPA catch-all |
-| `server/app/models/enums.py` | Add `ShareLinkExpiry` enum (1h, 6h, 24h, 7d) |
-| `client/src/components/FileRow.tsx` | Add "Share" action button |
-
-**Token architecture using itsdangerous:**
+**Protocol design:**
 
 ```python
-from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
+from enum import IntEnum
+import struct
+from dataclasses import dataclass
 
-serializer = URLSafeTimedSerializer(secret_key)
 
-# Create: encode file path + max_age into signed token
-token = serializer.dumps({"path": "docs/report.pdf", "max_age": 3600})
+class FrameType(IntEnum):
+    """Types of frames in the tunnel protocol."""
+    REQUEST_HEADER = 0x01    # Relay -> Agent: HTTP request metadata
+    REQUEST_BODY = 0x02      # Relay -> Agent: request body chunk
+    REQUEST_END = 0x03       # Relay -> Agent: request body complete
+    RESPONSE_HEADER = 0x04   # Agent -> Relay: HTTP response metadata
+    RESPONSE_BODY = 0x05     # Agent -> Relay: response body chunk
+    RESPONSE_END = 0x06      # Agent -> Relay: response complete
+    HEARTBEAT = 0x07         # Bidirectional keepalive
+    ERROR = 0x08             # Either direction: request-level error
 
-# Validate: unsign + check embedded timestamp vs max_age
-try:
-    data = serializer.loads(token, max_age=3600)
-except SignatureExpired:
-    # Token is older than max_age
-    raise HTTPException(status_code=410, detail="Link has expired")
-except BadSignature:
-    raise HTTPException(status_code=403, detail="Invalid link")
+
+# Wire format: [type:1][request_id:4][payload_len:4][payload:N]
+# Total header: 9 bytes. Max payload: 64KB per frame (for interleaving).
+FRAME_HEADER_SIZE = 9
+MAX_PAYLOAD_SIZE = 65536  # 64KB chunks for file streaming
+
+
+@dataclass(frozen=True)
+class TunnelFrame:
+    """Single frame in the tunnel protocol."""
+    frame_type: FrameType
+    request_id: int       # uint32, unique per request within a session
+    payload: bytes
+
+    def serialize(self) -> bytes:
+        header = struct.pack(
+            "!BII",
+            self.frame_type,
+            self.request_id,
+            len(self.payload),
+        )
+        return header + self.payload
+
+    @staticmethod
+    def deserialize(data: bytes) -> "TunnelFrame":
+        frame_type, request_id, payload_len = struct.unpack(
+            "!BII", data[:FRAME_HEADER_SIZE]
+        )
+        payload = data[FRAME_HEADER_SIZE:FRAME_HEADER_SIZE + payload_len]
+        return TunnelFrame(
+            frame_type=FrameType(frame_type),
+            request_id=request_id,
+            payload=payload,
+        )
 ```
 
-**Architecture decision -- stateless tokens over in-memory store:** Since we have no database, tokens are self-contained. The file path and expiry duration are encoded in the signed token. The server validates the signature and checks the embedded timestamp. No server-side storage needed. Tradeoff: tokens cannot be revoked before expiry. For a LAN tool with 1h-7d lifetimes, this is acceptable.
+### Pattern 2: Reverse Tunnel (Agent Connects Outbound)
 
-**Route placement (CRITICAL):** The `/s/{token}` route MUST be registered BEFORE the SPA catch-all `/{path:path}` in `main.py`. FastAPI matches routes in registration order. If the catch-all is first, `/s/...` requests serve `index.html` instead of triggering the file download. Currently the SPA catch-all is registered via `@application.get("/{path:path}")` inside `create_app()`. The share router must be included before this registration.
+**What:** The agent initiates the WebSocket connection to the relay (outbound). The relay never connects to the agent. This is the ngrok/localtunnel pattern.
 
-**Auth bypass:** Share links work WITHOUT authentication. The auth middleware must exclude `/s/*` paths. The token IS the authentication for that specific file.
+**When to use:** Always for this use case. Users behind NAT/firewalls cannot accept inbound connections.
 
-### 5. Device Discovery
+**Trade-offs:** Agent must handle reconnection (relay restarts, network flaps). Relay cannot "push" to an agent that hasn't connected yet.
 
-**Integration point:** Extends existing ConnectionManager + new mDNS service.
+**Connection lifecycle:**
 
-**New components:**
-
-| Component | Layer | Type | Purpose |
-|-----------|-------|------|---------|
-| `server/app/services/device_service.py` | Backend | NEW file | Device tracking, User-Agent parsing |
-| `server/app/services/mdns_service.py` | Backend | NEW file | mDNS/Bonjour via python-zeroconf |
-| `server/app/routers/devices.py` | Backend | NEW file | `GET /api/devices` endpoint |
-| `client/src/components/DevicePanel.tsx` | Frontend | NEW file | Connected devices list |
-| `client/src/hooks/useDevices.ts` | Frontend | NEW file | Device list state |
-| `client/src/api/devices.ts` | Frontend | NEW file | Fetch devices API |
-
-**Modifications to existing files:**
-
-| File | Change |
-|------|--------|
-| `server/app/services/connection_manager.py` | Add User-Agent, IP, timestamp storage per device |
-| `server/app/routers/websocket.py` | Pass request headers/scope to ConnectionManager on connect |
-| `server/app/models/enums.py` | Add `DeviceType` enum, `WSMessageType.DEVICE_LIST_UPDATED` |
-| `client/src/App.tsx` | Add DevicePanel toggle in header |
-| `client/src/types/websocket.ts` | Add `DEVICE_LIST_UPDATED` message type |
-
-**ConnectionManager extension:**
-
-```python
-# Current state:
-active_connections: dict[str, WebSocket]  # device_id -> ws
-device_names: dict[str, str]              # device_id -> name
-
-# Extended to include:
-device_info: dict[str, DeviceInfo]        # device_id -> full info
+```
+Agent                           Relay
+  |                               |
+  |-- WS CONNECT /agent/connect ->|
+  |   (with mount_code, password, |
+  |    ttl in query params)       |
+  |                               |
+  |<- ACCEPT + mount registered --|
+  |                               |
+  |<-- HEARTBEAT (every 30s) ---->|  (bidirectional)
+  |                               |
+  |<-- REQUEST_HEADER (req #1) ---|  (browser request arrives)
+  |                               |
+  |--- RESPONSE_HEADER (req #1)->-|
+  |--- RESPONSE_BODY (req #1) -->|
+  |--- RESPONSE_END (req #1) --->|
+  |                               |
+  |<-- WS CLOSE ------------------|  (TTL expired / agent disconnect)
 ```
 
-Where `DeviceInfo` holds: `device_id`, `device_name`, `device_type` (from User-Agent), `ip_address` (from WebSocket scope), `connected_at`, `user_agent`.
+### Pattern 3: URL-Based Mount Routing
 
-**User-Agent parsing:** Lightweight regex, not a full library:
-- "iPhone" or "iPad" -> PHONE / TABLET
-- "Android" + "Mobile" -> PHONE
-- "Android" without "Mobile" -> TABLET
-- "Macintosh" or "Windows" or "Linux" -> DESKTOP
-- Fallback -> UNKNOWN
+**What:** Browser requests to `/m/{code}/api/files` are routed to the agent registered under `{code}`. The relay strips the `/m/{code}` prefix before forwarding to the agent, so the agent sees `/api/files` -- identical to LAN server paths.
 
-**mDNS broadcast:** `python-zeroconf` registers the server as `_wififileserver._tcp.local.` so it appears in network service browsers. Registration at startup, unregistration at shutdown. Runs in its own background thread (zeroconf manages its event loop internally).
+**When to use:** This is the only routing strategy that works with the existing React SPA without rewriting API calls.
+
+**Trade-offs:** The SPA needs to know its base URL (`/m/{code}`) so it prefixes API calls correctly. This is a small change: inject `window.__MOUNT_BASE__` via the HTML template or use a relative URL strategy.
+
+**Relay-side implementation:**
 
 ```python
-from zeroconf import ServiceInfo, Zeroconf
-info = ServiceInfo(
-    "_wififileserver._tcp.local.",
-    "WiFi File Server._wififileserver._tcp.local.",
-    addresses=[socket.inet_aton(ip)],
-    port=port,
-    properties={"path": "/"},
+# relay/routers/proxy.py
+@router.api_route(
+    "/m/{code}/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
 )
-zeroconf = Zeroconf()
-zeroconf.register_service(info)
+async def proxy_to_agent(
+    code: str, path: str, request: Request,
+) -> StreamingResponse:
+    registry = get_mount_registry()
+    agent_conn = registry.get_agent(code)  # Raises MountNotFoundError
+
+    # Build tunneled request (strip /m/{code} prefix)
+    request_id = agent_conn.next_request_id()
+    header_frame = build_request_header_frame(
+        request_id=request_id,
+        method=request.method,
+        path=f"/{path}",
+        headers=dict(request.headers),
+        query=str(request.query_params),
+    )
+
+    # Send request through tunnel, stream response back
+    response_queue = agent_conn.create_response_queue(request_id)
+    await agent_conn.send_frame(header_frame)
+
+    # Stream request body if present
+    async for chunk in request.stream():
+        body_frame = TunnelFrame(FrameType.REQUEST_BODY, request_id, chunk)
+        await agent_conn.send_frame(body_frame)
+    await agent_conn.send_frame(
+        TunnelFrame(FrameType.REQUEST_END, request_id, b"")
+    )
+
+    # Wait for response header
+    resp_header = await response_queue.get_header()
+
+    return StreamingResponse(
+        response_queue.body_iterator(),
+        status_code=resp_header.status_code,
+        headers=resp_header.headers,
+    )
 ```
 
-**Real-time updates:** On connect/disconnect, broadcast the full device list to all clients via `DEVICE_LIST_UPDATED` WebSocket message. Frontend `useDevices` hook updates accordingly.
+### Pattern 4: Agent Proxies to Local FastAPI Server
 
-### 6. Terminal UI
+**What:** The agent starts a local FastAPI server using the SAME `create_app()` factory on a random port. Tunneled requests are forwarded to this local server via `httpx`. The local server handles all file operations identically to LAN mode.
 
-**Integration point:** Replaces `print()` calls in `cli.py` with a Rich Live display.
+**When to use:** Always. This is the simplest approach that guarantees behavior parity between LAN and remote modes.
 
-**New components:**
-
-| Component | Layer | Type | Purpose |
-|-----------|-------|------|---------|
-| `server/app/services/terminal_ui.py` | Backend | NEW file | Rich-based terminal dashboard |
-| `server/app/services/stats_collector.py` | Backend | NEW file | Thread-safe server metrics aggregation |
-
-**Modifications to existing files:**
-
-| File | Change |
-|------|--------|
-| `server/app/cli.py` | Replace `print()` with terminal UI; add `--no-tui` for plain output |
-| `server/app/main.py` | Add lifespan event to start/stop terminal UI |
-| `server/app/routers/files.py` | Report upload/download events to stats_collector |
-| `server/app/services/connection_manager.py` | Report connect/disconnect to stats_collector |
-
-**Architecture decision -- Rich over Textual:** Textual is a full TUI framework for interactive terminal apps. The WiFi File Server terminal is a read-only dashboard -- it displays information but the user does not interact beyond Ctrl+C. Rich's `Live` display is the right tool: it updates a rendered Layout in-place without requiring an event loop takeover.
-
-**Terminal dashboard layout:**
-
-```
-+---------------------------------------------------+
-| WiFi File Server v1.1                             |
-+---------------------------------------------------+
-| URL: http://192.168.1.5:8000    Devices: 3        |
-| QR: [ascii QR code]                               |
-+---------------------------------------------------+
-| Connected Devices              | Stats             |
-| - Swift Fox (iPhone, 1m ago)   | Uploads: 12       |
-| - Brave Owl (MacBook, 5m ago)  | Downloads: 34     |
-| - Keen Hawk (Windows, 2m ago)  | Bandwidth: 1.2 GB |
-+---------------------------------------------------+
-| Recent Activity                                   |
-| [12:01] Swift Fox uploaded photo.jpg (2.3 MB)     |
-| [12:00] Brave Owl downloaded report.pdf (1.1 MB)  |
-| [11:58] Keen Hawk connected                       |
-+---------------------------------------------------+
-```
-
-**StatsCollector pattern:** Thread-safe singleton with `threading.Lock`. Routers call `stats_collector.record_upload(filename, size)` etc. Terminal UI polls at 1-second intervals via Rich Live refresh.
-
-**uvicorn log integration:** When TUI is active, uvicorn access logs must be suppressed to avoid corrupting the Rich display. Set `uvicorn.run(log_level="warning")` when TUI is active, route access events through `stats_collector` instead.
-
-**Architecture decision -- no async in terminal UI:** Rich's `Live` uses a background thread. StatsCollector uses `threading.Lock`. This avoids coupling the TUI to asyncio. The separation is clean: async request handlers write to StatsCollector, synchronous TUI thread reads from it.
-
-### 7. Speed Test
-
-**Integration point:** New API endpoint + frontend component for bandwidth measurement.
-
-**New components:**
-
-| Component | Layer | Type | Purpose |
-|-----------|-------|------|---------|
-| `server/app/routers/speedtest.py` | Backend | NEW file | `GET /api/speedtest/download`, `POST /api/speedtest/upload` |
-| `client/src/components/SpeedTest.tsx` | Frontend | NEW file | Speed test UI with progress |
-| `client/src/hooks/useSpeedTest.ts` | Frontend | NEW file | Speed test execution logic |
-| `client/src/api/speedtest.ts` | Frontend | NEW file | Speed test API |
-
-**Modifications to existing files:**
-
-| File | Change |
-|------|--------|
-| `server/app/main.py` | Include speedtest router |
-| `server/app/models/enums.py` | Add `SpeedTestSize` enum (1MB, 5MB, 10MB, 50MB) |
-| `client/src/App.tsx` | Add speed test button in header/settings |
-
-**Implementation -- XHR-based measurement, not WebSocket:**
-
-**Download test:**
-```
-1. Frontend starts timer
-2. GET /api/speedtest/download?size=10485760
-3. Server streams os.urandom() chunks via StreamingResponse
-4. Frontend receives all data, stops timer
-5. Speed = size / elapsed_time
-```
-
-**Upload test:**
-```
-1. Frontend generates random ArrayBuffer
-2. Starts timer
-3. POST /api/speedtest/upload with data as body
-4. Server reads and discards, returns {bytes_received, server_time_ms}
-5. Speed = size / elapsed_time (client-side timing)
-```
-
-**Architecture decision -- XHR over WebSocket:** XHR measures real HTTP transfer including TCP overhead, which matches what users experience during actual file transfers. WebSocket measures a different protocol path. The app already uses XHR for uploads, so this is consistent.
-
-**Architecture decision -- streaming response over temp files:** Generating random data on-the-fly via `StreamingResponse` avoids temp files and works for any test size. Yield 64KB chunks of `os.urandom()`.
-
-## Component Boundaries
-
-| Component | Responsibility | Communicates With |
-|-----------|---------------|-------------------|
-| AuthMiddleware | Gate all requests when password set | ServerConfig, AuthService |
-| AuthService | Hash verification, token signing | itsdangerous, bcrypt |
-| ReadOnlyMiddleware | Block write operations | ServerConfig |
-| DropBoxService | Drop box uploads, folder organization | FileService, ConnectionManager |
-| ShareService | Token generation/validation | itsdangerous |
-| DeviceService | Device tracking, User-Agent parsing | ConnectionManager |
-| mDNSService | Network service registration | python-zeroconf |
-| StatsCollector | Server metrics aggregation | Called by routers/services |
-| TerminalUI | Rich Live dashboard | StatsCollector, ConnectionManager |
-| SpeedTestRouter | Bandwidth measurement endpoints | StreamingResponse |
-
-## Middleware Stack Order
-
-Middleware executes in onion style in FastAPI (last registered = outermost). Register in this order:
+**Trade-offs:** Slight overhead of localhost HTTP roundtrip (negligible -- sub-millisecond). Massive simplification: the agent does not need to reimplement response formatting, content negotiation, FileResponse, StreamingResponse, middleware, or any routing logic.
 
 ```python
-# In create_app():
+# agent/request_handler.py
+import httpx
 
-# 1. ReadOnly (innermost -- only reached after auth passes)
-if config.read_only:
-    application.add_middleware(ReadOnlyMiddleware)
 
-# 2. Auth (middle -- checks before read-only)
-if config.password_hash is not None:
-    application.add_middleware(AuthMiddleware, password_hash=config.password_hash)
+class AgentRequestHandler:
+    """Forwards tunneled requests to the local FastAPI server."""
 
-# 3. CORS (outermost -- already exists, handles preflight OPTIONS)
-application.add_middleware(CORSMiddleware, ...)
+    def __init__(self, local_port: int) -> None:
+        self._base_url = f"http://127.0.0.1:{local_port}"
+        self._client = httpx.AsyncClient(base_url=self._base_url)
+
+    async def handle_request(
+        self,
+        request_id: int,
+        method: str,
+        path: str,
+        headers: dict[str, str],
+        query: str,
+        body_chunks: list[bytes],
+    ) -> AsyncIterator[TunnelFrame]:
+        """Forward request to local server, yield response frames."""
+        url = path
+        if query:
+            url = f"{path}?{query}"
+
+        # Remove hop-by-hop headers
+        filtered_headers = {
+            k: v for k, v in headers.items()
+            if k.lower() not in ("host", "transfer-encoding", "connection")
+        }
+
+        body = b"".join(body_chunks) if body_chunks else None
+
+        response = await self._client.request(
+            method=method,
+            url=url,
+            headers=filtered_headers,
+            content=body,
+        )
+
+        # Yield response header frame
+        yield build_response_header_frame(
+            request_id, response.status_code, dict(response.headers),
+        )
+
+        # Yield body in 64KB chunks
+        offset = 0
+        while offset < len(response.content):
+            chunk = response.content[offset:offset + MAX_PAYLOAD_SIZE]
+            yield TunnelFrame(FrameType.RESPONSE_BODY, request_id, chunk)
+            offset += MAX_PAYLOAD_SIZE
+
+        yield TunnelFrame(FrameType.RESPONSE_END, request_id, b"")
+
+    async def close(self) -> None:
+        await self._client.aclose()
 ```
 
-Request flow: CORS -> Auth -> ReadOnly -> Router.
-
-## Data Flow Changes
-
-### ServerConfig expansion
+**Streaming improvement for v1.2+:** The above buffers the full response. For large file downloads, use `httpx` streaming mode:
 
 ```python
-class ServerConfig:
-    shared_folder: Path
-    port: int
-    # v1.1 additions:
-    password_hash: str | None    # bcrypt hash, None = no auth
-    read_only: bool              # True = block all writes
-    receive_mode: bool           # True = enable /drop endpoint
-    receive_message: str         # Welcome message for drop box
+async with self._client.stream(method, url, headers=filtered_headers) as response:
+    yield build_response_header_frame(request_id, response.status_code, dict(response.headers))
+    async for chunk in response.aiter_bytes(chunk_size=MAX_PAYLOAD_SIZE):
+        yield TunnelFrame(FrameType.RESPONSE_BODY, request_id, chunk)
+    yield TunnelFrame(FrameType.RESPONSE_END, request_id, b"")
 ```
 
-### ServerInfo response expansion
+This is the recommended approach -- it streams files through the tunnel without buffering.
 
-```python
-class ServerInfo(BaseModel):
-    ip: str
-    port: int
-    url: str
-    qr_svg: str
-    all_ips: list[str]
-    # v1.1 additions:
-    read_only: bool              # Frontend hides write UI
-    password_protected: bool     # Frontend shows lock icon
-    receive_mode: bool           # Frontend shows drop box link
-```
+## Data Flow
 
-### WebSocket message types expansion
-
-```python
-class WSMessageType(str, Enum):
-    # existing...
-    TOAST = "toast"
-    SNIPPET_UPDATED = "snippet_updated"
-    # ...
-    # v1.1 additions:
-    DEVICE_LIST_UPDATED = "device_list_updated"
-    DROPBOX_UPLOAD = "dropbox_upload"
-```
-
-## Patterns to Follow
-
-### Pattern 1: Middleware for Cross-Cutting Concerns
-
-**What:** Use Starlette middleware for concerns that apply to ALL endpoints.
-**When:** Auth gating, read-only enforcement.
-
-```python
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
-from starlette.responses import JSONResponse
-
-class AuthMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app, password_hash: str) -> None:
-        super().__init__(app)
-        self.password_hash = password_hash
-
-    async def dispatch(self, request: Request, call_next):
-        # Skip auth for login endpoint and share links
-        if request.url.path.startswith("/api/auth") or request.url.path.startswith("/s/"):
-            return await call_next(request)
-
-        session_cookie = request.cookies.get("wfs_session")
-        if session_cookie is None:
-            return JSONResponse(status_code=401, content={"error": "Authentication required"})
-
-        # Validate signed cookie via itsdangerous
-        return await call_next(request)
-```
-
-### Pattern 2: Config-Driven Feature Flags
-
-**What:** Feature availability determined by ServerConfig fields set at CLI parse time.
-**When:** Features toggled via CLI flags (--password, --read-only, --receive).
-
-```python
-# In create_app():
-config = get_server_config()
-if config.password_hash is not None:
-    app.add_middleware(AuthMiddleware, password_hash=config.password_hash)
-if config.read_only:
-    app.add_middleware(ReadOnlyMiddleware)
-if config.receive_mode:
-    app.include_router(dropbox_router)
-```
-
-### Pattern 3: Stateless Signed Tokens
-
-**What:** itsdangerous `URLSafeTimedSerializer` for tokens with embedded payload and expiry.
-**When:** Session cookies (auth) and share link tokens.
-
-```python
-from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
-
-serializer = URLSafeTimedSerializer(secret_key)
-token = serializer.dumps({"path": "file.pdf"})
-
-try:
-    data = serializer.loads(token, max_age=3600)
-except SignatureExpired:
-    raise HTTPException(status_code=410, detail="Link has expired")
-except BadSignature:
-    raise HTTPException(status_code=403, detail="Invalid link")
-```
-
-### Pattern 4: Stats Collector Singleton
-
-**What:** Thread-safe singleton aggregating server metrics, polled by terminal UI.
-**When:** Terminal UI needs upload/download counts, bandwidth, activity log.
-
-```python
-import threading
-from collections import deque
-
-class StatsCollector:
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self.upload_count: int = 0
-        self.download_count: int = 0
-        self.total_bytes: int = 0
-        self.recent_activity: deque[str] = deque(maxlen=20)
-
-    def record_upload(self, filename: str, size: int) -> None:
-        with self._lock:
-            self.upload_count += 1
-            self.total_bytes += size
-            self.recent_activity.appendleft(f"Uploaded {filename}")
-```
-
-## Anti-Patterns to Avoid
-
-### Anti-Pattern 1: Per-Route Auth Checks
-
-**What:** Adding `Depends(require_auth)` to each router endpoint.
-**Why bad:** Easy to forget a route. A new endpoint added without the dependency is silently unprotected. Auth is a server-wide policy, not per-endpoint.
-**Instead:** Middleware with explicit allowlist of unauthenticated paths.
-
-### Anti-Pattern 2: Storing Password as Plaintext in Config
-
-**What:** `ServerConfig.password = "mysecret"` instead of storing the hash.
-**Why bad:** Password lives in memory for the server's lifetime. Debug endpoints or error handlers could leak it.
-**Instead:** Hash at CLI parse time: `bcrypt.hashpw(password.encode(), bcrypt.gensalt())`. Discard plaintext immediately.
-
-### Anti-Pattern 3: Embedding Drop Box in App.tsx
-
-**What:** Adding `mode === "dropbox"` conditional branch inside App.tsx.
-**Why bad:** Drop box shares almost nothing with the file browser. Conditional rendering for an entirely different interface bloats App.tsx (already 500 lines) and couples unrelated concerns.
-**Instead:** Separate Vite entry point (`drop-main.tsx`) and root component (`DropBox.tsx`). Shared utilities imported, but component tree is independent.
-
-### Anti-Pattern 4: Database for Token Storage
-
-**What:** Adding SQLite to store share link tokens for revocation.
-**Why bad:** The project has no database. Adding one for a single feature is scope creep.
-**Instead:** Stateless tokens via itsdangerous. Accept no pre-expiry revocation. For a LAN tool with short-lived tokens, this is fine. If revocation becomes critical, use an in-memory set of revoked IDs (cleared on restart).
-
-### Anti-Pattern 5: Running Terminal UI on asyncio Event Loop
-
-**What:** Making Rich Live an async task alongside uvicorn.
-**Why bad:** Rich Live is designed for synchronous use with a background thread. Forcing it into async adds complexity with no benefit.
-**Instead:** Run TUI refresh in a daemon thread. Use thread-safe StatsCollector for communication between async handlers and synchronous TUI.
-
-## Suggested Build Order
-
-Based on dependency analysis between features:
+### Browser Request Through Tunnel
 
 ```
-Phase 1: Access Control (establishes middleware + config patterns)
-  1. Password Protection -- middleware, CLI, config expansion, itsdangerous
-  2. Read-Only Mode -- second middleware, same patterns, quick to add
-
-Phase 2: Sharing Features (uses itsdangerous from Phase 1)
-  3. Expiring Share Links -- reuses itsdangerous serializer pattern
-  4. Receive Mode / Drop Box -- separate entry point, uses upload infra
-
-Phase 3: Server UX (independent of Phases 1-2)
-  5. Device Discovery -- extends ConnectionManager, adds mDNS
-  6. Terminal UI -- needs StatsCollector, benefits from device info
-  7. Speed Test -- independent endpoint, simplest feature
+Browser (GET /m/abc123/api/files?path=docs)
+    |
+    v
+Relay HTTP Router
+    | strips /m/abc123, looks up agent for "abc123"
+    v
+Tunnel Manager
+    | assigns request_id=42, serializes to binary frames
+    v
+Agent WebSocket (binary frames over WS)
+    | REQUEST_HEADER(42, "GET /api/files?path=docs", headers)
+    v
+Agent Tunnel Client
+    | deserializes frame, forwards to local FastAPI via httpx
+    v
+Local FastAPI (127.0.0.1:random_port)
+    | file_service.list_directory(shared_folder, "docs")
+    v
+Agent Tunnel Client
+    | reads httpx response, serializes to binary frames
+    | RESPONSE_HEADER(42, 200, headers)
+    | RESPONSE_BODY(42, json_bytes)
+    | RESPONSE_END(42)
+    v
+Relay Tunnel Manager
+    | reassembles response for request_id=42
+    v
+Browser receives JSON response
 ```
+
+### File Download Through Tunnel (Streaming)
+
+```
+Browser (GET /m/abc123/api/files/download?path=video.mp4)
+    |
+    v
+Relay: creates request_id=99, sends REQUEST_HEADER to agent
+    |
+    v
+Agent: httpx streams from local server (FileResponse)
+Agent: streams file in 64KB RESPONSE_BODY frames
+    | RESPONSE_HEADER(99, 200, {"content-type": "video/mp4", ...})
+    | RESPONSE_BODY(99, <64KB chunk>)
+    | RESPONSE_BODY(99, <64KB chunk>)
+    | ...
+    | RESPONSE_END(99)
+    v
+Relay: StreamingResponse yields chunks as they arrive from WS
+    v
+Browser: downloads file progressively
+```
+
+### Mount Registration Flow
+
+```
+Agent CLI: wifi-file-server mount ./photos --relay wss://relay.example.com
+    |
+    | 1. Start local FastAPI on random port (using create_app())
+    | 2. Set ServerConfig for the local server
+    | 3. Generate or accept mount code
+    | 4. Connect WS to relay
+    v
+Relay /agent/connect?code=abc123&ttl=3600
+    |
+    | 5. Validate code uniqueness
+    | 6. Register in MountRegistry {code -> ws}
+    | 7. Start TTL countdown (asyncio.Task with sleep)
+    | 8. Accept WS
+    v
+Agent: print "Mounted at https://relay.example.com/m/abc123"
+Agent: print QR code for the mount URL
+```
+
+### Key Data Flows
+
+1. **Mount registration:** Agent connects outbound, relay registers code in memory. No persistence needed -- mounts are ephemeral by design, matching the share links pattern from v1.1.
+2. **Request proxying:** Relay receives browser HTTP, serializes to binary WS frames, agent deserializes and proxies to local server, response flows back.
+3. **File streaming:** Large files are chunked into 64KB frames. Relay yields chunks to browser as StreamingResponse as they arrive -- no buffering the full file on relay.
+4. **Heartbeat:** Bidirectional ping every 30 seconds. Three missed heartbeats = connection dead, mount deregistered.
+5. **TTL expiry:** Relay asyncio.Task sleeps for TTL duration, then closes agent WS and removes mount from registry. Agent detects close and exits cleanly.
+
+## Integration Points
+
+### With Existing Codebase
+
+| Integration Point | What Changes | Risk |
+|-------------------|-------------|------|
+| `cli.py` | Add `mount` subcommand via argparse subparsers | LOW -- additive, existing `serve` behavior becomes default subcommand |
+| `create_app()` | Nothing -- agent calls it as-is to start local server | NONE |
+| `file_service.py` | Nothing -- reused as-is by agent's local FastAPI | NONE |
+| `config.py` | Nothing -- agent creates its own `ServerConfig` | NONE |
+| React SPA | Must support configurable API base URL | MEDIUM -- need to audit all `fetch()` calls in `client/src/api/` |
+| `connection_manager.py` | Nothing -- LAN-only, not used by relay | NONE |
+| `pyproject.toml` | Add httpx + websockets dependencies, add relay entry point | LOW |
+| SPA build (vite) | Relay serves the same `client/dist` build output | NONE -- no build changes needed |
+
+### New External Dependencies
+
+| Dependency | Purpose | Notes |
+|------------|---------|-------|
+| `httpx` | Agent's async HTTP client to local server | Mature, async-native, streaming support. Already widely used in FastAPI ecosystem. |
+| `websockets` | Agent's WS client to relay | FastAPI/Starlette WS is server-side only; agent needs a client library. `websockets` is the standard Python async WS client. |
+
+### Internal Boundaries
+
+| Boundary | Communication | Notes |
+|----------|---------------|-------|
+| Relay <-> Agent | WebSocket (binary frames) | Custom tunnel protocol defined in `tunnel/` |
+| Agent <-> Local Server | HTTP (localhost) | Standard FastAPI request/response via httpx |
+| Browser <-> Relay | HTTP + (optionally WS) | Standard web, relay serves SPA static files |
+| Relay landing <-> SPA | HTTP redirect | `/m/{code}/` serves the SPA with injected base URL |
+
+## SPA Base URL Strategy
+
+The React SPA currently makes API calls to hardcoded paths (`/api/files`, `/ws`). When served through the relay at `/m/{code}/`, these calls must target `/m/{code}/api/files` instead.
+
+**Recommended approach:** The relay serves the SPA's `index.html` with an injected `<script>` tag:
+
+```html
+<script>window.__MOUNT_BASE__ = "/m/abc123";</script>
+```
+
+The SPA reads `window.__MOUNT_BASE__` (defaulting to `""` for LAN mode) and prefixes all API/WS URLs. This requires:
+
+1. A `getBaseUrl()` function in `client/src/api/` that returns `window.__MOUNT_BASE__ || ""`
+2. All `fetch()` calls in 5-6 API files prefixed with `getBaseUrl()`
+3. The WebSocket hook uses the base URL for its WS endpoint
+4. Zero changes to React components -- only the API layer changes
+
+This is the lowest-risk approach because:
+- LAN mode is completely unaffected (base is `""`)
+- No React Router needed (the SPA is a single page, no client-side routing)
+- The relay controls the injected value per mount code
+
+### WebSocket in Remote Mode
+
+The existing SPA WebSocket (`/ws`) provides clipboard sync, device notifications, file requests, and device discovery. In remote mode:
+
+**Recommendation for v1.2:** Disable real-time WS features in remote mode. The remote SPA does not connect to the LAN server's WS. Remote users only need file browsing and downloading. Clipboard sync and device discovery are LAN-context features that make no sense over a relay tunnel.
+
+The SPA already gracefully handles WS unavailability -- it shows a "reconnecting" banner via `ConnectionStatus`. In remote mode, the SPA detects `window.__MOUNT_BASE__` is set and skips the WS connection entirely. The banner is hidden since WS is intentionally disabled, not failing.
+
+### Password Protection in Remote Mode
+
+The existing cookie-based auth middleware works through the tunnel because:
+1. Browser sends HTTP to relay, relay forwards to agent, agent's local server has auth middleware
+2. Cookies are set on the relay domain (the browser's perspective), not localhost
+3. The relay transparently proxies Set-Cookie headers from agent responses
+
+The agent's `mount` subcommand accepts `--password` the same way `serve` does. If set, the local FastAPI server has auth middleware. Browser must log in through the relay before accessing files.
+
+## Scaling Considerations
+
+| Scale | Architecture Adjustments |
+|-------|--------------------------|
+| 1-50 mounts | Single relay process, in-memory registry. This is the v1.2 target. |
+| 50-500 mounts | Still single process. Python async handles this -- each mount is just a WS connection + request forwarding. Bottleneck is bandwidth, not connections. |
+| 500+ mounts | Redis-backed registry for multi-process relay. Sticky sessions or WS connection pinning. Out of scope for v1.2. |
+
+### Scaling Priorities
+
+1. **First bottleneck:** Bandwidth per relay instance. Large file downloads through the relay consume relay egress. No mitigation in v1.2 -- this is inherent to the relay model. Future: WebRTC P2P fallback (already planned for v2+).
+2. **Second bottleneck:** Head-of-line blocking when multiple large downloads happen concurrently over a single agent WS. 64KB chunking with interleaving mitigates this, but sustained throughput will be lower than direct LAN. Acceptable tradeoff.
+
+## Anti-Patterns
+
+### Anti-Pattern 1: Buffering Full Responses on Relay
+
+**What people do:** Read the entire agent response into memory before sending to browser.
+**Why it's wrong:** A 2GB video file would OOM the relay server.
+**Do this instead:** Stream response body frames directly to the browser StreamingResponse as they arrive over WS. Use an `asyncio.Queue` per request_id: agent pushes frames, relay pops and yields.
+
+### Anti-Pattern 2: Using JSON for Tunnel Protocol
+
+**What people do:** JSON-encode every request/response including binary file data (base64).
+**Why it's wrong:** Base64 inflates data by 33%. JSON parsing is slow for high-throughput file transfers. Cannot efficiently stream.
+**Do this instead:** Use binary WebSocket frames with a compact binary header (9 bytes: type + request_id + length). Payload is raw bytes.
+
+### Anti-Pattern 3: One WebSocket Per Browser Request
+
+**What people do:** Agent opens a new WS connection for each incoming browser request (the ngrok "on-demand tunnel" pattern).
+**Why it's wrong:** Connection setup latency (WS handshake) adds 100-300ms per request. Firewall/NAT may rate-limit new connections.
+**Do this instead:** Multiplex all requests over the single persistent agent WS. Use request IDs to demultiplex.
+
+### Anti-Pattern 4: Merging Relay Into LAN Server
+
+**What people do:** Add relay routes to the existing FastAPI app and deploy "one server does everything."
+**Why it's wrong:** LAN server is private, relay is public. Different security models, deployment targets, and lifecycles. Users running LAN mode should not expose relay endpoints.
+**Do this instead:** Separate processes. Shared code (tunnel protocol) lives in shared packages.
+
+### Anti-Pattern 5: Agent Re-implements File Operations
+
+**What people do:** Write a parallel set of file listing/download/upload handlers in the agent instead of reusing the existing server.
+**Why it's wrong:** Code duplication. Bugs fixed in `file_service.py` won't be fixed in agent's copy. Behavior divergence between LAN and remote modes.
+**Do this instead:** Agent starts a local FastAPI server using the SAME `create_app()` factory and proxies tunneled requests to it via localhost HTTP using httpx.
+
+### Anti-Pattern 6: Subdomain-Based Routing
+
+**What people do:** Route mounts via subdomains (`abc123.relay.example.com`) like ngrok does.
+**Why it's wrong:** Requires wildcard DNS, wildcard TLS certificates, and DNS propagation time. Massively increases deployment complexity for a simple file sharing tool.
+**Do this instead:** Path-based routing (`relay.example.com/m/abc123/`). Works with a single domain, single TLS cert, zero DNS complexity.
+
+## Build Order (Dependency-Driven)
+
+This ordering is based on strict dependency analysis. Each step can be tested in isolation before proceeding.
+
+| Order | Component | Depends On | Can Test Without |
+|-------|-----------|------------|------------------|
+| 1 | Tunnel Protocol (`server/tunnel/`) | Nothing | Everything -- pure data structures |
+| 2 | Mount Registry (`server/relay/registry.py`) | Nothing | Everything -- in-memory dict with TTL |
+| 3 | Relay Server skeleton + landing page | #2 | Agents -- can verify landing page renders |
+| 4 | Agent `mount` subcommand + local server | Existing `create_app()` | Relay -- can verify local server starts |
+| 5 | Agent tunnel client (WS to relay) | #1, #4 | Browser proxy -- can verify WS connects |
+| 6 | Relay agent WS endpoint + tunnel manager | #1, #2, #3 | Browser -- can verify agent registers |
+| 7 | Relay proxy router (`/m/{code}/*`) | #1, #6 | Nothing -- full E2E works |
+| 8 | SPA base URL support | #7 | Nothing -- this is the UI polish |
+| 9 | Password + TTL for mounts | #7 | Nothing -- reuses existing auth patterns |
 
 **Rationale:**
-- Password protection FIRST because it establishes the middleware pattern, itsdangerous usage, and config expansion approach that other features reuse.
-- Read-only pairs with auth since both are middleware using the same base class.
-- Share links reuse itsdangerous from auth, so serializer pattern is already established.
-- Drop box is more complex (separate SPA, upload organization) but benefits from auth middleware being in place.
-- Device discovery extends ConnectionManager; doing it before TUI means the dashboard can display device info.
-- Terminal UI needs StatsCollector, which is touched by upload/download/device tracking -- so it comes after those exist.
-- Speed test is the simplest, most independent feature. Can slot anywhere.
-
-## Scalability Considerations
-
-| Concern | At 3 devices | At 20 devices | At 100+ devices |
-|---------|-------------|--------------|-----------------|
-| WebSocket connections | Trivial | Fine, ~20 sockets | May need heartbeat tuning |
-| Auth middleware | Negligible | Negligible | Cookie validation is O(1) |
-| Device tracking | In-memory dict | In-memory dict | Paginate device list API |
-| Share link tokens | Stateless | Stateless | No concern |
-| mDNS broadcast | Single registration | Single registration | No concern |
-| Terminal UI | 1s refresh | Same | Same |
-| Speed test | One at a time | Concurrent possible | Rate-limit to prevent saturation |
-| Drop box uploads | Direct to filesystem | Upload queue advisable | Upload size limits |
+- Tunnel protocol first because it is a pure shared library with no dependencies. Unit-testable with pytest alone.
+- Registry before relay because the relay needs it, but registry needs nothing.
+- Agent local server before tunnel client because we want to verify `create_app()` works in agent context before adding WS complexity.
+- Proxy router last among core components because it requires both relay and agent to be functional.
+- SPA changes deferred until proxy works so we can test with curl/httpie first.
+- Auth/TTL last because they are additive features on a working tunnel.
 
 ## Sources
 
-- [FastAPI Response Cookies](https://fastapi.tiangolo.com/advanced/response-cookies/) -- cookie patterns (HIGH confidence)
-- [itsdangerous documentation](https://itsdangerous.palletsprojects.com/en/stable/timed/) -- URLSafeTimedSerializer (HIGH confidence)
-- [Rich Live Display](https://rich.readthedocs.io/en/latest/live.html) -- terminal dashboard (HIGH confidence)
-- [Rich Progress Display](https://rich.readthedocs.io/en/latest/progress.html) -- progress bars (HIGH confidence)
-- [python-zeroconf](https://github.com/python-zeroconf/python-zeroconf) -- mDNS discovery (HIGH confidence)
-- [OpenSpeedTest](https://github.com/openspeedtest/Speed-Test) -- browser speed test reference (MEDIUM confidence)
-- [FastAPI middleware discussion](https://github.com/fastapi/fastapi/issues/996) -- JWT cookie patterns (MEDIUM confidence)
-- [Starlette SessionMiddleware](https://github.com/fastapi/fastapi/issues/754) -- session support (MEDIUM confidence)
+- [IETF WebSocket Multiplexing Draft](https://datatracker.ietf.org/doc/html/draft-ietf-hybi-websocket-multiplexing-01) -- multiplexing extension design for WS channel IDs
+- [wsrtunnel - Python Reverse HTTP Tunnel](https://github.com/defreng/wsrtunnel) -- reference implementation of WS-based reverse HTTP tunnel
+- [wstunnel - Tunnel over WebSocket](https://github.com/erebe/wstunnel) -- production WS tunnel with binary framing
+- [awesome-tunneling](https://github.com/anderspitman/awesome-tunneling) -- comprehensive list of tunnel architectures
+- [FastAPI WebSocket docs](https://fastapi.tiangolo.com/advanced/websockets/) -- binary data handling with receive_bytes/send_bytes
+- [WebSocket binary framing](https://www.appetenza.com/websocket-handling-binary-data) -- binary data handling patterns
+- Existing codebase: `server/app/main.py`, `server/app/services/connection_manager.py`, `server/app/routers/websocket.py`, `server/app/services/file_service.py`, `server/app/cli.py`, `server/app/config.py`
+
+---
+*Architecture research for: Remote mount relay server integration with existing WiFi file sharing app*
+*Researched: 2026-03-11*
