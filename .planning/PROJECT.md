@@ -2,7 +2,18 @@
 
 ## What This Is
 
-A polished, cross-platform LAN file sharing tool that lets any device on the same network browse, upload, preview, and request files through a modern web UI with real-time collaboration and access control. Think AirDrop but browser-based, cross-platform, and feature-rich — with shared clipboard, file requests, media preview, expiring share links, and device discovery. Built with React + FastAPI + WebSocket.
+A polished, cross-platform file sharing tool that lets any device browse, upload, preview, and request files through a modern web UI with real-time collaboration and access control. Works on LAN (direct) or over the internet via remote mounts — a publicly hosted relay server that proxies to a client agent. Think AirDrop but browser-based, cross-platform, and feature-rich — with shared clipboard, file requests, media preview, expiring share links, device discovery, and remote mounting. Built with React + FastAPI + WebSocket.
+
+## Current Milestone: v1.2 Remote Mounts
+
+**Goal:** Enable file sharing over the internet by letting users mount their local filesystem through a public relay server, accessible via short code or QR — without requiring recipients to install anything.
+
+**Target features:**
+- Agent CLI command to mount a local directory through a remote server via WebSocket tunnel
+- Lightweight relay server that routes browser requests to the correct agent by mount code
+- Mount landing page with code entry and QR scan
+- Per-mount password protection and TTL auto-expire (reuse existing infra)
+- Existing LAN mode preserved unchanged
 
 ## Core Value
 
@@ -36,8 +47,11 @@ Any device on the same WiFi network can instantly share files with zero setup �
 
 ### Active
 
-- [ ] Rich terminal UI dashboard
-- [ ] Network speed test
+- [ ] Agent CLI command to mount local directory through remote server
+- [ ] Relay server that proxies browser requests to agent via mount code
+- [ ] Mount landing page with code entry and QR scan
+- [ ] Per-mount password protection and TTL auto-expire
+- [ ] Existing LAN mode preserved unchanged
 
 ### Out of Scope
 
@@ -51,13 +65,20 @@ Any device on the same WiFi network can instantly share files with zero setup �
 - File versioning — needs database, filesystem doesn't support natively
 - Custom theming beyond dark mode — v2+
 - pip/brew/docker packaging — future concern
-- Per-user accounts / multi-password — contradicts "zero setup" core value
+- Per-user accounts / multi-password — deferred to v1.3+, build accounts layer on top of mounts
 - HTTPS / TLS — certificate management is massive friction for LAN tool
 - Persistent share links (survive restart) — in-memory is a feature, no stale links
+- Containerization / K8S — keep deployment simple for now
+- Server-side file caching — pure proxy model, no server storage
+- Device allowlists / role-based permissions — deferred to accounts milestone
 
 ## Context
 
 - Shipped v1.1 with ~13,150 LOC (6,966 Python + 6,184 TypeScript)
+- v1.2 introduces a relay server + agent model for remote mounts over the internet
+- Agent connects outbound to server via WebSocket; server proxies browser requests through tunnel
+- Only the mounting device needs the CLI agent; consumers use browser only
+- Deployment target: cloud function or spot VM (no containerization yet)
 - Tech stack: React + Tailwind CSS v4 (frontend), FastAPI + uvicorn (backend), WebSocket (real-time)
 - WebSocket infrastructure shared between clipboard sync, notifications, file requests, and device discovery
 - Target audience: general public who want easy LAN file sharing
@@ -90,4 +111,4 @@ Any device on the same WiFi network can instantly share files with zero setup �
 | Textarea scratchpad over Clipboard API | Clipboard API requires HTTPS; textarea works on HTTP LAN | ✓ Good — correct for LAN context |
 
 ---
-*Last updated: 2026-03-11 after v1.1 milestone*
+*Last updated: 2026-03-11 after v1.2 milestone start*
