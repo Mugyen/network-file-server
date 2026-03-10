@@ -1,9 +1,10 @@
 """Server info API router.
 
-Provides GET /api/server-info with IP, port, URL, and QR code data.
+Provides GET /api/server-info with IP, port, URL, QR code, and mode data.
 """
 
 import logging
+import socket
 
 from fastapi import APIRouter
 
@@ -41,6 +42,10 @@ def get_server_info() -> ServerInfo:
             url="unknown",
             qr_svg="",
             all_ips=[],
+            read_only=config.read_only,
+            receive=config.receive,
+            password_required=config.password_hash is not None,
+            hostname=socket.gethostname(),
         )
 
     url = f"http://{ip}:{port}"
@@ -52,4 +57,8 @@ def get_server_info() -> ServerInfo:
         url=url,
         qr_svg=qr_svg,
         all_ips=all_ips,
+        read_only=config.read_only,
+        receive=config.receive,
+        password_required=config.password_hash is not None,
+        hostname=socket.gethostname(),
     )

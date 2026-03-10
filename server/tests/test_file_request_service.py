@@ -125,11 +125,11 @@ async def test_list_excludes_dismissed(service: FileRequestService) -> None:
 @pytest_asyncio.fixture
 async def client(tmp_path: Path) -> AsyncClient:
     """Create test client with isolated data dir."""
-    from server.app.config import set_server_config, ServerConfig
+    from server.app.config import create_default_config, set_server_config
 
     shared = tmp_path / "shared"
     shared.mkdir()
-    set_server_config(ServerConfig(shared_folder=shared, port=8000))
+    set_server_config(create_default_config(shared_folder=shared, port=8000))
 
     # Patch the service factory to use tmp_path -- also reset the module singleton
     import server.app.services.file_request_service as frs_mod

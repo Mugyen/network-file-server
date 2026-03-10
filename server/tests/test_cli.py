@@ -57,6 +57,67 @@ class TestArgParsing:
         args = parser.parse_args(["/tmp/shared"])
         assert args.host is None
 
+    def test_parses_password_flag(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(["/tmp/shared", "--password", "mysecret"])
+        assert args.password == "mysecret"
+
+    def test_password_defaults_to_none(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(["/tmp/shared"])
+        assert args.password is None
+
+    def test_parses_read_only_flag(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(["/tmp/shared", "--read-only"])
+        assert args.read_only is True
+
+    def test_read_only_defaults_to_false(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(["/tmp/shared"])
+        assert args.read_only is False
+
+    def test_parses_receive_flag(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(["/tmp/shared", "--receive"])
+        assert args.receive is True
+
+    def test_receive_defaults_to_false(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(["/tmp/shared"])
+        assert args.receive is False
+
+
+class TestCLIValidation:
+    """Tests for CLI argument validation logic in main()."""
+
+    def test_read_only_and_receive_together_exits(self, tmp_path: Path) -> None:
+        """--read-only and --receive together should cause SystemExit."""
+        with patch.object(
+            sys,
+            "argv",
+            ["wifi-file-server", str(tmp_path), "--read-only", "--receive"],
+        ):
+            from server.app.cli import main
+
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 1
+
+    def test_password_over_72_bytes_exits(self, tmp_path: Path) -> None:
+        """--password with >72 byte value should cause SystemExit."""
+        long_password = "a" * 73
+        with patch.object(
+            sys,
+            "argv",
+            ["wifi-file-server", str(tmp_path), "--password", long_password],
+        ):
+            from server.app.cli import main
+
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 1
+
 
 class TestRunWithDefaults:
     """Tests for run_with_defaults convenience function."""

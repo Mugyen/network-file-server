@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A polished, cross-platform LAN file sharing tool that lets any device on the same network browse, upload, preview, and request files through a modern web UI with real-time collaboration. Think AirDrop but browser-based, cross-platform, and feature-rich — with shared clipboard, file requests, and media preview. Built with React + FastAPI + WebSocket.
+A polished, cross-platform LAN file sharing tool that lets any device on the same network browse, upload, preview, and request files through a modern web UI with real-time collaboration and access control. Think AirDrop but browser-based, cross-platform, and feature-rich — with shared clipboard, file requests, media preview, expiring share links, and device discovery. Built with React + FastAPI + WebSocket.
 
 ## Core Value
 
@@ -26,20 +26,17 @@ Any device on the same WiFi network can instantly share files with zero setup �
 - ✓ Drag-and-drop upload with progress bars, batch download/delete, folder navigation — v1.0
 - ✓ Real-time transfer notifications via WebSocket toasts — v1.0
 - ✓ File request system — request files from connected devices — v1.0
+- ✓ Password protection via `--password` CLI flag — v1.1
+- ✓ Read-only mode via `--read-only` CLI flag — v1.1
+- ✓ Receive mode / digital drop box via `--receive` CLI flag — v1.1
+- ✓ Expiring share links with TTL selection and clean download pages — v1.1
+- ✓ Share links bypass password protection — v1.1
+- ✓ Share link listing and revocation for server operator — v1.1
+- ✓ Real-time device discovery with type icons and self-identification — v1.1
 
 ### Active
 
-#### Access Control
-- [ ] Password protection via `--password` CLI flag
-- [ ] Read-only mode via `--read-only` CLI flag
-
-#### Sharing
-- [ ] Receive mode / digital drop box
-- [ ] Expiring share links
-
-#### Connectivity & UX
-- [ ] Automatic device discovery
-- [ ] Rich terminal UI
+- [ ] Rich terminal UI dashboard
 - [ ] Network speed test
 
 ### Out of Scope
@@ -47,61 +44,50 @@ Any device on the same WiFi network can instantly share files with zero setup �
 - E2E encryption — deferred to v2, too complex for initial release
 - WebRTC P2P transfers — v2+
 - Secure tunnel / remote access — v2+, LAN-only is core value
-- Auto-sync (#09) — fundamentally different from file sharing
-- Admin dashboard — no auth in v1, no admin role needed
+- Auto-sync — fundamentally different from file sharing
 - PWA / mobile app — v2+, web works well on mobile
 - Desktop tray app — separate project (Electron/Tauri)
-- Plugin system — over-engineering for v1
+- Plugin system — over-engineering
 - File versioning — needs database, filesystem doesn't support natively
 - Custom theming beyond dark mode — v2+
-- pip/brew/docker packaging — v1 just needs to work locally
-
-## Current Milestone: v1.1 Share & Access Control
-
-**Goal:** Add access control (password, read-only), new sharing modes (dropbox, expiring links), and server UX improvements (device discovery, terminal UI, speed test).
-
-**Target features:**
-- Password Protection — server-wide password gate via CLI flag
-- Read-Only Mode — disable all write operations via CLI flag
-- Receive Mode / Drop Box — upload-only interface for collecting files
-- Expiring Share Links — temporary links for specific files/folders
-- Device Discovery — track and display connected devices
-- Terminal UI — rich terminal dashboard with live server stats
-- Speed Test — built-in network speed measurement
+- pip/brew/docker packaging — future concern
+- Per-user accounts / multi-password — contradicts "zero setup" core value
+- HTTPS / TLS — certificate management is massive friction for LAN tool
+- Persistent share links (survive restart) — in-memory is a feature, no stale links
 
 ## Context
 
-- Shipped v1.0 with ~9,600 LOC (4,700 Python + 4,900 TypeScript)
+- Shipped v1.1 with ~13,150 LOC (6,966 Python + 6,184 TypeScript)
 - Tech stack: React + Tailwind CSS v4 (frontend), FastAPI + uvicorn (backend), WebSocket (real-time)
-- WebSocket infrastructure shared between clipboard sync, notifications, and file requests
+- WebSocket infrastructure shared between clipboard sync, notifications, file requests, and device discovery
 - Target audience: general public who want easy LAN file sharing
-- v1.0 built in a single day — 4 phases, 13 plans, ~29 tasks
-- Codebase map available at `.planning/codebase/`
+- v1.0 built in 1 day, v1.1 in 3 days — 7 phases, 20 plans total
+- Auth uses cookie-based sessions (bcrypt + itsdangerous), not header-based
+- Share links use Jinja2 server-rendered pages (no SPA needed for recipients)
+- `run.sh` builds frontend and starts server in one command
 
 ## Constraints
 
 - **Tech stack**: React (frontend) + FastAPI (backend) + WebSocket (real-time features)
 - **Dependency management**: uv for Python
 - **Runtime**: Python 3.11+, Node for frontend build
-- **Network**: LAN-only for v1 (no internet required for operation)
-- **No auth for v1**: Open access on LAN is intentional for ease of use
+- **Network**: LAN-only (no internet required for operation)
 
 ## Key Decisions
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Full rewrite over incremental upgrade | Clean foundation for 35 planned features; Flask+Jinja won't scale | ✓ Good — clean codebase, all features delivered |
+| Full rewrite over incremental upgrade | Clean foundation for planned features; Flask+Jinja won't scale | ✓ Good — clean codebase, all features delivered |
 | React + FastAPI over Flask + htmx | Modern stack, better DX, reusable component model for complex features | ✓ Good — component reuse across all phases |
-| Defer E2E encryption to v2 | Touches every file operation, too complex for v1 | ✓ Good — correct scope for v1 |
-| WebSocket for real-time features | Shared infra for clipboard, notifications, and file requests | ✓ Good — ConnectionManager shared across 3 features |
-| No authentication in v1 | LAN tool — open access is a feature, not a bug | ✓ Good — zero-setup is core value |
-| Starlette FileResponse for preview | Native Range request support eliminates custom 206 streaming code | ✓ Good — zero custom streaming code |
-| PrismLight tree-shaking | 23 individual language imports vs full Prism — keeps bundle manageable | ✓ Good |
-| Tailwind v4 @custom-variant dark mode | CSS-first dark mode with FOUC prevention inline script | ✓ Good |
-| 3-state theme toggle | SYSTEM/DARK/LIGHT cycle instead of simple on/off | ✓ Good |
+| WebSocket for real-time features | Shared infra for clipboard, notifications, file requests, devices | ✓ Good — ConnectionManager shared across 4 features |
+| Cookie-based auth over header-based | `<a href>` downloads and `<img src>` previews bypass custom headers | ✓ Good — correct for browser context |
+| Pure ASGI middleware for auth | BaseHTTPMiddleware deprecated; pure ASGI is more performant | ✓ Good |
+| itsdangerous for tokens | Reusable for both session tokens and share link tokens | ✓ Good — reused across Phase 5 and 6 |
+| Jinja2 for share pages | Recipients don't need React SPA; server-rendered is simpler and faster | ✓ Good |
+| Auth middleware gates only /api/* | SPA must load for LoginPage to render; non-API paths pass through | ✓ Good — fixed after UAT caught the bug |
+| Starlette FileResponse for preview | Native Range request support eliminates custom 206 streaming code | ✓ Good |
 | XHR for upload progress | fetch() lacks upload.onprogress support | ✓ Good — reliable progress bars |
-| Native URLSearchParams navigation | No React Router needed for simple path-based navigation | ✓ Good — minimal dependency |
 | Textarea scratchpad over Clipboard API | Clipboard API requires HTTPS; textarea works on HTTP LAN | ✓ Good — correct for LAN context |
 
 ---
-*Last updated: 2026-03-10 after v1.1 milestone start*
+*Last updated: 2026-03-11 after v1.1 milestone*

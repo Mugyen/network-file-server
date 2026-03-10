@@ -2,7 +2,8 @@ import { useState, useRef, useEffect } from "react";
 import { FileType } from "../types/files.ts";
 import type { FileEntry } from "../types/files.ts";
 import FileIcon from "./FileIcon.tsx";
-import { Download, Pencil, Trash2 } from "lucide-react";
+import { Download, Pencil, Trash2, Share2 } from "lucide-react";
+import ShareDialog from "./ShareDialog.tsx";
 
 interface FileRowProps {
   file: FileEntry;
@@ -14,6 +15,7 @@ interface FileRowProps {
   onDelete: (path: string) => void;
   onDownload: (path: string) => void;
   onPreview: (file: FileEntry) => void;
+  readOnly?: boolean;
 }
 
 function formatDate(isoString: string): string {
@@ -44,10 +46,12 @@ function FileRow({
   onDelete,
   onDownload,
   onPreview,
+  readOnly,
 }: FileRowProps) {
   const isDirectory = file.type === FileType.DIRECTORY;
   const fullPath = buildChildPath(currentPath, file.name);
 
+  const [isSharing, setIsSharing] = useState<boolean>(false);
   const [isRenaming, setIsRenaming] = useState<boolean>(false);
   const [renameValue, setRenameValue] = useState<string>(file.name);
   const renameInputRef = useRef<HTMLInputElement>(null);
@@ -109,6 +113,7 @@ function FileRow({
   }
 
   return (
+    <>
     <tr
       className={`border-b dark:border-gray-700 group ${isSelected ? "bg-blue-50 dark:bg-blue-900/20" : "hover:bg-gray-50 dark:hover:bg-gray-800"} ${isDirectory ? "cursor-pointer" : ""}`}
       onDoubleClick={handleDoubleClick}
@@ -165,6 +170,16 @@ function FileRow({
           {!isDirectory && (
             <button
               type="button"
+              onClick={() => setIsSharing(true)}
+              className="p-1 text-gray-400 hover:text-blue-600 dark:text-gray-500 dark:hover:text-blue-400 transition-colors"
+              title="Share"
+            >
+              <Share2 className="h-4 w-4" />
+            </button>
+          )}
+          {!isDirectory && (
+            <button
+              type="button"
               onClick={handleDownloadClick}
               className="p-1 text-gray-400 hover:text-blue-600 dark:text-gray-500 dark:hover:text-blue-400 transition-colors"
               title="Download"
@@ -172,25 +187,37 @@ function FileRow({
               <Download className="h-4 w-4" />
             </button>
           )}
-          <button
-            type="button"
-            onClick={handleRenameStart}
-            className="p-1 text-gray-400 hover:text-blue-600 dark:text-gray-500 dark:hover:text-blue-400 transition-colors"
-            title="Rename"
-          >
-            <Pencil className="h-4 w-4" />
-          </button>
-          <button
-            type="button"
-            onClick={handleDeleteClick}
-            className="p-1 text-gray-400 hover:text-red-600 dark:text-gray-500 dark:hover:text-red-400 transition-colors"
-            title="Delete"
-          >
-            <Trash2 className="h-4 w-4" />
-          </button>
+          {!readOnly && (
+            <button
+              type="button"
+              onClick={handleRenameStart}
+              className="p-1 text-gray-400 hover:text-blue-600 dark:text-gray-500 dark:hover:text-blue-400 transition-colors"
+              title="Rename"
+            >
+              <Pencil className="h-4 w-4" />
+            </button>
+          )}
+          {!readOnly && (
+            <button
+              type="button"
+              onClick={handleDeleteClick}
+              className="p-1 text-gray-400 hover:text-red-600 dark:text-gray-500 dark:hover:text-red-400 transition-colors"
+              title="Delete"
+            >
+              <Trash2 className="h-4 w-4" />
+            </button>
+          )}
         </div>
       </td>
     </tr>
+    {isSharing && (
+      <ShareDialog
+        filePath={fullPath}
+        fileName={file.name}
+        onClose={() => setIsSharing(false)}
+      />
+    )}
+    </>
   );
 }
 

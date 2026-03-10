@@ -11,6 +11,7 @@ interface ScratchpadPanelProps {
   onUpdateContent: (id: string, content: string) => void;
   onUpdateTitle: (id: string, title: string) => void;
   onDeleteSnippet: (id: string) => void;
+  readOnly: boolean;
 }
 
 function ScratchpadPanel({
@@ -22,6 +23,7 @@ function ScratchpadPanel({
   onUpdateContent,
   onUpdateTitle,
   onDeleteSnippet,
+  readOnly,
 }: ScratchpadPanelProps) {
   return (
     <>
@@ -46,14 +48,16 @@ function ScratchpadPanel({
             Scratchpad
           </h2>
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={onAddSnippet}
-              className="p-1.5 rounded-md text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
-              aria-label="Add snippet"
-            >
-              <Plus className="w-5 h-5" />
-            </button>
+            {!readOnly && (
+              <button
+                type="button"
+                onClick={onAddSnippet}
+                className="p-1.5 rounded-md text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
+                aria-label="Add snippet"
+              >
+                <Plus className="w-5 h-5" />
+              </button>
+            )}
             <button
               type="button"
               onClick={onClose}
@@ -75,7 +79,7 @@ function ScratchpadPanel({
 
           {!isLoading && snippets.length === 0 && (
             <p className="text-center text-gray-500 dark:text-gray-400 py-8">
-              No snippets yet. Click + to create one.
+              {readOnly ? "No snippets." : "No snippets yet. Click + to create one."}
             </p>
           )}
 
@@ -87,6 +91,7 @@ function ScratchpadPanel({
                 onUpdateContent={onUpdateContent}
                 onUpdateTitle={onUpdateTitle}
                 onDelete={onDeleteSnippet}
+                readOnly={readOnly}
               />
             ))}
         </div>

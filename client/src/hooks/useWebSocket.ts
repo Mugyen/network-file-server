@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { WSMessageType } from "../types/websocket.ts";
+import type { DeviceInfo } from "../types/websocket.ts";
 
 /** Maximum reconnect delay in milliseconds. */
 const MAX_RECONNECT_DELAY = 30000;
@@ -13,6 +14,8 @@ const MAX_JITTER = 1000;
 interface UseWebSocketResult {
   isConnected: boolean;
   deviceCount: number;
+  devices: DeviceInfo[];
+  myDeviceId: string;
   sendMessage: (msg: object) => void;
   addMessageHandler: (type: string, handler: (data: unknown) => void) => void;
   removeMessageHandler: (type: string) => void;
@@ -25,6 +28,8 @@ interface UseWebSocketResult {
 export function useWebSocket(deviceName: string): UseWebSocketResult {
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [deviceCount, setDeviceCount] = useState<number>(0);
+  const [devices, setDevices] = useState<DeviceInfo[]>([]);
+  const [myDeviceId, setMyDeviceId] = useState<string>("");
   const wsRef = useRef<WebSocket | null>(null);
   const handlersRef = useRef<Map<string, (data: unknown) => void>>(new Map());
   const attemptRef = useRef<number>(0);
@@ -53,6 +58,29 @@ export function useWebSocket(deviceName: string): UseWebSocketResult {
         setDeviceCount(data.count as number);
       }
 
+      if (msgType === WSMessageType.DEVICE_LIST) {
+        setDevices(data.devices as DeviceInfo[]);
+        setMyDeviceId(data.your_device_id as string);
+      }
+
+      if (msgType === WSMessageType.TOAST) {
+        const toastType = data.toast_type as string;
+        if (toastType === "device_connected" && data.device_info !== undefined) {
+          const newDevice = data.device_info as DeviceInfo;
+          setDevices((prev) => {
+            // Avoid duplicates
+            if (prev.some((d) => d.device_id === newDevice.device_id)) {
+              return prev;
+            }
+            return [...prev, newDevice];
+          });
+        }
+        if (toastType === "device_disconnected" && data.device_id !== undefined) {
+          const disconnectedId = data.device_id as string;
+          setDevices((prev) => prev.filter((d) => d.device_id !== disconnectedId));
+        }
+      }
+
       const handler = handlersRef.current.get(msgType);
       if (handler !== undefined) {
         handler(data);
@@ -62,6 +90,8 @@ export function useWebSocket(deviceName: string): UseWebSocketResult {
     ws.onclose = (): void => {
       if (!mountedRef.current) return;
       setIsConnected(false);
+      setDevices([]);
+      setMyDeviceId("");
       wsRef.current = null;
 
       // Exponential backoff with jitter
@@ -114,5 +144,5 @@ export function useWebSocket(deviceName: string): UseWebSocketResult {
     handlersRef.current.delete(type);
   }, []);
 
-  return { isConnected, deviceCount, sendMessage, addMessageHandler, removeMessageHandler };
+  return { isConnected, deviceCount, devices, myDeviceId, sendMessage, addMessageHandler, removeMessageHandler };
 }

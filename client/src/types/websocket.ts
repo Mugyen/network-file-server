@@ -9,6 +9,7 @@ export const WSMessageType = {
   REQUEST_DISMISSED: "request_dismissed",
   DEVICE_COUNT: "device_count",
   SNIPPET_UPDATE: "snippet_update",
+  DEVICE_LIST: "device_list",
 } as const;
 
 export type WSMessageType = (typeof WSMessageType)[keyof typeof WSMessageType];
@@ -45,10 +46,35 @@ export interface WSDeviceCountPayload {
   count: number;
 }
 
+/** Device type enum matching server DeviceType. */
+export const DeviceType = {
+  PHONE: "phone",
+  TABLET: "tablet",
+  DESKTOP: "desktop",
+} as const;
+
+export type DeviceType = (typeof DeviceType)[keyof typeof DeviceType];
+
+/** Information about a connected device. */
+export interface DeviceInfo {
+  device_id: string;
+  device_name: string;
+  ip_address: string;
+  device_type: DeviceType;
+  connected_at: string;
+}
+
+export interface WSDeviceListPayload {
+  type: typeof WSMessageType.DEVICE_LIST;
+  devices: DeviceInfo[];
+  your_device_id: string;
+}
+
 /** Extensible union for all WS message types (future plans add more). */
 export type WSMessage =
   | WSToastPayload
   | WSDeviceCountPayload
+  | WSDeviceListPayload
   | { type: string; [key: string]: unknown };
 
 const ADJECTIVES = [

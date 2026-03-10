@@ -17,8 +17,18 @@ class ServerConfig:
 
     shared_folder: Path
     port: int
+    password_hash: bytes | None
+    read_only: bool
+    receive: bool
 
-    def __init__(self, shared_folder: Path, port: int) -> None:
+    def __init__(
+        self,
+        shared_folder: Path,
+        port: int,
+        password_hash: bytes | None,
+        read_only: bool,
+        receive: bool,
+    ) -> None:
         if not shared_folder.exists():
             raise ValueError(
                 f"Shared folder '{shared_folder}' does not exist"
@@ -29,6 +39,25 @@ class ServerConfig:
             )
         self.shared_folder = shared_folder.resolve()
         self.port = port
+        self.password_hash = password_hash
+        self.read_only = read_only
+        self.receive = receive
+
+
+def create_default_config(shared_folder: Path, port: int) -> ServerConfig:
+    """Create a ServerConfig with default access control settings.
+
+    password_hash=None: no password protection (open access)
+    read_only=False: all operations allowed
+    receive=False: receive-only mode disabled
+    """
+    return ServerConfig(
+        shared_folder=shared_folder,
+        port=port,
+        password_hash=None,
+        read_only=False,
+        receive=False,
+    )
 
 
 _config: ServerConfig | None = None
@@ -51,7 +80,14 @@ def set_server_config(config: ServerConfig) -> None:
 def create_config_from_args(args: argparse.Namespace) -> ServerConfig:
     """Construct a ServerConfig from parsed CLI arguments.
 
-    Expects args to have 'folder' (str) and 'port' (int) attributes.
+    Expects args to have 'folder' (str), 'port' (int), 'password_hash' (bytes | None),
+    'read_only' (bool), and 'receive' (bool) attributes.
     """
     folder_path = Path(args.folder).resolve()
-    return ServerConfig(shared_folder=folder_path, port=args.port)
+    return ServerConfig(
+        shared_folder=folder_path,
+        port=args.port,
+        password_hash=args.password_hash,
+        read_only=args.read_only,
+        receive=args.receive,
+    )

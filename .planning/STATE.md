@@ -2,61 +2,38 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Share & Access Control
-status: planning
-stopped_at: Phase 5 context gathered
-last_updated: "2026-03-09T20:20:46.195Z"
-last_activity: 2026-03-10 -- Roadmap created for v1.1 (3 phases, 19 requirements)
+status: milestone_complete
+stopped_at: v1.1 milestone archived
+last_updated: "2026-03-11T00:00:00.000Z"
+last_activity: 2026-03-11 -- Completed v1.1 milestone
 progress:
   total_phases: 3
-  completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
-  percent: 0
+  completed_phases: 3
+  total_plans: 7
+  completed_plans: 7
+  percent: 100
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-03-10)
+See: .planning/PROJECT.md (updated 2026-03-11)
 
 **Core value:** Any device on the same WiFi network can instantly share files with zero setup -- scan QR, drop files, done.
-**Current focus:** Phase 5 - Access Control
+**Current focus:** Planning next milestone
 
 ## Current Position
 
-Phase: 5 of 7 (Access Control) -- first phase of v1.1
-Plan: --
-Status: Ready to plan
-Last activity: 2026-03-10 -- Roadmap created for v1.1 (3 phases, 19 requirements)
+Milestone v1.1 complete. All 7 phases (1-7) shipped across v1.0 and v1.1.
 
-Progress: [░░░░░░░░░░] 0%
-
-## Performance Metrics
-
-**Velocity:**
-- Total plans completed: 13 (all v1.0)
-- v1.1 plans completed: 0
-
-**By Phase (v1.1):**
-
-| Phase | Plans | Total | Avg/Plan |
-|-------|-------|-------|----------|
-| 5. Access Control | 0/? | - | - |
-| 6. Expiring Share Links | 0/? | - | - |
-| 7. Device Discovery | 0/? | - | - |
+Progress: [██████████] 100%
 
 ## Accumulated Context
 
 ### Decisions
 
-Decisions are logged in PROJECT.md Key Decisions table.
-All v1.0 decisions validated -- see PROJECT.md for outcomes.
-
-Key research findings for v1.1:
-- Cookie-based auth is mandatory (not header-based) -- existing `<a href>` downloads and `<img src>` previews bypass custom headers
-- 8 distinct write surfaces across 3 routers and WebSocket need blocking in read-only mode
-- itsdangerous serializer pattern reused for both session tokens and share link tokens
+All decisions logged in PROJECT.md Key Decisions table.
 
 ### Pending Todos
 
@@ -68,6 +45,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-09T20:20:46.192Z
-Stopped at: Phase 5 context gathered
-Resume file: .planning/phases/05-access-control/05-CONTEXT.md
+Last session: 2026-03-11
+Stopped at: v1.1 milestone archived
+Resume file: None

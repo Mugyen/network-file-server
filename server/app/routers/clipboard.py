@@ -2,7 +2,9 @@
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+
+from server.app.middleware.mode_guard import require_full_access, require_write_access
 
 from server.app.models.enums import WSMessageType
 from server.app.models.schemas import (
@@ -16,14 +18,14 @@ from server.app.services.connection_manager import manager
 router = APIRouter(prefix="/api/clipboard", tags=["clipboard"])
 
 
-@router.get("/", response_model=list[Snippet])
+@router.get("/", response_model=list[Snippet], dependencies=[Depends(require_full_access)])
 async def list_snippets() -> list[Snippet]:
     """Return all clipboard snippets."""
     service = get_clipboard_service()
     return await service.list_snippets()
 
 
-@router.post("/", response_model=Snippet, status_code=201)
+@router.post("/", response_model=Snippet, status_code=201, dependencies=[Depends(require_write_access), Depends(require_full_access)])
 async def create_snippet(request: CreateSnippetRequest) -> Snippet:
     """Create a new snippet and broadcast to all connected devices."""
     service = get_clipboard_service()
@@ -39,7 +41,7 @@ async def create_snippet(request: CreateSnippetRequest) -> Snippet:
     return snippet
 
 
-@router.patch("/{snippet_id}", response_model=Snippet)
+@router.patch("/{snippet_id}", response_model=Snippet, dependencies=[Depends(require_write_access), Depends(require_full_access)])
 async def update_snippet_title(
     snippet_id: str,
     request: UpdateSnippetTitleRequest,
@@ -58,7 +60,7 @@ async def update_snippet_title(
     return snippet
 
 
-@router.delete("/{snippet_id}")
+@router.delete("/{snippet_id}", dependencies=[Depends(require_write_access), Depends(require_full_access)])
 async def delete_snippet(snippet_id: str) -> dict:
     """Delete a snippet and broadcast deletion to all connected devices."""
     service = get_clipboard_service()

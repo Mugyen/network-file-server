@@ -125,12 +125,12 @@ class TestPersistence:
 @pytest_asyncio.fixture()
 async def client(data_dir: Path) -> AsyncClient:
     """Create an httpx AsyncClient wired to the FastAPI app with test config."""
-    from server.app.config import ServerConfig, set_server_config
+    from server.app.config import create_default_config, set_server_config
 
     # Create a valid shared folder for ServerConfig
     shared_folder = data_dir.parent / "shared"
     shared_folder.mkdir(parents=True, exist_ok=True)
-    set_server_config(ServerConfig(shared_folder=shared_folder, port=8000))
+    set_server_config(create_default_config(shared_folder=shared_folder, port=8000))
 
     # Reset the clipboard service singleton to use our test data_dir
     import server.app.services.clipboard_service as cs_module

@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
-import { ClipboardList } from "lucide-react";
+import { ClipboardList, LogOut, Monitor, Share2 } from "lucide-react";
 import type { FileEntry } from "./types/files.ts";
 import { FileType } from "./types/files.ts";
 import { FileCategory, getFileCategory } from "./types/fileCategories.ts";
 import type { ServerInfo as ServerInfoData } from "./types/serverInfo.ts";
 import type { WSToastPayload } from "./types/websocket.ts";
 import { WSMessageType, getDeviceName } from "./types/websocket.ts";
+import type { ServerMode } from "./types/serverMode.ts";
 import {
   fetchFiles,
   downloadFile,
@@ -44,8 +45,11 @@ import ConflictDialog from "./components/ConflictDialog.tsx";
 import ConfirmDialog from "./components/ConfirmDialog.tsx";
 import CreateFolderDialog from "./components/CreateFolderDialog.tsx";
 import ScratchpadPanel from "./components/ScratchpadPanel.tsx";
+import ShareLinksPanel from "./components/ShareLinksPanel.tsx";
+import DevicesPanel from "./components/DevicesPanel.tsx";
 import FileRequestForm from "./components/FileRequestForm.tsx";
 import FileRequestBanner from "./components/FileRequestBanner.tsx";
+import ModeBadges from "./components/ModeBadges.tsx";
 
 /** Cycle order for theme toggle: SYSTEM -> DARK -> LIGHT -> SYSTEM */
 function cycleThemeMode(current: ThemeMode): ThemeMode {
@@ -62,7 +66,14 @@ function cycleThemeMode(current: ThemeMode): ThemeMode {
 /** Stable device name retrieved once from localStorage. */
 const deviceName = getDeviceName();
 
-function App() {
+interface AppProps {
+  serverMode: ServerMode;
+  onLogout: () => void;
+}
+
+function App({ serverMode, onLogout }: AppProps) {
+  const isReadOnly = serverMode.readOnly;
+
   const { currentPath, navigateTo } = usePathNavigation();
   const ws = useWebSocket(deviceName);
   const toast = useToast();
@@ -70,6 +81,8 @@ function App() {
   const [serverInfo, setServerInfo] = useState<ServerInfoData | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [showShareLinks, setShowShareLinks] = useState<boolean>(false);
+  const [showDevices, setShowDevices] = useState<boolean>(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<boolean>(false);
   const [showCreateFolder, setShowCreateFolder] = useState<boolean>(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
@@ -305,16 +318,48 @@ function App() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900" {...dragHandlers}>
-      <UploadOverlay visible={isDragging} />
+    <div
+      className="min-h-screen bg-gray-50 dark:bg-gray-900"
+      {...(isReadOnly ? {} : dragHandlers)}
+    >
+      {!isReadOnly && <UploadOverlay visible={isDragging} />}
 
       <header className="py-6">
         <div className="container mx-auto max-w-4xl px-4 flex items-center justify-between">
-          <h1 className="text-2xl font-bold text-gray-800 dark:text-gray-100">
-            WiFi File Server
-          </h1>
+          <div className="flex items-center">
+            <h1 className="text-2xl font-bold text-gray-800 dark:text-gray-100">
+              WiFi File Server
+            </h1>
+            <ModeBadges
+              readOnly={serverMode.readOnly}
+              passwordProtected={serverMode.passwordRequired}
+            />
+          </div>
           <div className="flex items-center gap-3">
             <ConnectionStatus isConnected={ws.isConnected} deviceCount={ws.deviceCount} />
+            <button
+              type="button"
+              onClick={() => setShowDevices(true)}
+              className="relative p-1.5 rounded-md text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
+              aria-label="Connected devices"
+              title="Devices"
+            >
+              <Monitor className="w-5 h-5" />
+              {ws.devices.length > 0 && (
+                <span className="absolute -top-1 -right-1 min-w-[1.125rem] h-[1.125rem] flex items-center justify-center rounded-full bg-blue-500 text-white text-[10px] font-bold leading-none px-1">
+                  {String(ws.devices.length)}
+                </span>
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowShareLinks(true)}
+              className="p-1.5 rounded-md text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
+              aria-label="Share links"
+              title="Share Links"
+            >
+              <Share2 className="w-5 h-5" />
+            </button>
             <button
               type="button"
               onClick={clipboard.togglePanel}
@@ -331,6 +376,19 @@ function App() {
               isDark={theme.isDark}
               onToggle={handleThemeToggle}
             />
+            {serverMode.passwordRequired && (
+              <button
+                type="button"
+                onClick={() => {
+                  void import("./api/auth.ts").then((mod) => mod.logout()).then(onLogout);
+                }}
+                className="p-1.5 rounded-md text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
+                aria-label="Log out"
+                title="Log out"
+              >
+                <LogOut className="w-5 h-5" />
+              </button>
+            )}
           </div>
         </div>
       </header>
@@ -369,30 +427,44 @@ function App() {
               onToggleCategory={toggleCategory}
             />
 
-            {selection.selectedCount > 0 ? (
-              <BatchToolbar
-                selectedCount={selection.selectedCount}
-                onDownloadZip={() => void handleBatchDownloadZip()}
-                onDelete={handleBatchDeleteRequest}
-                onClearSelection={selection.clearSelection}
-              />
+            {isReadOnly ? (
+              /* Read-only: show only download-zip batch toolbar when items selected */
+              selection.selectedCount > 0 ? (
+                <BatchToolbar
+                  selectedCount={selection.selectedCount}
+                  onDownloadZip={() => void handleBatchDownloadZip()}
+                  onDelete={handleBatchDeleteRequest}
+                  onClearSelection={selection.clearSelection}
+                  readOnly
+                />
+              ) : null
             ) : (
-              <Toolbar
-                onUploadClick={upload.uploadFiles}
-                onNewFolder={handleNewFolderRequest}
-                onRequestFile={fileRequests.toggleForm}
-                currentPath={currentPath}
-              />
+              /* Normal mode: full toolbar or batch toolbar */
+              selection.selectedCount > 0 ? (
+                <BatchToolbar
+                  selectedCount={selection.selectedCount}
+                  onDownloadZip={() => void handleBatchDownloadZip()}
+                  onDelete={handleBatchDeleteRequest}
+                  onClearSelection={selection.clearSelection}
+                />
+              ) : (
+                <Toolbar
+                  onUploadClick={upload.uploadFiles}
+                  onNewFolder={handleNewFolderRequest}
+                  onRequestFile={fileRequests.toggleForm}
+                  currentPath={currentPath}
+                />
+              )
             )}
 
-            {fileRequests.showForm && (
+            {!isReadOnly && fileRequests.showForm && (
               <FileRequestForm
                 onSubmit={(desc) => void fileRequests.submitRequest(desc)}
                 onCancel={fileRequests.toggleForm}
               />
             )}
 
-            {fileRequests.requests.map((req) => (
+            {!isReadOnly && fileRequests.requests.map((req) => (
               <FileRequestBanner
                 key={req.id}
                 request={req}
@@ -422,30 +494,33 @@ function App() {
               sortField={sort.field}
               sortDirection={sort.direction}
               onSort={sort.toggleSort}
+              readOnly={isReadOnly}
             />
           </>
         )}
       </main>
 
-      {/* Upload panel -- floating bottom-right */}
-      <UploadPanel
-        uploads={upload.uploads}
-        collapsed={upload.collapsed}
-        onToggleCollapse={upload.toggleCollapsed}
-        onClearCompleted={upload.clearCompleted}
-        onRetry={upload.retryFailed}
-      />
+      {/* Upload panel -- floating bottom-right (hidden in read-only) */}
+      {!isReadOnly && (
+        <UploadPanel
+          uploads={upload.uploads}
+          collapsed={upload.collapsed}
+          onToggleCollapse={upload.toggleCollapsed}
+          onClearCompleted={upload.clearCompleted}
+          onRetry={upload.retryFailed}
+        />
+      )}
 
-      {/* Conflict dialog for uploads */}
-      {upload.pendingConflict !== null && (
+      {/* Conflict dialog for uploads (hidden in read-only) */}
+      {!isReadOnly && upload.pendingConflict !== null && (
         <ConflictDialog
           fileName={upload.pendingConflict.file.name}
           onResolve={upload.resolveConflict}
         />
       )}
 
-      {/* Delete confirmation modal */}
-      {showDeleteConfirm && (
+      {/* Delete confirmation modal (hidden in read-only) */}
+      {!isReadOnly && showDeleteConfirm && (
         <ConfirmDialog
           title="Confirm Delete"
           message={getDeleteMessage()}
@@ -455,8 +530,8 @@ function App() {
         />
       )}
 
-      {/* Create folder dialog */}
-      {showCreateFolder && (
+      {/* Create folder dialog (hidden in read-only) */}
+      {!isReadOnly && showCreateFolder && (
         <CreateFolderDialog
           onCreateFolder={(name) => void handleCreateFolder(name)}
           onCancel={handleCreateFolderCancel}
@@ -470,7 +545,21 @@ function App() {
         onDismiss={toast.dismissToast}
       />
 
-      {/* Scratchpad panel */}
+      {/* Devices panel */}
+      <DevicesPanel
+        isOpen={showDevices}
+        onClose={() => setShowDevices(false)}
+        devices={ws.devices}
+        myDeviceId={ws.myDeviceId}
+      />
+
+      {/* Share links panel */}
+      <ShareLinksPanel
+        isOpen={showShareLinks}
+        onClose={() => setShowShareLinks(false)}
+      />
+
+      {/* Scratchpad panel — read-only hides write actions */}
       <ScratchpadPanel
         isOpen={clipboard.isOpen}
         snippets={clipboard.snippets}
@@ -480,6 +569,7 @@ function App() {
         onUpdateContent={clipboard.updateContent}
         onUpdateTitle={clipboard.updateTitle}
         onDeleteSnippet={clipboard.removeSnippet}
+        readOnly={isReadOnly}
       />
 
       {/* File preview modal */}

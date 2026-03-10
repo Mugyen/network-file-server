@@ -22,6 +22,7 @@ class WSMessageType(str, Enum):
     REQUEST_FULFILLED = "request_fulfilled"
     REQUEST_DISMISSED = "request_dismissed"
     DEVICE_COUNT = "device_count"
+    DEVICE_LIST = "device_list"
     SNIPPET_UPDATE = "snippet_update"
 
 
@@ -39,3 +40,18 @@ class RequestStatus(str, Enum):
     PENDING = "pending"
     FULFILLED = "fulfilled"
     DISMISSED = "dismissed"
+
+
+class ShareTTL(int, Enum):
+    """Time-to-live options for share links, in seconds."""
+    FIFTEEN_MINUTES = 900
+    ONE_HOUR = 3600
+    SIX_HOURS = 21600
+    TWENTY_FOUR_HOURS = 86400
+
+
+class DeviceType(str, Enum):
+    """Classification of connected device types."""
+    PHONE = "phone"
+    TABLET = "tablet"
+    DESKTOP = "desktop"

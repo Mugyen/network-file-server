@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ file_name }} - WiFi File Server</title>
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            display: flex; justify-content: center; align-items: center;
+            min-height: 100vh; padding: 1rem;
+            background: #f5f5f5; color: #1a1a1a;
+        }
+        .card {
+            background: #fff; border-radius: 12px; padding: 2.5rem;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+            max-width: 420px; width: 100%; text-align: center;
+        }
+        .icon { font-size: 3rem; margin-bottom: 1rem; }
+        h1 { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.25rem; color: #333; }
+        .app-title { font-size: 0.8rem; color: #888; margin-bottom: 1.5rem; }
+        .file-name {
+            font-size: 1rem; font-weight: 500; word-break: break-all;
+            padding: 0.75rem 1rem; background: #f8f8f8; border-radius: 8px;
+            margin-bottom: 0.5rem;
+        }
+        .file-size { font-size: 0.85rem; color: #666; margin-bottom: 1.5rem; }
+        .download-btn {
+            display: inline-block; padding: 0.75rem 2rem;
+            background: #2563eb; color: #fff; text-decoration: none;
+            border-radius: 8px; font-size: 1rem; font-weight: 500;
+            transition: background 0.15s;
+        }
+        .download-btn:hover { background: #1d4ed8; }
+        @media (prefers-color-scheme: dark) {
+            body { background: #111; color: #e5e5e5; }
+            .card { background: #1e1e1e; box-shadow: 0 2px 12px rgba(0,0,0,0.3); }
+            h1 { color: #e5e5e5; }
+            .app-title { color: #888; }
+            .file-name { background: #2a2a2a; color: #e5e5e5; }
+            .file-size { color: #aaa; }
+            .download-btn { background: #3b82f6; }
+            .download-btn:hover { background: #2563eb; }
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="icon">&#128196;</div>
+        <h1>Shared File</h1>
+        <p class="app-title">WiFi File Server</p>
+        <div class="file-name">{{ file_name }}</div>
+        <p class="file-size">{{ file_size }}</p>
+        <a href="/share/{{ token }}/download" class="download-btn">Download</a>
+    </div>
+</body>
+</html>

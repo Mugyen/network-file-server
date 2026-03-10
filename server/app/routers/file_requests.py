@@ -5,8 +5,10 @@ Provides endpoints for creating, listing, fulfilling, and dismissing file reques
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Header, UploadFile
+from fastapi import APIRouter, Depends, Header, UploadFile
 from fastapi.responses import JSONResponse
+
+from server.app.middleware.mode_guard import require_full_access, require_write_access
 
 from server.app.config import get_server_config
 from server.app.models.enums import RequestStatus, ToastType, WSMessageType
@@ -18,14 +20,14 @@ from server.app.services.file_service import upload_file
 router = APIRouter(prefix="/api/file-requests", tags=["file-requests"])
 
 
-@router.get("/")
+@router.get("/", dependencies=[Depends(require_full_access)])
 async def list_file_requests() -> list[FileRequest]:
     """Return all non-dismissed file requests."""
     service = get_file_request_service()
     return await service.list_requests()
 
 
-@router.post("/", status_code=201)
+@router.post("/", status_code=201, dependencies=[Depends(require_write_access), Depends(require_full_access)])
 async def create_file_request(
     payload: CreateFileRequestPayload,
     x_device_id: str = Header(...),
@@ -57,7 +59,7 @@ async def create_file_request(
     return request
 
 
-@router.post("/{request_id}/fulfill")
+@router.post("/{request_id}/fulfill", dependencies=[Depends(require_write_access), Depends(require_full_access)])
 async def fulfill_file_request(
     request_id: str,
     file: UploadFile,
@@ -98,7 +100,7 @@ async def fulfill_file_request(
     return fulfilled
 
 
-@router.delete("/{request_id}")
+@router.delete("/{request_id}", dependencies=[Depends(require_write_access), Depends(require_full_access)])
 async def dismiss_file_request(
     request_id: str,
     x_device_id: str = Header(...),

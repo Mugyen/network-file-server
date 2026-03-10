@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Header, Query, UploadFile
+from fastapi import APIRouter, Depends, Header, Query, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from server.app.config import get_server_config
@@ -27,6 +27,7 @@ from server.app.models.schemas import (
     RenameRequest,
     SearchResult,
 )
+from server.app.middleware.mode_guard import require_full_access, require_write_access
 from server.app.models.enums import ToastType
 from server.app.services.connection_manager import manager
 from server.app.services.file_service import (
@@ -69,7 +70,7 @@ def _handle_invalid_name(exc: InvalidFileNameError) -> JSONResponse:
     )
 
 
-@router.get("/files")
+@router.get("/files", dependencies=[Depends(require_full_access)])
 def get_files(path: str = Query("")) -> dict:
     """List files in the shared folder.
 
@@ -86,7 +87,7 @@ def get_files(path: str = Query("")) -> dict:
         return _handle_not_found(exc)  # type: ignore[return-value]
 
 
-@router.post("/files/upload", response_model=None)
+@router.post("/files/upload", response_model=None, dependencies=[Depends(require_write_access)])
 async def upload_files(
     files: list[UploadFile],
     path: str = Query(""),
@@ -134,7 +135,7 @@ async def upload_files(
         return _handle_conflict(exc)
 
 
-@router.get("/files/download", response_model=None)
+@router.get("/files/download", response_model=None, dependencies=[Depends(require_full_access)])
 def download_single_file(path: str = Query(...)) -> Any:
     """Download a single file as an attachment.
 
@@ -163,7 +164,7 @@ def download_single_file(path: str = Query(...)) -> Any:
         return JSONResponse(status_code=400, content={"error": str(exc)})
 
 
-@router.post("/files/download-zip", response_model=None)
+@router.post("/files/download-zip", response_model=None, dependencies=[Depends(require_full_access)])
 def download_zip(request: DownloadZipRequest) -> Any:
     """Download multiple files as a streaming ZIP archive.
 
@@ -184,7 +185,7 @@ def download_zip(request: DownloadZipRequest) -> Any:
         return _handle_not_found(exc)
 
 
-@router.patch("/files/rename", response_model=None)
+@router.patch("/files/rename", response_model=None, dependencies=[Depends(require_write_access), Depends(require_full_access)])
 def rename_file(request: RenameRequest) -> Any:
     """Rename a file or directory.
 
@@ -205,7 +206,7 @@ def rename_file(request: RenameRequest) -> Any:
         return _handle_invalid_name(exc)
 
 
-@router.delete("/files", response_model=None)
+@router.delete("/files", response_model=None, dependencies=[Depends(require_write_access), Depends(require_full_access)])
 def delete_files(request: DeleteRequest) -> Any:
     """Delete one or more files or directories.
 
@@ -222,7 +223,7 @@ def delete_files(request: DeleteRequest) -> Any:
         return _handle_not_found(exc)
 
 
-@router.post("/folders", status_code=201, response_model=None)
+@router.post("/folders", status_code=201, response_model=None, dependencies=[Depends(require_write_access), Depends(require_full_access)])
 def create_new_folder(request: CreateFolderRequest) -> Any:
     """Create a new folder.
 
@@ -245,7 +246,7 @@ def create_new_folder(request: CreateFolderRequest) -> Any:
         return _handle_invalid_name(exc)
 
 
-@router.get("/files/search", response_model=None)
+@router.get("/files/search", response_model=None, dependencies=[Depends(require_full_access)])
 def search_files_endpoint(
     q: str = Query(...),
     path: str = Query(""),
@@ -268,7 +269,7 @@ def search_files_endpoint(
         return JSONResponse(status_code=400, content={"error": str(exc)})
 
 
-@router.get("/files/preview", response_model=None)
+@router.get("/files/preview", response_model=None, dependencies=[Depends(require_full_access)])
 def preview_file(
     path: str = Query(...),
 ) -> Any:

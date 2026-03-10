@@ -16,7 +16,13 @@ def info_app(tmp_path: "Path") -> "FastAPI":  # type: ignore[name-defined]  # no
     """Create a FastAPI app configured for server-info testing."""
     from pathlib import Path
 
-    config = ServerConfig(shared_folder=tmp_path, port=9999)
+    config = ServerConfig(
+        shared_folder=tmp_path,
+        port=9999,
+        password_hash=None,
+        read_only=False,
+        receive=False,
+    )
     set_server_config(config)
 
     from server.app.main import create_app

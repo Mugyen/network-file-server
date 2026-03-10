@@ -38,9 +38,9 @@ class TestSpaPathResolution:
             pass
 
         # Simpler: just verify create_app doesn't crash
-        from server.app.config import ServerConfig, set_server_config
+        from server.app.config import create_default_config, set_server_config
 
-        config = ServerConfig(shared_folder=tmp_path, port=8000)
+        config = create_default_config(shared_folder=tmp_path, port=8000)
         set_server_config(config)
         app = create_app()
         # The app should have routes registered

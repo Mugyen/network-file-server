@@ -5,17 +5,20 @@ interface BatchToolbarProps {
   onDownloadZip: () => void;
   onDelete: () => void;
   onClearSelection: () => void;
+  readOnly?: boolean;
 }
 
 /**
  * Contextual toolbar replacing the normal Toolbar when files are selected.
  * Shows selection count with Download ZIP, Delete, and Clear buttons (Gmail-style).
+ * In read-only mode, the Delete button is hidden.
  */
 function BatchToolbar({
   selectedCount,
   onDownloadZip,
   onDelete,
   onClearSelection,
+  readOnly,
 }: BatchToolbarProps) {
   return (
     <div className="flex flex-row items-center gap-3 bg-blue-50 dark:bg-blue-900/30 py-2 px-4 rounded-md">
@@ -32,14 +35,16 @@ function BatchToolbar({
         Download ZIP
       </button>
 
-      <button
-        type="button"
-        onClick={onDelete}
-        className="inline-flex items-center gap-1.5 rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 transition-colors"
-      >
-        <Trash2 className="h-4 w-4" />
-        Delete
-      </button>
+      {!readOnly && (
+        <button
+          type="button"
+          onClick={onDelete}
+          className="inline-flex items-center gap-1.5 rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 transition-colors"
+        >
+          <Trash2 className="h-4 w-4" />
+          Delete
+        </button>
+      )}
 
       <button
         type="button"

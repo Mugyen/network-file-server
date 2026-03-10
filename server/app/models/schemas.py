@@ -2,7 +2,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from server.app.models.enums import FileType, RequestStatus, ToastType
+from server.app.models.enums import FileType, RequestStatus, ShareTTL, ToastType
 
 
 class FileEntry(BaseModel):
@@ -27,13 +27,17 @@ class SearchResult(BaseModel):
 
 
 class ServerInfo(BaseModel):
-    """Server information including IP, port, URL, and QR code data."""
+    """Server information including IP, port, URL, QR code, and mode data."""
 
     ip: str
     port: int
     url: str
     qr_svg: str
     all_ips: list[str]
+    read_only: bool
+    receive: bool
+    password_required: bool
+    hostname: str
 
 
 class UploadResult(BaseModel):
@@ -135,3 +139,28 @@ class CreateFileRequestPayload(BaseModel):
     """Request body for creating a new file request."""
 
     description: str
+
+
+class LoginRequest(BaseModel):
+    """Request body for the login endpoint."""
+
+    password: str
+
+
+class CreateShareRequest(BaseModel):
+    """Request body for creating a new share link."""
+
+    file_path: str
+    ttl: ShareTTL
+
+
+class ShareLinkInfo(BaseModel):
+    """Response model for a share link with metadata."""
+
+    token: str
+    file_path: str
+    file_name: str
+    created_at: str
+    expires_at: str
+    ttl_seconds: int
+    share_url: str

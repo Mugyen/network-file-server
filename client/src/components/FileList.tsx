@@ -25,6 +25,7 @@ interface FileListProps {
   sortField: SortField;
   sortDirection: SortDirection;
   onSort: (field: SortField) => void;
+  readOnly?: boolean;
 }
 
 /** Renders the sort arrow icon for a column header. */
@@ -50,6 +51,7 @@ function FileList({
   sortField,
   sortDirection,
   onSort,
+  readOnly,
 }: FileListProps) {
   const selectAllRef = useRef<HTMLInputElement>(null);
 
@@ -65,9 +67,11 @@ function FileList({
     return (
       <div className="text-center py-12">
         <p className="text-gray-500 dark:text-gray-400 text-lg">This folder is empty</p>
-        <p className="text-gray-400 dark:text-gray-500 text-sm mt-1">
-          Drag files here or use the Upload button
-        </p>
+        {!readOnly && (
+          <p className="text-gray-400 dark:text-gray-500 text-sm mt-1">
+            Drag files here or use the Upload button
+          </p>
+        )}
       </div>
     );
   }
@@ -140,6 +144,7 @@ function FileList({
               onDelete={onDelete}
               onDownload={onDownload}
               onPreview={onPreview}
+              readOnly={readOnly}
             />
           ))}
         </tbody>

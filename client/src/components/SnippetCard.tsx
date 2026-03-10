@@ -7,6 +7,7 @@ interface SnippetCardProps {
   onUpdateContent: (id: string, content: string) => void;
   onUpdateTitle: (id: string, title: string) => void;
   onDelete: (id: string) => void;
+  readOnly: boolean;
 }
 
 function SnippetCard({
@@ -14,6 +15,7 @@ function SnippetCard({
   onUpdateContent,
   onUpdateTitle,
   onDelete,
+  readOnly,
 }: SnippetCardProps) {
   const [isCollapsed, setIsCollapsed] = useState<boolean>(false);
   const titleRef = useRef<HTMLInputElement>(null);
@@ -56,18 +58,21 @@ function SnippetCard({
           defaultValue={snippet.title}
           onBlur={handleTitleBlur}
           onKeyDown={handleTitleKeyDown}
+          readOnly={readOnly}
           className="flex-1 min-w-0 text-sm font-medium bg-transparent border-none outline-none text-gray-800 dark:text-gray-100 placeholder-gray-400"
           aria-label="Snippet title"
         />
 
-        <button
-          type="button"
-          onClick={() => onDelete(snippet.id)}
-          className="p-0.5 text-gray-400 hover:text-red-500 dark:hover:text-red-400"
-          aria-label="Delete snippet"
-        >
-          <X className="w-4 h-4" />
-        </button>
+        {!readOnly && (
+          <button
+            type="button"
+            onClick={() => onDelete(snippet.id)}
+            className="p-0.5 text-gray-400 hover:text-red-500 dark:hover:text-red-400"
+            aria-label="Delete snippet"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        )}
       </div>
 
       {/* Body */}
@@ -76,7 +81,8 @@ function SnippetCard({
           <textarea
             value={snippet.content}
             onChange={(e) => onUpdateContent(snippet.id, e.target.value)}
-            placeholder="Type something..."
+            readOnly={readOnly}
+            placeholder={readOnly ? "" : "Type something..."}
             className="w-full min-h-[100px] resize-y text-sm bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-600 rounded p-2 text-gray-800 dark:text-gray-100 placeholder-gray-400 outline-none focus:border-blue-400 dark:focus:border-blue-500"
           />
         </div>

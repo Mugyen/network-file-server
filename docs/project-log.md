@@ -1,5 +1,37 @@
 # Project Log
 
+## 2026-03-11: Fix auth middleware, session persistence, and read-only clipboard (05-UAT)
+
+Fixed AuthMiddleware to only gate `/api/*` paths instead of all paths. Added session cookie probe on page load so login persists across tabs/refreshes. Made scratchpad readable in read-only mode (write actions hidden, content viewable).
+
+## 2026-03-10: Frontend device discovery UI (07-02)
+
+Added DevicesPanel slide-out with device type icons, "You" badge, live connection duration, and real-time connect/disconnect updates. Wired Monitor header button with device count badge visible in all modes.
+
+## 2026-03-10: Backend device discovery (07-01)
+
+Extended WebSocket infrastructure with DeviceType enum, DeviceInfo dataclass, parse_device_type UA classifier, device_list message on connect with your_device_id, and enriched connect/disconnect toasts. 21 tests (12 new).
+
+## 2026-03-10: Frontend share link UI (06-02)
+
+Added ShareDialog for creating share links with TTL picker and clipboard copy, ShareLinksPanel slide-out for listing/revoking active links, Share button on file rows, and Share Links header button in App.
+
+## 2026-03-10: Share link backend and templates (06-01)
+
+Added ShareLinkService with create/validate/revoke/list and auto-expiry cleanup, ShareTTL enum (15m/1h/6h/24h), share router with 5 endpoints, 3 standalone Jinja2 HTML pages (download/expired/unavailable) with dark mode, and auth middleware bypass for /share routes. 36 new tests.
+
+## 2026-03-10: Frontend access control UI (05-03)
+
+Added LoginPage for password-protected servers, DropBoxPage for receive-only mode with drag-and-drop upload zone, ModeBadges (amber Read Only, blue Protected pills), mode-aware root routing in main.tsx, and read-only write-control hiding across App/FileList/FileRow/BatchToolbar. CLI banner prints active modes.
+
+## 2026-03-10: Auth middleware, route guards, and mode restrictions (05-02)
+
+Added pure ASGI auth middleware with cookie-based session gating, login/logout endpoints, read-only write guards on all 10 write surfaces, and receive-mode API restrictions. Extended server-info with mode fields. 37 new integration tests.
+
+## 2026-03-10: CLI flags, config, and auth service for access control (05-01)
+
+Added --password, --read-only, --receive CLI flags with mutual exclusion validation. Extended ServerConfig with access control fields. Created AuthTokenService with bcrypt password hashing and itsdangerous signed session tokens.
+
 ## 2026-03-09: File request system with real-time sync (04-03)
 
 Added file request feature: devices can request specific files, others fulfill via upload button or drag-and-drop. Banners above file list show pending/fulfilled status with WS real-time sync. Only requester can dismiss. JSON persistence survives server restart. 15 backend tests.

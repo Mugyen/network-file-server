@@ -1,9 +1,15 @@
+import secrets
 from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from server.app.config import ServerConfig, set_server_config
+from server.app.services.auth_service import (
+    AuthTokenService,
+    hash_password,
+    set_token_service,
+)
 
 
 @pytest.fixture
@@ -49,8 +55,17 @@ def tmp_shared_folder(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def configured_app(tmp_shared_folder: Path) -> "FastAPI":  # type: ignore[name-defined]  # noqa: F821
-    """Create a FastAPI app with a temp shared folder configured."""
-    config = ServerConfig(shared_folder=tmp_shared_folder, port=8000)
+    """Create a FastAPI app with a temp shared folder configured.
+
+    Uses default access control settings: no password, not read-only, not receive.
+    """
+    config = ServerConfig(
+        shared_folder=tmp_shared_folder,
+        port=8000,
+        password_hash=None,
+        read_only=False,
+        receive=False,
+    )
     set_server_config(config)
 
     from server.app.main import create_app
@@ -62,5 +77,109 @@ def configured_app(tmp_shared_folder: Path) -> "FastAPI":  # type: ignore[name-d
 async def async_client(configured_app: "FastAPI") -> AsyncClient:  # type: ignore[name-defined]  # noqa: F821
     """Create an async HTTP client for testing the FastAPI app."""
     transport = ASGITransport(app=configured_app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        yield client  # type: ignore[misc]
+
+
+# --- Password-protected app fixtures ---
+
+# Fixed test password for deterministic test behavior
+TEST_PASSWORD = "test-password-123"
+
+
+def get_valid_session_cookie(token_service: AuthTokenService) -> str:
+    """Create a valid session cookie value for authenticated test requests."""
+    return token_service.create_token()
+
+
+@pytest.fixture
+def configured_app_with_password(tmp_shared_folder: Path) -> "FastAPI":  # type: ignore[name-defined]  # noqa: F821
+    """Create a FastAPI app with password protection enabled."""
+    password_hash = hash_password(TEST_PASSWORD)
+    config = ServerConfig(
+        shared_folder=tmp_shared_folder,
+        port=8000,
+        password_hash=password_hash,
+        read_only=False,
+        receive=False,
+    )
+    set_server_config(config)
+
+    # 32-byte hex secret for signing session tokens in tests
+    secret_key = secrets.token_hex(32)
+    service = AuthTokenService(secret_key)
+    set_token_service(service)
+
+    from server.app.main import create_app
+
+    return create_app()
+
+
+@pytest.fixture
+async def async_client_with_password(
+    configured_app_with_password: "FastAPI",  # type: ignore[name-defined]  # noqa: F821
+) -> AsyncClient:
+    """Create an async HTTP client for a password-protected app."""
+    transport = ASGITransport(app=configured_app_with_password)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        yield client  # type: ignore[misc]
+
+
+# --- Read-only app fixtures ---
+
+
+@pytest.fixture
+def configured_app_read_only(tmp_shared_folder: Path) -> "FastAPI":  # type: ignore[name-defined]  # noqa: F821
+    """Create a FastAPI app in read-only mode."""
+    config = ServerConfig(
+        shared_folder=tmp_shared_folder,
+        port=8000,
+        password_hash=None,
+        read_only=True,
+        receive=False,
+    )
+    set_server_config(config)
+
+    from server.app.main import create_app
+
+    return create_app()
+
+
+@pytest.fixture
+async def async_client_read_only(
+    configured_app_read_only: "FastAPI",  # type: ignore[name-defined]  # noqa: F821
+) -> AsyncClient:
+    """Create an async HTTP client for a read-only app."""
+    transport = ASGITransport(app=configured_app_read_only)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        yield client  # type: ignore[misc]
+
+
+# --- Receive-only app fixtures ---
+
+
+@pytest.fixture
+def configured_app_receive(tmp_shared_folder: Path) -> "FastAPI":  # type: ignore[name-defined]  # noqa: F821
+    """Create a FastAPI app in receive-only mode."""
+    config = ServerConfig(
+        shared_folder=tmp_shared_folder,
+        port=8000,
+        password_hash=None,
+        read_only=False,
+        receive=True,
+    )
+    set_server_config(config)
+
+    from server.app.main import create_app
+
+    return create_app()
+
+
+@pytest.fixture
+async def async_client_receive(
+    configured_app_receive: "FastAPI",  # type: ignore[name-defined]  # noqa: F821
+) -> AsyncClient:
+    """Create an async HTTP client for a receive-mode app."""
+    transport = ASGITransport(app=configured_app_receive)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
         yield client  # type: ignore[misc]
