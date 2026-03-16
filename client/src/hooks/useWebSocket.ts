@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { WSMessageType } from "../types/websocket.ts";
 import type { DeviceInfo } from "../types/websocket.ts";
+import { getWsUrl } from "../utils/remoteMount.ts";
 
 /** Maximum reconnect delay in milliseconds. */
 const MAX_RECONNECT_DELAY = 30000;
@@ -39,8 +40,7 @@ export function useWebSocket(deviceName: string): UseWebSocketResult {
   const connect = useCallback((): void => {
     if (!mountedRef.current) return;
 
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${protocol}//${window.location.host}/ws?device_name=${encodeURIComponent(deviceName)}`;
+    const url = getWsUrl("/ws", `device_name=${encodeURIComponent(deviceName)}`);
     const ws = new WebSocket(url);
 
     ws.onopen = (): void => {

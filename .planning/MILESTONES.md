@@ -1,5 +1,24 @@
 # Milestones
 
+## v1.2 Remote Mounts (Shipped: 2026-03-16)
+
+**Phases completed:** 4 phases, 11 plans
+**Codebase:** ~19,500 LOC (13,098 Python + 6,400 TypeScript)
+**Timeline:** 5 days (2026-03-12 → 2026-03-16)
+
+**Delivered:** Internet file sharing via relay tunnel — mount a local folder through a public relay server, accessible to anyone with the mount code or QR scan, with all v1.0/v1.1 features working identically through the tunnel.
+
+**Key accomplishments:**
+- Binary WebSocket tunnel protocol with 21-byte frame headers, UUID-correlated multiplexing, and per-stream backpressure
+- Relay server routing browser requests at `/m/{code}/*` through tunnel to agents, with mount registry and error pages
+- `wifi-file-server mount` CLI with auto-reconnect, QR code display, and LAN IP resolution for phone access
+- Password protection (`--password`) and auto-expiry (`--ttl`) for remote mounts
+- SPA dynamic relay prefix detection so all v1.0/v1.1 features work identically through remote mounts
+- WebSocket tunneling for real-time clipboard sync, transfer notifications, and device discovery through relay
+- Chunked DATA frame streaming for large file uploads through the relay proxy
+
+---
+
 ## v1.1 Share & Access Control (Shipped: 2026-03-11)
 
 **Phases completed:** 3 phases, 7 plans

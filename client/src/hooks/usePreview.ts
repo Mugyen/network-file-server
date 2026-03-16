@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import type { FileEntry } from "../types/files.ts";
 import { FileCategory, getFileCategory } from "../types/fileCategories.ts";
+import { getApiBase } from "../utils/remoteMount.ts";
 
 /** Maximum file size in bytes for text content preview (500KB). */
 const MAX_TEXT_PREVIEW_BYTES = 512_000;
@@ -74,7 +75,7 @@ export function usePreview(currentPath: string): PreviewState {
       }
 
       const fullPath = buildFullPath(currentPath, file.name);
-      const url = `/api/files/preview?path=${encodeURIComponent(fullPath)}`;
+      const url = `${getApiBase()}/files/preview?path=${encodeURIComponent(fullPath)}`;
 
       setIsLoadingContent(true);
 

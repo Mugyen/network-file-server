@@ -1,6 +1,7 @@
 import { useEffect, useCallback } from "react";
 import type { FileEntry } from "../types/files.ts";
 import { FileCategory, getFileCategory } from "../types/fileCategories.ts";
+import { getApiBase } from "../utils/remoteMount.ts";
 import { X, ExternalLink, Download, Loader2 } from "lucide-react";
 import ImagePreview from "./preview/ImagePreview.tsx";
 import VideoPreview from "./preview/VideoPreview.tsx";
@@ -56,8 +57,9 @@ function PreviewModal({
   onNavigateFile,
 }: PreviewModalProps) {
   const fullPath = buildFullPath(currentPath, file.name);
-  const previewUrl = `/api/files/preview?path=${encodeURIComponent(fullPath)}`;
-  const downloadUrl = `/api/files/download?path=${encodeURIComponent(fullPath)}`;
+  const apiBase = getApiBase();
+  const previewUrl = `${apiBase}/files/preview?path=${encodeURIComponent(fullPath)}`;
+  const downloadUrl = `${apiBase}/files/download?path=${encodeURIComponent(fullPath)}`;
   const category = getFileCategory(file.name);
 
   // Close on Escape key
@@ -136,7 +138,7 @@ function PreviewModal({
         }
 
         const imageFullPath = buildFullPath(currentPath, file.name);
-        const imageDownloadUrl = `/api/files/download?path=${encodeURIComponent(imageFullPath)}`;
+        const imageDownloadUrl = `${apiBase}/files/download?path=${encodeURIComponent(imageFullPath)}`;
 
         return (
           <ImagePreview

@@ -1,7 +1,8 @@
 import type { FileRequest } from "../types/fileRequests.ts";
 import { ApiError } from "./client.ts";
+import { getApiBase } from "../utils/remoteMount.ts";
 
-const API_BASE = "/api";
+const API_BASE = getApiBase();
 
 /** Fetch all non-dismissed file requests. */
 export async function fetchFileRequests(): Promise<FileRequest[]> {

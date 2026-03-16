@@ -33,6 +33,8 @@ def configured_app_with_shares(tmp_shared_folder: Path) -> "FastAPI":  # type: i
         password_hash=None,
         read_only=False,
         receive=False,
+        mount_code=None,
+            relay_url=None,
     )
     set_server_config(config)
 
@@ -65,6 +67,8 @@ def configured_app_shares_with_password(tmp_shared_folder: Path) -> "FastAPI":  
         password_hash=password_hash,
         read_only=False,
         receive=False,
+        mount_code=None,
+            relay_url=None,
     )
     set_server_config(config)
 

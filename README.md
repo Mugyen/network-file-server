@@ -18,6 +18,22 @@ uv run wifi-file-server /path/to/folder --host 127.0.0.1 --port 9000
 
 Scan the QR code printed in the terminal from any device on the same network.
 
+## Relay (remote access)
+
+Start the relay server to expose mounts outside your LAN:
+
+```bash
+uv run wifi-relay              # binds 0.0.0.0:8001
+uv run wifi-relay --port 9001  # custom port
+uv run wifi-relay --host 127.0.0.1  # localhost only
+```
+
+Mount a local folder through the relay from any machine:
+
+```bash
+uv run wifi-file-server /path/to/folder mount --relay http://relay-host:8001
+```
+
 ## API
 
 - `GET /api/files?path=` -- list directory contents

@@ -2,22 +2,11 @@
 
 ## What This Is
 
-A polished, cross-platform file sharing tool that lets any device browse, upload, preview, and request files through a modern web UI with real-time collaboration and access control. Works on LAN (direct) or over the internet via remote mounts — a publicly hosted relay server that proxies to a client agent. Think AirDrop but browser-based, cross-platform, and feature-rich — with shared clipboard, file requests, media preview, expiring share links, device discovery, and remote mounting. Built with React + FastAPI + WebSocket.
-
-## Current Milestone: v1.2 Remote Mounts
-
-**Goal:** Enable file sharing over the internet by letting users mount their local filesystem through a public relay server, accessible via short code or QR — without requiring recipients to install anything.
-
-**Target features:**
-- Agent CLI command to mount a local directory through a remote server via WebSocket tunnel
-- Lightweight relay server that routes browser requests to the correct agent by mount code
-- Mount landing page with code entry and QR scan
-- Per-mount password protection and TTL auto-expire (reuse existing infra)
-- Existing LAN mode preserved unchanged
+A polished, cross-platform file sharing tool that lets any device browse, upload, preview, and request files through a modern web UI with real-time collaboration and access control. Works on LAN (direct) or over the internet via remote mounts — a relay server proxies to a client agent through a binary WebSocket tunnel. Think AirDrop but browser-based, cross-platform, and feature-rich — with shared clipboard, file requests, media preview, expiring share links, device discovery, and remote mounting. Built with React + FastAPI + WebSocket.
 
 ## Core Value
 
-Any device on the same WiFi network can instantly share files with zero setup — scan QR, drop files, done.
+Any device can instantly share files with zero setup — scan QR, drop files, done. Works on LAN or over the internet.
 
 ## Requirements
 
@@ -44,20 +33,23 @@ Any device on the same WiFi network can instantly share files with zero setup �
 - ✓ Share links bypass password protection — v1.1
 - ✓ Share link listing and revocation for server operator — v1.1
 - ✓ Real-time device discovery with type icons and self-identification — v1.1
+- ✓ Agent CLI to mount local directory through remote relay server — v1.2
+- ✓ Relay server proxying browser requests to agent via mount code — v1.2
+- ✓ Mount landing page with code entry and QR scan — v1.2
+- ✓ Per-mount password protection and TTL auto-expire — v1.2
+- ✓ SPA works identically through relay (all features preserved) — v1.2
+- ✓ WebSocket tunneling for real-time features through relay — v1.2
+- ✓ Large file upload streaming through relay — v1.2
+- ✓ QR code resolves localhost to LAN IP for phone access — v1.2
 
 ### Active
 
-- [ ] Agent CLI command to mount local directory through remote server
-- [ ] Relay server that proxies browser requests to agent via mount code
-- [ ] Mount landing page with code entry and QR scan
-- [ ] Per-mount password protection and TTL auto-expire
-- [ ] Existing LAN mode preserved unchanged
+(None — ready for next milestone planning)
 
 ### Out of Scope
 
 - E2E encryption — deferred to v2, too complex for initial release
 - WebRTC P2P transfers — v2+
-- Secure tunnel / remote access — v2+, LAN-only is core value
 - Auto-sync — fundamentally different from file sharing
 - PWA / mobile app — v2+, web works well on mobile
 - Desktop tray app — separate project (Electron/Tauri)
@@ -65,7 +57,7 @@ Any device on the same WiFi network can instantly share files with zero setup �
 - File versioning — needs database, filesystem doesn't support natively
 - Custom theming beyond dark mode — v2+
 - pip/brew/docker packaging — future concern
-- Per-user accounts / multi-password — deferred to v1.3+, build accounts layer on top of mounts
+- Per-user accounts / multi-password — deferred to v1.3+
 - HTTPS / TLS — certificate management is massive friction for LAN tool
 - Persistent share links (survive restart) — in-memory is a feature, no stale links
 - Containerization / K8S — keep deployment simple for now
@@ -74,25 +66,23 @@ Any device on the same WiFi network can instantly share files with zero setup �
 
 ## Context
 
-- Shipped v1.1 with ~13,150 LOC (6,966 Python + 6,184 TypeScript)
-- v1.2 introduces a relay server + agent model for remote mounts over the internet
-- Agent connects outbound to server via WebSocket; server proxies browser requests through tunnel
-- Only the mounting device needs the CLI agent; consumers use browser only
-- Deployment target: cloud function or spot VM (no containerization yet)
+- Shipped v1.2 with ~19,500 LOC (13,098 Python + 6,400 TypeScript)
+- Three milestones shipped: v1.0 MVP, v1.1 Share & Access Control, v1.2 Remote Mounts
+- 11 phases, 31 plans total across all milestones
 - Tech stack: React + Tailwind CSS v4 (frontend), FastAPI + uvicorn (backend), WebSocket (real-time)
-- WebSocket infrastructure shared between clipboard sync, notifications, file requests, and device discovery
-- Target audience: general public who want easy LAN file sharing
-- v1.0 built in 1 day, v1.1 in 3 days — 7 phases, 20 plans total
-- Auth uses cookie-based sessions (bcrypt + itsdangerous), not header-based
-- Share links use Jinja2 server-rendered pages (no SPA needed for recipients)
-- `run.sh` builds frontend and starts server in one command
+- WebSocket infrastructure shared between clipboard sync, notifications, file requests, device discovery, and relay tunneling
+- Binary tunnel protocol with 21-byte frame headers, UUID multiplexing, and per-stream backpressure
+- Relay server runs separately from LAN server; agent connects outbound via WebSocket
+- Auth uses cookie-based sessions (bcrypt + itsdangerous), scoped per mount code
+- `run_relay.sh` and `run_mount_server.sh` auto-rebuild frontend and start services
+- Target audience: anyone who wants easy file sharing — LAN or internet
 
 ## Constraints
 
 - **Tech stack**: React (frontend) + FastAPI (backend) + WebSocket (real-time features)
 - **Dependency management**: uv for Python
 - **Runtime**: Python 3.11+, Node for frontend build
-- **Network**: LAN-only (no internet required for operation)
+- **Network**: LAN or internet via relay tunnel
 
 ## Key Decisions
 
@@ -106,9 +96,12 @@ Any device on the same WiFi network can instantly share files with zero setup �
 | itsdangerous for tokens | Reusable for both session tokens and share link tokens | ✓ Good — reused across Phase 5 and 6 |
 | Jinja2 for share pages | Recipients don't need React SPA; server-rendered is simpler and faster | ✓ Good |
 | Auth middleware gates only /api/* | SPA must load for LoginPage to render; non-API paths pass through | ✓ Good — fixed after UAT caught the bug |
-| Starlette FileResponse for preview | Native Range request support eliminates custom 206 streaming code | ✓ Good |
-| XHR for upload progress | fetch() lacks upload.onprogress support | ✓ Good — reliable progress bars |
-| Textarea scratchpad over Clipboard API | Clipboard API requires HTTPS; textarea works on HTTP LAN | ✓ Good — correct for LAN context |
+| Binary WebSocket tunnel protocol | Efficient multiplexing over single connection; 21-byte header keeps overhead minimal | ✓ Good — handles concurrent requests cleanly |
+| Agent-initiated outbound WebSocket | No NAT traversal needed; agent connects to relay, not the other way around | ✓ Good — works behind any firewall |
+| ASGI transport for local proxy | Agent proxies tunnel requests to local FastAPI via httpx ASGITransport — no network hop | ✓ Good — all features work identically |
+| Chunked DATA frames for uploads | Stream request bodies as multiple frames to avoid exceeding 64KB frame limit | ✓ Good — fixed after UAT caught the bug |
+| execCommand fallback for clipboard | navigator.clipboard requires HTTPS; HTTP-over-LAN on mobile needs fallback | ✓ Good — correct for LAN context |
+| LAN IP resolution in QR codes | localhost in QR code doesn't work from phones; detect and substitute LAN IP | ✓ Good — phones can now scan and connect |
 
 ---
-*Last updated: 2026-03-11 after v1.2 milestone start*
+*Last updated: 2026-03-16 after v1.2 milestone completion*

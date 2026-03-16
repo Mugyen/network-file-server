@@ -1,13 +1,13 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.2
-milestone_name: Remote Mounts
-status: planning
-stopped_at: Phase 8 context gathered
-last_updated: "2026-03-11T08:54:55.326Z"
-last_activity: 2026-03-11 -- Roadmap created for v1.2 (4 phases, 16 requirements)
+milestone: null
+milestone_name: null
+status: milestone_complete
+stopped_at: v1.2 Remote Mounts shipped
+last_updated: "2026-03-16"
+last_activity: 2026-03-16 -- v1.2 Remote Mounts milestone completed
 progress:
-  total_phases: 4
+  total_phases: 0
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -18,32 +18,25 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-03-11)
+See: .planning/PROJECT.md (updated 2026-03-16)
 
-**Core value:** Any device on the same WiFi network can instantly share files with zero setup -- scan QR, drop files, done.
-**Current focus:** v1.2 Remote Mounts -- Phase 8: Tunnel Protocol (ready to plan)
+**Core value:** Any device can instantly share files with zero setup — scan QR, drop files, done. Works on LAN or over the internet.
+**Current focus:** Planning next milestone
 
 ## Current Position
 
-Phase: 8 of 11 (Tunnel Protocol) -- first phase of v1.2
+Phase: --
 Plan: --
-Status: Ready to plan
-Last activity: 2026-03-11 -- Roadmap created for v1.2 (4 phases, 16 requirements)
+Status: Between milestones — v1.2 shipped, ready for `/gsd:new-milestone`
+Last activity: 2026-03-16 — v1.2 Remote Mounts milestone completed
 
-Progress: [░░░░░░░░░░] 0%
+## Milestones Shipped
 
-## Performance Metrics
-
-**Velocity:**
-- Total plans completed: 0 (v1.2)
-- Average duration: --
-- Total execution time: --
-
-**By Phase:**
-
-| Phase | Plans | Total | Avg/Plan |
-|-------|-------|-------|----------|
-| - | - | - | - |
+| Version | Name | Phases | Plans | Shipped |
+|---------|------|--------|-------|---------|
+| v1.0 | MVP | 1-4 | 13 | 2026-03-09 |
+| v1.1 | Share & Access Control | 5-7 | 7 | 2026-03-11 |
+| v1.2 | Remote Mounts | 8-11 | 11 | 2026-03-16 |
 
 ## Accumulated Context
 
@@ -57,11 +50,4 @@ None.
 
 ### Blockers/Concerns
 
-- Research flags Phase 8 (tunnel protocol) and Phase 11 (SPA base URL injection) as needing deeper research during planning.
-- httpx needs to move from dev to production dependencies.
-
-## Session Continuity
-
-Last session: 2026-03-11T08:54:55.323Z
-Stopped at: Phase 8 context gathered
-Resume file: .planning/phases/08-tunnel-protocol/08-CONTEXT.md
+None.

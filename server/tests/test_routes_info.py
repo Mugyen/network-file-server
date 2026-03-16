@@ -22,6 +22,8 @@ def info_app(tmp_path: "Path") -> "FastAPI":  # type: ignore[name-defined]  # no
         password_hash=None,
         read_only=False,
         receive=False,
+        mount_code=None,
+            relay_url=None,
     )
     set_server_config(config)
 

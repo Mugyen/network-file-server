@@ -6,6 +6,7 @@ import LoginPage from "./components/LoginPage.tsx";
 import DropBoxPage from "./components/DropBoxPage.tsx";
 import { fetchServerInfo } from "./api/serverInfo.ts";
 import type { ServerMode } from "./types/serverMode.ts";
+import { getApiBase } from "./utils/remoteMount.ts";
 import { Loader2 } from "lucide-react";
 
 function Root() {
@@ -29,7 +30,7 @@ function Root() {
           setIsAuthenticated(true);
         } else {
           // Probe a gated endpoint to check if session cookie is still valid
-          const probe = await fetch("/api/files", { credentials: "include" });
+          const probe = await fetch(`${getApiBase()}/files`, { credentials: "include" });
           if (probe.ok) {
             setIsAuthenticated(true);
           }

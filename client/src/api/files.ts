@@ -1,5 +1,6 @@
 import type { DirectoryListing, FileEntry } from "../types/files.ts";
 import { apiFetch, apiPost, apiPatch, apiDelete } from "./client.ts";
+import { getApiBase } from "../utils/remoteMount.ts";
 
 /** Response shape from the /files/search endpoint. */
 export interface SearchResult {
@@ -20,7 +21,7 @@ export function fetchFiles(path: string): Promise<DirectoryListing> {
  */
 export function downloadFile(path: string): void {
   const a = document.createElement("a");
-  a.href = `/api/files/download?path=${encodeURIComponent(path)}`;
+  a.href = `${getApiBase()}/files/download?path=${encodeURIComponent(path)}`;
   a.download = "";
   document.body.appendChild(a);
   a.click();
@@ -32,7 +33,7 @@ export function downloadFile(path: string): void {
  * POSTs selected paths to the server, receives a blob, triggers browser save.
  */
 export async function downloadAsZip(paths: string[]): Promise<void> {
-  const response = await fetch("/api/files/download-zip", {
+  const response = await fetch(`${getApiBase()}/files/download-zip`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ paths }),

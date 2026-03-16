@@ -1,14 +1,24 @@
 """CLI entry point for the WiFi File Server.
 
 Provides main() for argparse-based CLI and run_with_defaults() convenience function.
+Supports two modes:
+  - LAN mode (default): wifi-file-server <folder> [options]
+  - Mount mode: wifi-file-server mount <folder> --server <url>
+
+Subcommand detection: _parse_args() inspects argv[0] for known subcommands.
+When 'mount' is detected, the mount parser is used directly. Otherwise, the LAN
+parser handles the invocation. This avoids argparse's positional-vs-subparser
+conflict where nargs='?' would greedily consume 'mount' as the folder argument.
 """
 
 import argparse
 import secrets
 import sys
+from typing import Optional
 
 import uvicorn
 
+from agent.duration import parse_duration
 from server.app.config import ServerConfig, set_server_config
 from server.app.services.auth_service import (
     AuthTokenService,
@@ -19,9 +29,23 @@ from server.app.services.share_service import ShareLinkService, set_share_servic
 from server.app.services.network_service import detect_primary_lan_ip
 from server.app.services.qr_service import generate_ascii_qr
 
+# Known subcommand names — used to detect mode in _parse_args and main()
+_SUBCOMMANDS: frozenset = frozenset({"mount"})
+
 
 def _build_parser() -> argparse.ArgumentParser:
-    """Build and return the argument parser for the CLI."""
+    """Build and return the LAN-mode argument parser.
+
+    This parser handles the default invocation:
+      wifi-file-server <folder> [--port PORT] [--host HOST] [--password PW]
+                                [--read-only] [--receive]
+
+    It does NOT include mount subcommand parsing. Mount is handled separately
+    by _build_mount_parser() and _parse_args() which routes based on argv.
+
+    Backward compatibility: existing server tests call _build_parser() directly
+    and expect LAN-mode arg parsing. Those tests continue to work unchanged.
+    """
     parser = argparse.ArgumentParser(
         description="WiFi File Server - Share files over local network"
     )
@@ -58,16 +82,99 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> None:
-    """Parse CLI arguments and start the server.
+def _build_mount_parser() -> argparse.ArgumentParser:
+    """Build and return the argument parser for the mount subcommand.
 
-    Uses argparse for: folder (positional, required), --port/-p (int), --host (str).
-    Validates folder via ServerConfig. Starts uvicorn programmatically.
+    Handles: wifi-file-server mount <folder> --server <url> [--name NAME]
     """
-    parser = _build_parser()
-    args = parser.parse_args()
+    parser = argparse.ArgumentParser(
+        description="Mount a local folder through a relay server",
+    )
+    parser.add_argument(
+        "folder",
+        help="Path to the local folder to share via relay",
+    )
+    parser.add_argument(
+        "--server",
+        required=True,
+        help="Relay server base URL (e.g. https://relay.example.com)",
+    )
+    parser.add_argument(
+        "--name",
+        help="Optional display name for the mount (defaults to folder basename)",
+    )
+    parser.add_argument(
+        "--password",
+        type=str,
+        help="Password to protect the remote mount (max 72 bytes)",
+    )
+    parser.add_argument(
+        "--ttl",
+        type=parse_duration,
+        dest="ttl_seconds",
+        help="Auto-expire duration (e.g. 30m, 2h, 1d). Agent exits cleanly after this time.",
+    )
+    return parser
 
-    # Validate mutually exclusive flags
+
+def _parse_args(argv: Optional[list] = None) -> argparse.Namespace:
+    """Parse CLI arguments, routing to the correct parser based on subcommand.
+
+    When argv[0] is 'mount', routes to _build_mount_parser() and wraps the
+    result in a Namespace with command='mount'. Otherwise routes to the LAN
+    parser (_build_parser()) with command=None.
+
+    Args:
+        argv: Argument list (excluding program name); defaults to sys.argv[1:].
+
+    Returns:
+        Parsed argparse.Namespace with a 'command' attribute ('mount' or None).
+
+    Raises:
+        SystemExit: On argument parse errors (delegated to argparse).
+    """
+    args_list = sys.argv[1:] if argv is None else list(argv)
+
+    if args_list and args_list[0] in _SUBCOMMANDS:
+        subcommand = args_list[0]
+        mount_args = _build_mount_parser().parse_args(args_list[1:])
+        return argparse.Namespace(
+            command=subcommand,
+            folder=mount_args.folder,
+            server=mount_args.server,
+            name=mount_args.name,
+            password=mount_args.password,
+            ttl_seconds=mount_args.ttl_seconds,
+        )
+
+    # LAN mode: parse with standard parser, add command=None
+    lan_args = _build_parser().parse_args(args_list)
+    return argparse.Namespace(
+        command=None,
+        folder=lan_args.folder,
+        port=lan_args.port,
+        host=lan_args.host,
+        password=lan_args.password,
+        read_only=lan_args.read_only,
+        receive=lan_args.receive,
+    )
+
+
+def main() -> None:
+    """Parse CLI arguments and start the server or mount agent.
+
+    Dispatches based on args.command:
+    - 'mount': imports and calls agent.cli.run_mount(args)
+    - None (bare invocation): requires folder, validates it, starts LAN server
+    """
+    args = _parse_args()
+
+    if args.command == "mount":
+        from agent.cli import run_mount
+        run_mount(args)
+        return
+
+    # LAN mode validation
     if args.read_only and args.receive:
         print("Error: --read-only and --receive cannot be used together")
         sys.exit(1)
@@ -99,6 +206,8 @@ def main() -> None:
             password_hash=password_hash,
             read_only=args.read_only,
             receive=args.receive,
+            mount_code=None,
+            relay_url=None,
         )
     except ValueError as exc:
         print(f"Error: {exc}")

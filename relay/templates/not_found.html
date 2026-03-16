@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+
+{% block title %}Mount Not Found{% endblock %}
+
+{% block content %}
+  <h1>Mount Not Found</h1>
+  <p>No mount exists with this code. It may have been disconnected.</p>
+  <form method="get" action="/">
+    <input type="text" name="code" placeholder="Enter mount code" autocomplete="off" autofocus />
+    <button type="submit">Try Again</button>
+  </form>
+{% endblock %}

@@ -1,5 +1,6 @@
 import { ApiError } from "./client.ts";
 import { apiPost, apiFetch } from "./client.ts";
+import { getApiBase } from "../utils/remoteMount.ts";
 
 /** Shape of a share link returned by the backend. */
 export interface ShareLinkInfo {
@@ -62,7 +63,7 @@ export function listShareLinks(): Promise<ShareLinkInfo[]> {
  * and parses a JSON response, but this endpoint uses neither.
  */
 export async function revokeShareLink(token: string): Promise<void> {
-  const response = await fetch(`/api/shares/${encodeURIComponent(token)}`, {
+  const response = await fetch(`${getApiBase()}/shares/${encodeURIComponent(token)}`, {
     method: "DELETE",
   });
   if (!response.ok) {

@@ -50,6 +50,7 @@ import DevicesPanel from "./components/DevicesPanel.tsx";
 import FileRequestForm from "./components/FileRequestForm.tsx";
 import FileRequestBanner from "./components/FileRequestBanner.tsx";
 import ModeBadges from "./components/ModeBadges.tsx";
+import { isRemoteMount } from "./utils/remoteMount.ts";
 
 /** Cycle order for theme toggle: SYSTEM -> DARK -> LIGHT -> SYSTEM */
 function cycleThemeMode(current: ThemeMode): ThemeMode {
@@ -333,6 +334,7 @@ function App({ serverMode, onLogout }: AppProps) {
             <ModeBadges
               readOnly={serverMode.readOnly}
               passwordProtected={serverMode.passwordRequired}
+              remote={isRemoteMount()}
             />
           </div>
           <div className="flex items-center gap-3">

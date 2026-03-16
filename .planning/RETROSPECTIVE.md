@@ -2,6 +2,57 @@
 
 *A living document updated after each milestone. Lessons feed forward into future planning.*
 
+## Milestone: v1.2 — Remote Mounts
+
+**Shipped:** 2026-03-16
+**Phases:** 4 | **Plans:** 11
+
+### What Was Built
+- Binary WebSocket tunnel protocol with 21-byte frame headers, UUID multiplexing, and per-stream backpressure
+- Relay server with mount registry, landing page, error templates, and HTTP/WebSocket proxying
+- Agent CLI (`wifi-file-server mount`) with auto-reconnect, QR display, and terminal status
+- Password protection and TTL auto-expiry for remote mounts
+- SPA dynamic relay prefix detection — all v1.0/v1.1 features work through relay
+- WebSocket tunneling for clipboard, notifications, and device discovery through relay
+- Upload streaming via chunked DATA frames (gap closure after UAT)
+- Copy-to-clipboard with HTTP fallback, relay CLI entry point, LAN IP QR resolution
+
+### What Worked
+- Tunnel protocol as shared library (tunnel/) used by both relay and agent — clean separation
+- ASGI transport for agent proxy — no network hop, all features work identically
+- UAT → diagnose → plan gaps → execute gaps workflow caught 2 real bugs and 2 missing features
+- Agent-initiated outbound WebSocket means no NAT/firewall issues
+- Cookie path scoping per mount code — multiple mounts in same browser work independently
+
+### What Was Inefficient
+- Race condition in agent receive loop (open_stream inside spawned task vs before) broke ALL relay requests — caught by user in UAT, not by automated tests
+- Server-info endpoint returned port 0 in remote mode — visible to user immediately but missed in planning
+- QR code used localhost which doesn't work from phones — obvious in hindsight but required user feedback
+- `navigator.clipboard` requires HTTPS — already solved for scratchpad textarea but not for copy button
+- ROADMAP.md progress table was stale (phase 9 showed "1/2 In Progress" when actually complete)
+- Gap closure agent got blocked on Bash permissions, requiring manual completion by orchestrator
+
+### Patterns Established
+- `_resolve_lan_url()`: replace localhost/127.0.0.1 with LAN IP in URLs for device access
+- `execCommand("copy")` fallback when `navigator.clipboard` unavailable (HTTP-over-LAN)
+- Stream registration before task spawn: `open_stream()` must happen in receive loop, not in handler
+- Convenience scripts (`run_relay.sh`, `run_mount_server.sh`) with auto-rebuild on stale client dist
+- `relay_url` in ServerConfig so server-info endpoint can construct correct mount URL
+
+### Key Lessons
+1. Race conditions between async task spawn and frame dispatch are invisible to unit tests — integration tests with real WebSocket frames would have caught this
+2. When adding a new deployment mode (remote), audit ALL user-facing surfaces (QR code, server-info, clipboard API) for assumptions about localhost/LAN context
+3. UAT on actual devices (phone) catches platform-specific issues (clipboard API, localhost QR) that desktop testing misses
+4. Gap closure cycle (UAT → diagnose → plan → execute → re-verify) is the right workflow for hardening
+5. Automated agents can get blocked on permissions — orchestrator should be ready to complete manually
+
+### Cost Observations
+- Model mix: sonnet for execution, opus for orchestration
+- Notable: 2 gap closure plans + 6 additional bug fixes discovered during UAT verification
+- Timeline: 5 days, most time spent on hardening and UAT rather than initial implementation
+
+---
+
 ## Milestone: v1.1 — Share & Access Control
 
 **Shipped:** 2026-03-11
@@ -98,10 +149,13 @@
 |-----------|----------|--------|------------|
 | v1.0 | ~4 | 4 | Initial release — coarse granularity, TDD backend, rapid frontend |
 | v1.1 | ~3 | 3 | Added UAT workflow — caught 3 real bugs invisible to automated tests |
+| v1.2 | ~5 | 4 | Gap closure cycle (UAT → diagnose → plan → execute) matured; device testing essential |
 
 ### Top Lessons (Verified Across Milestones)
 
 1. Coarse phase granularity (fewer, larger phases) reduces planning overhead without sacrificing quality
 2. TDD on API endpoints catches edge cases early and provides confidence for frontend integration
-3. UAT with real user testing catches integration bugs that automated tests miss (auth middleware, session persistence)
+3. UAT with real user testing catches integration bugs that automated tests miss — verified across all 3 milestones
 4. Cookie-based auth is mandatory for browser tools with `<a href>` downloads and `<img src>` previews
+5. Test on actual target devices (phones) — desktop browsers hide platform-specific issues (clipboard API, localhost URLs)
+6. When adding new deployment modes, audit ALL user-facing surfaces for context assumptions

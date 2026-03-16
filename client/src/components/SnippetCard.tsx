@@ -1,5 +1,5 @@
 import { useState, useRef } from "react";
-import { ChevronDown, ChevronRight, X } from "lucide-react";
+import { ChevronDown, ChevronRight, Copy, Check, X } from "lucide-react";
 import type { Snippet } from "../types/clipboard.ts";
 
 interface SnippetCardProps {
@@ -18,7 +18,27 @@ function SnippetCard({
   readOnly,
 }: SnippetCardProps) {
   const [isCollapsed, setIsCollapsed] = useState<boolean>(false);
+  const [copied, setCopied] = useState<boolean>(false);
   const titleRef = useRef<HTMLInputElement>(null);
+
+  function handleCopy(): void {
+    // navigator.clipboard requires secure context (HTTPS or localhost).
+    // Fall back to execCommand for HTTP-over-LAN (e.g., phone access).
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(snippet.content);
+    } else {
+      const textarea = document.createElement("textarea");
+      textarea.value = snippet.content;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  }
 
   function handleTitleBlur(): void {
     const input = titleRef.current;
@@ -62,6 +82,19 @@ function SnippetCard({
           className="flex-1 min-w-0 text-sm font-medium bg-transparent border-none outline-none text-gray-800 dark:text-gray-100 placeholder-gray-400"
           aria-label="Snippet title"
         />
+
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="p-0.5 text-gray-400 hover:text-blue-500 dark:hover:text-blue-400"
+          aria-label="Copy to clipboard"
+        >
+          {copied ? (
+            <Check className="w-4 h-4 text-green-500" />
+          ) : (
+            <Copy className="w-4 h-4" />
+          )}
+        </button>
 
         {!readOnly && (
           <button

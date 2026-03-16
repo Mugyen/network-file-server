@@ -17,7 +17,7 @@ Send = Callable[..., Any]
 ASGIApp = Callable[..., Any]
 
 GUARDED_PREFIX = "/api/"
-EXEMPT_API_PREFIXES = ("/api/auth/login", "/api/server-info")
+EXEMPT_API_PREFIXES = ("/api/auth/login", "/api/auth/logout", "/api/server-info")
 
 
 class AuthMiddleware:

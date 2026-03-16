@@ -20,6 +20,8 @@ class ServerConfig:
     password_hash: bytes | None
     read_only: bool
     receive: bool
+    mount_code: str | None
+    relay_url: str | None
 
     def __init__(
         self,
@@ -28,6 +30,8 @@ class ServerConfig:
         password_hash: bytes | None,
         read_only: bool,
         receive: bool,
+        mount_code: str | None,
+        relay_url: str | None,
     ) -> None:
         if not shared_folder.exists():
             raise ValueError(
@@ -42,6 +46,8 @@ class ServerConfig:
         self.password_hash = password_hash
         self.read_only = read_only
         self.receive = receive
+        self.mount_code = mount_code
+        self.relay_url = relay_url
 
 
 def create_default_config(shared_folder: Path, port: int) -> ServerConfig:
@@ -57,6 +63,8 @@ def create_default_config(shared_folder: Path, port: int) -> ServerConfig:
         password_hash=None,
         read_only=False,
         receive=False,
+        mount_code=None,
+        relay_url=None,
     )
 
 
@@ -90,4 +98,6 @@ def create_config_from_args(args: argparse.Namespace) -> ServerConfig:
         password_hash=args.password_hash,
         read_only=args.read_only,
         receive=args.receive,
+        mount_code=None,
+        relay_url=None,
     )

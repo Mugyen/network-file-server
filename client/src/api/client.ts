@@ -1,8 +1,9 @@
 import type { ConflictAction } from "../types/upload.ts";
 import type { UploadResult } from "../types/upload.ts";
 import { getDeviceName } from "../types/websocket.ts";
+import { getApiBase, isRemoteMount, getMountPrefix } from "../utils/remoteMount.ts";
 
-const API_BASE = "/api";
+const API_BASE = getApiBase();
 
 export class ApiError extends Error {
   readonly status: number;
@@ -16,11 +17,25 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * When in remote mount mode, detect HTML error responses from the relay
+ * (mount expired/not found/offline) and redirect to the mount root URL
+ * so the relay's proper error page renders instead of raw HTML in the SPA.
+ */
+function handleRelayError(status: number, body: string): never {
+  if (isRemoteMount() && body.trimStart().startsWith("<!DOCTYPE")) {
+    window.location.replace(`${getMountPrefix()}/`);
+    // Throw to stop execution while redirect is pending
+    throw new ApiError(status, "Mount unavailable — redirecting...");
+  }
+  throw new ApiError(status, body);
+}
+
 export async function apiFetch<T>(path: string): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`);
   if (!response.ok) {
     const body = await response.text();
-    throw new ApiError(response.status, body);
+    handleRelayError(response.status, body);
   }
   const data: T = await response.json();
   return data;
@@ -34,7 +49,7 @@ export async function apiPost<T>(path: string, body: unknown): Promise<T> {
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new ApiError(response.status, text);
+    handleRelayError(response.status, text);
   }
   const data: T = await response.json();
   return data;
@@ -48,7 +63,7 @@ export async function apiPatch<T>(path: string, body: unknown): Promise<T> {
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new ApiError(response.status, text);
+    handleRelayError(response.status, text);
   }
   const data: T = await response.json();
   return data;
@@ -62,7 +77,7 @@ export async function apiDelete<T>(path: string, body: unknown): Promise<T> {
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new ApiError(response.status, text);
+    handleRelayError(response.status, text);
   }
   const data: T = await response.json();
   return data;

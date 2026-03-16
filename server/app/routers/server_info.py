@@ -1,10 +1,12 @@
 """Server info API router.
 
 Provides GET /api/server-info with IP, port, URL, QR code, and mode data.
+In remote mount mode, returns the relay mount URL instead of local LAN URL.
 """
 
 import logging
 import socket
+from urllib.parse import urlparse
 
 from fastapi import APIRouter
 
@@ -15,15 +17,38 @@ from server.app.services.qr_service import generate_svg_qr
 
 logger = logging.getLogger(__name__)
 
+# Hostnames that resolve to the local machine and won't work from other devices.
+_LOCAL_HOSTS: frozenset[str] = frozenset({"localhost", "127.0.0.1", "::1"})
+
 router = APIRouter(prefix="/api", tags=["server-info"])
+
+
+def _build_mount_url(relay_url: str, mount_code: str, lan_ip: str) -> str:
+    """Build the mount URL, replacing localhost with LAN IP for device access.
+
+    Args:
+        relay_url:  Base URL of the relay server.
+        mount_code: Mount code assigned by the relay.
+        lan_ip:     LAN IP to substitute for local-only hostnames.
+
+    Returns:
+        Full mount URL with LAN-accessible hostname.
+    """
+    parsed = urlparse(relay_url)
+    hostname = parsed.hostname
+    if hostname is not None and hostname in _LOCAL_HOSTS:
+        new_netloc = f"{lan_ip}:{parsed.port}" if parsed.port else lan_ip
+        relay_url = parsed._replace(netloc=new_netloc).geturl()
+    return f"{relay_url.rstrip('/')}/m/{mount_code}"
 
 
 @router.get("/server-info", response_model=ServerInfo)
 def get_server_info() -> ServerInfo:
     """Return server information including IP, port, URL, and SVG QR code.
 
-    Detects primary and all LAN IPs, constructs the server URL,
-    and generates an SVG QR code encoding that URL.
+    In remote mount mode (mount_code set), returns the relay mount URL
+    instead of local http://ip:port. This ensures the QR code shown in
+    the client points to the correct relay URL.
 
     If network detection fails, returns ip="unknown", url="unknown",
     empty qr_svg, and empty all_ips list.
@@ -48,7 +73,18 @@ def get_server_info() -> ServerInfo:
             hostname=socket.gethostname(),
         )
 
-    url = f"http://{ip}:{port}"
+    # Remote mount mode: show relay mount URL instead of local server URL
+    if config.mount_code is not None and config.relay_url is not None:
+        url = _build_mount_url(config.relay_url, config.mount_code, ip)
+        relay_parsed = urlparse(config.relay_url)
+        relay_host = relay_parsed.hostname
+        if relay_host is not None and relay_host in _LOCAL_HOSTS:
+            port = relay_parsed.port if relay_parsed.port else 80
+        else:
+            port = relay_parsed.port if relay_parsed.port else 443
+    else:
+        url = f"http://{ip}:{port}"
+
     qr_svg = generate_svg_qr(url)
 
     return ServerInfo(

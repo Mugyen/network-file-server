@@ -35,13 +35,15 @@ def login(request: LoginRequest) -> JSONResponse:
     token_service = get_token_service()
     token = token_service.create_token()
 
+    cookie_path = f"/m/{config.mount_code}/" if config.mount_code is not None else "/"
+
     response = JSONResponse(content={"status": "ok"})
     response.set_cookie(
         key="session",
         value=token,
         httponly=True,
         samesite="lax",
-        path="/",
+        path=cookie_path,
     )
     return response
 
@@ -51,14 +53,18 @@ def logout() -> JSONResponse:
     """Clear the session cookie.
 
     Returns 200 with {"status": "ok"} and expires the session cookie.
+    Cookie path is scoped to /m/{mount_code}/ for remote mounts, or / for LAN mode.
     """
+    config = get_server_config()
+    cookie_path = f"/m/{config.mount_code}/" if config.mount_code is not None else "/"
+
     response = JSONResponse(content={"status": "ok"})
     response.set_cookie(
         key="session",
         value="",
         httponly=True,
         samesite="lax",
-        path="/",
+        path=cookie_path,
         max_age=0,
     )
     return response

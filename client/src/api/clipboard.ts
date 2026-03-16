@@ -1,5 +1,6 @@
 import type { Snippet } from "../types/clipboard.ts";
 import { apiFetch, apiPost, apiPatch } from "./client.ts";
+import { getApiBase } from "../utils/remoteMount.ts";
 
 /** Fetch all clipboard snippets. */
 export function fetchSnippets(): Promise<Snippet[]> {
@@ -23,7 +24,7 @@ export function updateSnippetTitle(
 export async function deleteSnippet(
   snippetId: string,
 ): Promise<{ status: string }> {
-  const response = await fetch(`/api/clipboard/${snippetId}`, {
+  const response = await fetch(`${getApiBase()}/clipboard/${snippetId}`, {
     method: "DELETE",
   });
   if (!response.ok) {
