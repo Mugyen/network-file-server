@@ -1,345 +1,394 @@
-# Pitfalls Research
+# Domain Pitfalls
 
-**Domain:** Adding WebSocket tunnel relay server and remote mount agent to existing LAN file sharing app (v1.2)
-**Researched:** 2026-03-11
-**Confidence:** HIGH (based on codebase analysis of existing WebSocket/auth infra + verified external patterns for tunnel relay architectures)
+**Domain:** Adding Cloud Run deployment, SQLite persistence, rate limiting, CORS lockdown, file TTL, and always-on mounts to existing FastAPI relay/tunnel file sharing system (v1.3)
+**Researched:** 2026-03-16
+**Confidence:** HIGH (codebase analysis of relay/agent infrastructure + verified external patterns from official docs and community post-mortems)
+
+---
 
 ## Critical Pitfalls
 
-### Pitfall 1: No Backpressure on File Streaming Over WebSocket Causes OOM on Relay
+### Pitfall 1: SQLite WAL Mode Silently Corrupts on Cloud Storage FUSE Mounts
 
 **What goes wrong:**
-A browser user downloads a 2GB video via the relay. The relay reads chunks from the agent's WebSocket faster than it can push them to the browser's HTTP response (or vice versa for uploads). Without backpressure, the relay buffers the entire file in memory. With 5 concurrent downloads of large files, the relay process crashes with OOM on a small cloud VM.
+Cloud Run's container filesystem is ephemeral. The natural fix is to mount a Cloud Storage bucket via GCS FUSE as a persistent volume. Developers enable SQLite WAL mode expecting better concurrent write performance. The mount registry DB works fine during development with a local file, then starts corrupting under concurrent writes on Cloud Run.
 
-FastAPI's WebSocket implementation (via Starlette) does not provide built-in backpressure for binary streaming. The `websocket.send_bytes()` call returns when data is queued in the write buffer, not when the remote side has consumed it. If the consumer is slow, the buffer grows unboundedly.
+WAL mode requires that all reader processes share a `-shm` (shared memory) file alongside the `.db` file. Cloud Storage FUSE does not provide POSIX byte-range locking — it uses an optimistic object-store model where concurrent writes can overwrite each other. WAL's journal cannot safely operate over FUSE because the shared memory file is process-local and cannot be coordinated across restarts or concurrent instances.
 
 **Why it happens:**
-WebSocket has no native flow control at the application layer. TCP provides flow control at the transport layer, but Python's asyncio buffering sits between your application and TCP. The relay sits in the middle of two connections (browser HTTP <-> relay <-> agent WebSocket), each with independent speeds. Developers test with small files on localhost where both sides are fast, so the mismatch never surfaces.
+The developer knows WAL mode is "better" and enables it without checking whether the underlying filesystem guarantees POSIX locking semantics. Local development on macOS/Linux passes because the host filesystem satisfies all constraints. Production on Cloud Run FUSE fails silently: writes appear to succeed but the WAL log is never properly checkpointed, leaving the DB in an inconsistent state after a restart.
 
-**How to avoid:**
-- Implement chunk-level flow control in the tunnel protocol: the relay sends a chunk to the browser, waits for the write to drain (`await writer.drain()` equivalent), then requests the next chunk from the agent. Never pipeline more than N chunks (e.g., 2-4) ahead.
-- Use `asyncio.Queue(maxsize=N)` between the WebSocket receiver and HTTP response writer. When the queue is full, the receiver blocks, which applies TCP-level backpressure to the agent connection.
-- Set explicit `max_size` on WebSocket connections (default is 1MB in the `websockets` library, but Starlette/uvicorn may differ). For binary file streaming, use chunked binary frames (64KB-256KB per frame), not one giant message.
-- Monitor relay memory usage. Alert if RSS exceeds expected bounds.
+**Consequences:**
+- Database corruption that only surfaces after a Cloud Run instance restarts (e.g., scale-to-zero then cold start)
+- Mount registry entries appear to persist but are unreadable
+- SQLite `SQLITE_IOERR` or `SQLITE_CORRUPT` errors on the first access after restart
+- WAL checkpoint hangs indefinitely, starving all writers
 
-**Warning signs:**
-- Relay memory grows linearly with number of concurrent downloads
-- Large file downloads succeed on fast networks but fail on slow consumer connections
-- `MemoryError` or process killed by OS OOM killer under load
+**Prevention:**
+- Use **Cloud Filestore** (managed NFS with POSIX locking semantics) if budget allows, or accept ephemeral in-memory state and use `--min-instances=1` to keep the container alive
+- If GCS FUSE is used, disable WAL mode entirely: `PRAGMA journal_mode=DELETE` and `PRAGMA synchronous=FULL`. Accept the write serialization cost — the mount registry has low write frequency.
+- Set `busy_timeout` (e.g., `PRAGMA busy_timeout=5000`) to handle the serialized write contention gracefully
+- Never open the SQLite DB file over a network path. The SQLite FAQ explicitly states: "Do not use WAL mode on a network filesystem"
+- For v1.3 scale (single-digit concurrent users), the simpler and safer approach is `--min-instances=1` with an in-process SQLite file on local container storage, accepting data loss on redeploy. Use Google Cloud SQL for true persistence.
 
-**Phase to address:**
-Tunnel protocol design phase. This is the most critical architectural decision for the relay -- get it wrong and everything else is unstable.
+**Detection:**
+- `SQLITE_BUSY` errors in logs on first request after cold start
+- Database file has a `-wal` or `-shm` sibling file on GCS FUSE (a sign WAL mode is active where it shouldn't be)
+- Mount registry empty after every Cloud Run redeploy
+
+**Phase to address:** SQLite persistent mount registry phase. The storage backend decision must be made before any schema design.
 
 ---
 
-### Pitfall 2: Request-Response Correlation Fails Under Concurrent Access
+### Pitfall 2: Cloud Run Scale-to-Zero Silently Kills the Always-On Drop Box Mount
 
 **What goes wrong:**
-Multiple browser users hit the same mount simultaneously. The relay forwards each HTTP request through the single WebSocket tunnel to the agent. The agent processes requests and sends responses back. Without proper correlation, Response B arrives and gets delivered to Browser A's pending request, corrupting both downloads.
-
-This is especially dangerous for file downloads where a misrouted response silently delivers the wrong file content -- no error, just wrong data.
+The always-on public drop box is implemented as an internal agent that starts with the relay container and registers a well-known mount code on startup. When Cloud Run scales to zero (no traffic for a period), the container is terminated. When a new request arrives and a new instance starts, the drop box agent starts fresh — but its agent WebSocket connection and registration are part of the same process startup. If startup ordering is wrong (e.g., the relay app starts accepting traffic before the internal agent has connected and registered), the first user gets a 503 or 404 for the drop box.
 
 **Why it happens:**
-A single WebSocket connection is a single bidirectional byte stream with no built-in request multiplexing. Developers build a working prototype with one browser tab, see it work, and assume concurrency is handled. The bug only manifests when two requests are in-flight simultaneously, which is common in practice (browser makes parallel requests for directory listing + favicon + preview thumbnails).
+Cloud Run starts a container and routes traffic as soon as the `/health` endpoint responds 200. If the internal agent uses `asyncio.create_task()` to register in the background (fire-and-forget), requests can arrive before registration completes. On a cold start, the gap between HTTP health-check passing and agent registration can be 500ms–2s, easily long enough for the first user request to fail.
 
-**How to avoid:**
-- Assign a unique request ID (UUID4 or monotonic counter) to every request the relay forwards through the tunnel. The agent must echo this ID in every response frame.
-- On the relay side, maintain a `dict[str, asyncio.Future]` mapping request IDs to pending responses. When a response frame arrives, resolve the correct Future by its ID.
-- Set a timeout on each Future (e.g., 30 seconds). If the agent never responds, return 504 Gateway Timeout to the browser instead of hanging forever.
-- For streaming responses (file downloads), the request ID must be present on every chunk frame, not just the first. The relay demultiplexes chunks to the correct HTTP response by ID.
+**Consequences:**
+- First request to the drop box after a cold start returns 404 or 503
+- Users report "broken" drop box link even though the service is "healthy"
+- Retrying works, confusing users and making the bug hard to reproduce
 
-**Warning signs:**
-- File downloads occasionally return wrong content (different file than requested)
-- Requests hang indefinitely when multiple users browse simultaneously
-- Download progress jumps backwards or forwards unexpectedly
+**Prevention:**
+- Start the internal drop box agent inside a FastAPI `lifespan` context manager (not a fire-and-forget task), and `await` registration confirmation before the app is ready to serve traffic. Cloud Run will continue routing the startup request until the lifespan completes.
+- Set `--min-instances=1` on the Cloud Run service to prevent scale-to-zero entirely. This eliminates the cold start race at the cost of ~$5–10/month in minimum billing.
+- Implement a health check endpoint that returns 200 only after the drop box agent is registered, not just after uvicorn starts listening.
 
-**Phase to address:**
-Tunnel protocol design phase. The wire protocol must include correlation IDs from day one -- retrofitting is a rewrite.
+**Detection:**
+- First-request 404 or 503 that disappears on retry
+- Logs show agent registration completing 1–3 seconds after first inbound request
+- Health check passes but `/m/{drop-box-code}/` returns error
+
+**Phase to address:** Default always-on public drop box mount phase (and Cloud Run deployment phase for the health check design).
 
 ---
 
-### Pitfall 3: Agent Reconnection Drops In-Flight Requests Silently
+### Pitfall 3: CORS Wildcard Cannot Be Used With Credentials — Breaks Cookie Auth
 
 **What goes wrong:**
-The agent's WebSocket connection drops (network blip, laptop sleep, WiFi switch). The agent reconnects within seconds. But all in-flight requests on the old connection are now orphaned: the relay has pending HTTP responses waiting for data that will never arrive. Browser users see infinite spinners or partial downloads with no error message.
-
-Worse: if the relay does not clean up the old mount state before the agent reconnects, two tunnel connections exist briefly for the same mount code, creating split-brain routing.
+The existing relay (`relay/app/main.py:22`) sets `allow_origins=["*"]`. The app uses itsdangerous cookie-based sessions for per-mount password auth. When the CORS wildcard is replaced with explicit origins as part of "CORS lockdown," the developer adds `allow_credentials=True` to stop session cookies from being stripped on cross-origin requests. This silently breaks: browsers reject `Access-Control-Allow-Origin: *` combined with `Access-Control-Allow-Credentials: true` as invalid (RFC 6454 and the Fetch spec both prohibit this).
 
 **Why it happens:**
-Reconnection logic focuses on re-establishing the WebSocket. Developers forget that reconnection is not just "connect again" -- it requires state reconciliation. The relay must cancel all in-flight requests, return errors to waiting browsers, and atomically swap the old tunnel for the new one.
+The developer adds `allow_credentials=True` to enable cookie forwarding, not realizing that this setting is incompatible with wildcard origins. The browser enforces the incompatibility silently — the request succeeds but the session cookie is stripped, so every API call looks like an unauthenticated request.
 
-**How to avoid:**
-- On agent disconnect, the relay must immediately fail all pending Futures for that mount with a `502 Bad Gateway` or `503 Service Unavailable` response. Do not wait for the agent to reconnect.
-- On agent reconnect, verify the mount code + agent secret before accepting. Atomically replace the old WebSocket reference. Never allow two tunnels for the same mount.
-- Implement exponential backoff with jitter in the agent's reconnection logic (1s, 2s, 4s, 8s... capped at 60s). Include jitter to prevent thundering herd if the relay restarts.
-- Add a "mount health" status that the relay tracks: CONNECTED, RECONNECTING, DISCONNECTED. Browser requests during RECONNECTING get a retryable 503 with `Retry-After` header.
+**Consequences:**
+- Password-protected mounts always redirect to login even after successful auth
+- Session cookies set on login are never sent on subsequent requests
+- The bug manifests only when the React SPA is served from a different origin than the relay (e.g., during local dev at `localhost:5173` hitting relay at `localhost:8000`)
 
-**Warning signs:**
-- Browser shows infinite spinner after agent briefly disconnects
-- Partial file downloads (first half from old connection, nothing after)
-- Two WebSocket connections from same agent exist simultaneously in relay's connection registry
-- Agent reconnects but old pending requests are never resolved
+**Prevention:**
+- When using cookie-based auth, `allow_origins` must be an explicit list (never `"*"`). Use environment variable `RELAY_ALLOWED_ORIGINS` and parse it at startup.
+- The rule: if `allow_credentials=True`, then `allow_origins` must be an explicit list. If `allow_origins=["*"]`, then `allow_credentials` must be `False` (or omitted).
+- For Cloud Run, the relay serves the React SPA directly, so all requests are same-origin and CORS is irrelevant for browser-to-relay calls. CORS is only needed for the agent's WebSocket registration endpoint (which doesn't use cookies). These two concerns should be scoped separately.
+- Document the origin list in config. Never hardcode origins; use an environment variable.
 
-**Phase to address:**
-Tunnel protocol design phase (reconnection semantics) and relay implementation phase (in-flight request cleanup).
+**Detection:**
+- Session cookies present in login response headers but absent in subsequent API request headers
+- 401 or redirect-to-login on every protected request despite successful login
+- Browser DevTools shows `Access-Control-Allow-Credentials: true` alongside `Access-Control-Allow-Origin: *` (this should never appear; one or the other browser will error)
+
+**Phase to address:** CORS lockdown phase. Must be addressed before any authentication testing of the production deployment.
 
 ---
 
-### Pitfall 4: Mount Code Brute Force Gives Unrestricted Access to Someone's Filesystem
+### Pitfall 4: Per-File TTL Deletion Race — File Deleted While Download Is In Progress
 
 **What goes wrong:**
-Mount codes are short (4-6 characters for usability). An attacker iterates through all possible codes and accesses any active mount. Since the mount exposes the user's local filesystem (read and potentially write access), this is a severe security issue -- the relay becomes a tool for filesystem exfiltration.
+A file has a TTL of 10 minutes. A user starts downloading a 500MB file at minute 9:58. At minute 10:00, the background TTL cleanup task calls `os.remove()` on the file. On Linux (and inside Docker), `os.remove()` unlinks the file from the directory while the open file descriptor held by the download stream is still valid — the download finishes successfully. However, if the cleanup closes the aiofiles handle first, or if the download is through the relay tunnel (where the agent holds the file handle), closing the handle causes the download to fail mid-stream with an unexpected EOF.
 
-With a 6-character alphanumeric code, there are ~2.2 billion combinations. But if codes use a smaller alphabet (e.g., lowercase + digits = 36 chars, 4 characters = 1.7M combinations), brute force is trivial at scale.
+The more dangerous variant: the upload endpoint uses `aiofiles` to write a file and registers a TTL cleanup task. The TTL fires during a slow upload (not download), truncating the partial file and leaving an orphaned inode.
 
 **Why it happens:**
-Developers optimize for usability (short, easy-to-type codes) without considering that the relay is internet-facing. On LAN, short codes are fine because attackers need physical network access. On the public internet, anyone can probe the relay.
+TTL cleanup is implemented as an `asyncio.create_task()` that fires at a scheduled time, without awareness of whether any in-progress operation holds a reference to the file. On Cloud Run restarts, all pending tasks are destroyed without cleanup — any files uploaded in the last TTL window are never deleted.
 
-**How to avoid:**
-- Use at minimum 6-character codes from a 36-character alphabet (lowercase + digits), yielding ~2.2 billion combinations. 8 characters is better.
-- Implement aggressive rate limiting on mount code lookups: 5 failed attempts per IP per minute, then block for 10 minutes. Use `429 Too Many Requests`.
-- Support optional per-mount passwords (reuse the existing `--password` infrastructure from v1.1). The mount code routes to the mount, but the password gates access to the files.
-- Log failed mount code attempts. Alert if a single IP tries more than 20 codes in an hour.
-- Consider making codes time-scoped: a code created at time T is only valid for lookups within the mount's TTL window. Expired codes return 410 Gone, not 404 (prevents enumeration of whether a code was ever valid).
+**Consequences:**
+- In-progress downloads fail mid-stream with EOF
+- Uploads create partial files that are never cleaned up on container restart
+- Disk fills up with orphaned partial uploads (especially dangerous on the drop box)
+- Users see "connection lost" errors near the end of large downloads
 
-**Warning signs:**
-- No rate limiting on the mount code lookup endpoint
-- Mount codes shorter than 6 characters
-- No logging of failed mount code attempts
-- No per-mount password option
+**Prevention:**
+- Track active file handles in a per-file reference counter. The TTL cleanup checks: if `ref_count > 0`, defer deletion by 30 seconds and reschedule. Only delete when `ref_count == 0`.
+- On Cloud Run container shutdown (`SIGTERM`), run a cleanup pass that deletes all files past their TTL before the process exits. Register a `lifespan` shutdown handler for this.
+- Use a single, dedicated cleanup task (not one task per file) that wakes on a fixed interval (e.g., every 60 seconds), scans all files, and deletes those past TTL with `ref_count == 0`. This is more robust than per-file scheduled tasks that disappear on restart.
+- Store file TTL metadata in SQLite (or in a separate JSON sidecar) so that a new container instance after restart can re-enqueue cleanup for files uploaded before the restart.
 
-**Phase to address:**
-Relay server implementation phase. Rate limiting must be present from the first public deployment.
+**Detection:**
+- Downloads failing in final 10% with unexplained EOF
+- Disk usage growing monotonically over time (orphaned files)
+- Partial files (zero bytes or incomplete) accumulating in the drop box directory
+
+**Phase to address:** Per-file upload TTL with auto-deletion phase.
 
 ---
 
-### Pitfall 5: Relay Becomes an Open Proxy for Arbitrary Filesystem Access
+### Pitfall 5: Rate Limiter Counter Is Per-Process, Not Per-Relay-Instance
 
 **What goes wrong:**
-The relay proxies browser HTTP requests to the agent. If the relay does not validate or sanitize the request path, an attacker could craft requests that make the agent serve files outside the intended shared directory. The agent's existing `resolve_safe_path()` (in `file_service.py:43`) validates against `config.shared_folder`, but the relay adds a new attack surface: the relay-to-agent protocol must faithfully transmit the path, and the agent must re-validate it.
-
-Additionally, if the tunnel protocol allows the browser to specify arbitrary HTTP methods or headers, the agent could be tricked into performing unintended operations.
+slowapi (the standard FastAPI rate limiter) uses an in-memory counter by default, scoped to the current Python process. On Cloud Run, each instance is a separate container. An attacker making 100 requests per second spreads them across 5 Cloud Run instances (Cloud Run autoscales), so each instance sees 20 req/s — below the per-process limit of 30 req/s — and none of them trigger rate limiting. The attacker effectively has an unlimited rate limit.
 
 **Why it happens:**
-The relay is a pure proxy -- it is tempting to pass through raw HTTP requests verbatim. But "pure proxy" does not mean "zero validation." The relay should only forward a constrained set of operations (list directory, download file, upload file), not arbitrary HTTP.
+The developer tests rate limiting locally with a single process and it works. On Cloud Run with multiple instances, the in-memory counter is split across instances. Even `--min-instances=1` doesn't help if Cloud Run scales out under load.
 
-**How to avoid:**
-- Define an explicit set of tunnel message types (enum): `LIST_DIR`, `DOWNLOAD_FILE`, `UPLOAD_FILE`, `GET_PREVIEW`, `GET_INFO`. Do NOT proxy raw HTTP requests through the tunnel.
-- The agent must re-validate every path against `config.shared_folder` using the existing `resolve_safe_path()`. Never trust the relay to have validated paths.
-- The relay should reject requests with path traversal patterns (`../`, encoded variants) before even forwarding to the agent, as defense in depth.
-- Never expose the agent's full FastAPI app through the tunnel. The agent should have a dedicated, minimal request handler for tunnel operations, separate from the LAN server endpoints.
+**Consequences:**
+- Brute-force attacks on mount codes succeed despite rate limiting being "enabled"
+- Mount registration floods exhaust server memory on individual instances
+- Attack traffic that would be blocked by a single-instance rate limiter passes through at scale
 
-**Warning signs:**
-- Tunnel protocol forwards raw HTTP request bytes instead of structured messages
-- Agent reuses the same route handlers for both LAN and tunnel requests
-- No path validation on the relay side (only on agent side)
-- Tunnel supports arbitrary HTTP methods beyond GET/POST
+**Prevention:**
+- For v1.3 (small scale, friend tier, `--min-instances=1`), in-process rate limiting with slowapi is acceptable as a first line of defense, but document the limitation explicitly.
+- The correct production solution: use a shared counter store (Redis, Memorystore) with `fastapi-limiter` (which uses Redis natively). For v1.3 this may be over-engineered; accept the limitation.
+- For mount code lookups specifically (the high-risk endpoint), implement rate limiting in the application layer even without Redis: track failed lookup counts in the SQLite registry with a `last_failure_ts` and `failure_count` column, reset per TTL window. SQLite writes are serialized — this is correct-by-construction for counting.
+- WebSocket connections (agent registration) are long-lived, not per-request. Rate limit by counting active connections per source IP at the `agent_ws.py` level using a module-level `dict[str, int]` counter, not via slowapi middleware.
 
-**Phase to address:**
-Tunnel protocol design phase. The message type enum must be defined before any implementation.
+**Detection:**
+- Failed mount code attempts per IP exceed the intended limit when tested from multiple IPs
+- CloudRun metrics show autoscaling to 2+ instances during a brute-force test
+- Rate limit 429 responses never appear in logs despite high invalid-code request rate
+
+**Phase to address:** Rate limiting and abuse prevention phase. Accept in-process limitation for v1.3 with explicit documentation.
 
 ---
 
-### Pitfall 6: Existing LAN Mode Breaks When Agent Code Is Added
+## Moderate Pitfalls
+
+### Pitfall 6: uvicorn Behind Cloud Run's HTTPS Proxy Does Not See Secure Requests
 
 **What goes wrong:**
-The v1.2 agent functionality is added to the same codebase. Import-time side effects, new dependencies, or configuration changes break the existing LAN server mode. Users who never use remote mounts find that `wfs share ~/Downloads` no longer works because the codebase now requires a relay URL, or the agent's WebSocket client library conflicts with the server's WebSocket server code, or new CLI flags changed the argument parsing.
+Cloud Run terminates TLS at its load balancer and forwards plain HTTP to uvicorn inside the container. The `request.url.scheme` inside FastAPI is `http`, not `https`. The itsdangerous session cookie is set with `secure=True`, which means the browser only sends it over HTTPS. The app sets `secure=True` based on `request.url.scheme == "https"`, which is always `False` inside the container. Session cookies are set with `secure=False`, meaning they're transmitted insecurely in any future context, and the `SameSite=None; Secure` requirement for cross-site cookies is never satisfied.
 
 **Why it happens:**
-The LAN server and the remote mount agent are fundamentally different programs that happen to share some code (file service, path validation). Developers add agent code to the existing server module, creating tight coupling. A bug in agent initialization crashes the server even when agent mode is not being used.
+The container doesn't know it's behind a TLS proxy unless uvicorn is told to trust `X-Forwarded-Proto`. The default uvicorn configuration does not forward proxy headers.
 
-**How to avoid:**
-- Keep the agent as a separate CLI command (`wfs mount ~/Downloads` vs `wfs share ~/Downloads`). The agent command should import only what it needs from the shared codebase.
-- The relay server is a completely separate deployment -- it does NOT share code with the LAN server beyond possibly shared model definitions.
-- Use lazy imports: the agent's WebSocket client library should only be imported when `wfs mount` is invoked, not at module load time.
-- Regression test: the existing LAN server test suite must pass with zero modifications after adding agent code. If any test needs changes, coupling has been introduced.
+**Prevention:**
+- Add `--proxy-headers` to the uvicorn start command. This enables uvicorn to read `X-Forwarded-Proto: https` and `X-Forwarded-For` headers from Cloud Run's proxy and set `request.url.scheme` correctly.
+- Also add `--forwarded-allow-ips=*` (or the specific Cloud Run IP range) to prevent header spoofing by untrusted callers. On Cloud Run, all traffic arrives through the load balancer so `*` is acceptable.
+- In the Dockerfile CMD, use: `uvicorn relay.app.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips='*'`
+- Validate: after deployment, `request.url.scheme` must equal `https` in production handlers.
 
-**Warning signs:**
-- `wfs share ~/Downloads` fails with import errors for new dependencies
-- Existing tests fail after adding agent module
-- `--help` output for `wfs share` shows remote-mount flags
-- LAN server startup time increases (loading agent dependencies)
+**Detection:**
+- Session cookies appear with `Secure` flag unset in browser DevTools despite HTTPS URL
+- `request.url.scheme` logs `http` in production Cloud Run handlers
+- Clipboard sync and other features requiring `navigator.clipboard` (HTTPS-only browser API) fail on the relay-served UI
 
-**Phase to address:**
-Project structure phase (before any feature implementation). Module boundaries must be established first.
+**Phase to address:** Cloud Run Dockerization phase (very first deployment task).
 
 ---
 
-### Pitfall 7: Mount TTL Expiry Race With Active Downloads
+### Pitfall 7: Vite Base Path Not Set, React SPA Loads White Screen on Cloud Run
 
 **What goes wrong:**
-A mount has a 1-hour TTL. At minute 59, a browser user starts downloading a 4GB file that takes 10 minutes. At minute 60, the mount expires. The relay tears down the tunnel, killing the download at 90% completion. The user sees a broken download with no explanation.
+The React SPA is built with Vite. In the Dockerfile, the frontend is built with `npm run build` and the resulting `dist/` directory is served by FastAPI as static files. On Cloud Run, all URLs go through Cloud Run's HTTPS proxy, and the app is at `https://relay.example.com/`. The SPA loads a blank white screen. The browser console shows `Failed to load resource: net::ERR_ABORTED 404` for `/assets/index-XXXX.js`.
+
+The asset paths in `dist/index.html` are `/assets/index-XXXX.js` (absolute paths). FastAPI's `StaticFiles` serves them at `/assets/index-XXXX.js`, which conflicts with the mount proxy catch-all route `/m/{code}/{path:path}`. Route registration order matters — if `StaticFiles` is mounted before the mount proxy, it works. If after, the mount proxy steals `/assets/` paths before StaticFiles sees them.
 
 **Why it happens:**
-TTL expiry is implemented as a simple timer that kills the mount unconditionally. Developers test TTL with short-lived mounts and small files, so the expiry never interrupts an active transfer.
+FastAPI route/mount order determines precedence. `app.mount("/assets", StaticFiles(...))` must appear before `app.include_router(mount_proxy_router)`, or the path `/assets/...` matches the mount proxy's `/{code}/{path:path}` pattern first (since `assets` looks like a mount code).
 
-**How to avoid:**
-- Track active transfers per mount. When TTL expires, stop accepting NEW requests but allow in-flight transfers to complete (grace period of 5-10 minutes).
-- Alternatively, extend TTL automatically if active transfers exist, with a hard cap (e.g., TTL + 30 minutes maximum).
-- Notify the agent when TTL is approaching (5 minutes warning) so the agent CLI can display a warning and offer to extend.
-- Browser users should see the remaining mount TTL in the UI so they know not to start a huge download with 2 minutes remaining.
+**Prevention:**
+- Mount `/assets` and `/` (index.html fallback) before including the mount proxy router.
+- Use Vite's `base: "./"` setting only if serving from a sub-path; for root deployment, the default (`/`) is correct.
+- In the multi-stage Dockerfile, set `VITE_BASE_URL=/` explicitly to avoid relative-path issues.
+- Integration test: build the Docker image locally and verify `curl http://localhost:8080/assets/index-XXXX.js` returns 200 before deploying to Cloud Run.
 
-**Warning signs:**
-- Downloads fail near mount expiry time
-- No grace period logic in TTL cleanup
-- No active transfer tracking on the relay
-- Users report "random download failures" that correlate with mount duration
+**Detection:**
+- Blank white page on relay root URL after Docker deployment
+- Browser console shows 404 for `/assets/index-XXXX.js`
+- Direct `curl` to asset URL returns HTML (the mount proxy error page) instead of JavaScript
 
-**Phase to address:**
-Mount lifecycle phase. TTL cleanup must be aware of active transfers.
+**Phase to address:** Cloud Run Dockerization phase. Test locally with `docker run -p 8080:8080` before pushing to Cloud Run.
 
 ---
 
-### Pitfall 8: JSON Encoding for Binary File Content Destroys Performance
+### Pitfall 8: The Default Drop Box Shares a Mount Registry With User Mounts — Code Collision Risk
 
 **What goes wrong:**
-The tunnel protocol uses JSON messages for everything, including file content. Binary file data must be Base64-encoded to fit in JSON, inflating payload size by 33%. A 100MB file becomes 133MB on the wire, and the CPU cost of Base64 encoding/decoding on both agent and relay adds significant latency. For large files, this can make the relay unusably slow compared to direct LAN transfer.
+The default drop box uses a well-known, fixed mount code (e.g., `dropbox`). The mount registry allows agents to request a specific code via the `code` query parameter. Nothing in `agent_ws.py` (current code) prevents a user from registering an agent with code `dropbox`, overwriting the internal drop box registration. The current `agent_ws.py` logic is: "if the code is not occupied, assign it; otherwise generate a new one." A user agent connecting with `?code=dropbox` when the drop box is momentarily offline (e.g., during startup) gets assigned `dropbox`, hijacking the well-known code.
 
 **Why it happens:**
-The existing WebSocket infrastructure (`connection_manager.py`) uses `send_json()` / `receive_json()` exclusively. Developers extend this pattern to the tunnel protocol, sending file chunks as Base64 strings inside JSON objects. It works for small files and is easy to implement.
+The code reservation and "taken" check in `agent_ws.py` (line 36–39) is designed for reconnect semantics (reclaim your old code), not for protecting reserved codes. There is no concept of a "reserved" or "system" code.
 
-**How to avoid:**
-- Use binary WebSocket frames (`send_bytes()` / `receive_bytes()`) for file content. Use a simple framing protocol: first N bytes are a header (request ID, chunk sequence number, flags), remaining bytes are raw file data.
-- Use JSON text frames only for control messages (request initiation, directory listings, error responses, mount registration).
-- Design the protocol to distinguish frame types: text frames = control/metadata, binary frames = file data. WebSocket natively supports both frame types on the same connection.
-- Benchmark: on a typical cloud VM, Base64 encoding 256KB chunks costs ~0.5ms each. Over a 1GB file (4096 chunks), that is 2 seconds of pure encoding overhead per direction, plus 33% more network transfer.
+**Prevention:**
+- Maintain a set of reserved codes in the relay config: `RESERVED_CODES = frozenset({"dropbox"})`. External agents attempting to register a reserved code should be rejected with WebSocket close code `4009` (Policy Violation).
+- The internal drop box agent should connect with a privileged startup path that bypasses the "occupied" check and is always allowed to reclaim its reserved code.
+- Alternatively, use a private registration endpoint (different from `/agent/ws`) for internal agents only, not accessible to external callers.
 
-**Warning signs:**
-- All WebSocket messages use `send_json()` including file data
-- File transfer throughput is significantly lower than expected network speed
-- High CPU usage on relay during file transfers (Base64 encoding)
-- Transfer speed test shows relay is 30%+ slower than direct connection
+**Detection:**
+- Drop box URL returns a user's personal mount instead of the shared drop box
+- Agent logs show successful registration with code `dropbox` from an unexpected IP
+- Internal drop box agent fails to register because code is already occupied
 
-**Phase to address:**
-Tunnel protocol design phase. Binary framing must be in the protocol spec from the start.
+**Phase to address:** Default always-on public drop box mount phase.
 
 ---
 
-## Technical Debt Patterns
+### Pitfall 9: asyncio.create_task for TTL Cleanup Is Silently Dropped Under Certain Conditions
 
-| Shortcut | Immediate Benefit | Long-term Cost | When Acceptable |
-|----------|-------------------|----------------|-----------------|
-| JSON-only tunnel protocol (Base64 for files) | Simpler implementation, easier debugging | 33% bandwidth overhead, CPU cost, poor large-file performance | Never for file data -- use binary frames from day one |
-| Single WebSocket per mount (no multiplexing) | Simpler relay logic | Head-of-line blocking: one slow download blocks other requests | Acceptable for v1.2 MVP if chunk-level interleaving is implemented. True multiplexing is v2 |
-| In-memory mount registry on relay | No database dependency | Mounts lost on relay restart; cannot scale to multiple relay instances | Acceptable for v1.2 -- single-instance relay. Add Redis/persistent store in v2 |
-| Relay stores mount passwords in memory | Simple, no external dependencies | Passwords lost on restart | Acceptable for v1.2 -- mount is ephemeral anyway |
-| No agent authentication (rely on mount code secrecy) | Faster implementation | Any agent can claim a mount code; mount hijacking possible | Never -- agent must authenticate with a secret token when registering a mount |
+**What goes wrong:**
+Per-file TTL cleanup is implemented as `asyncio.create_task(delete_after(path, delay_s))`. In Python 3.11+, if the Task object is not referenced anywhere after creation (fire-and-forget), the garbage collector may destroy the Task before it fires — Python emits a "Task was destroyed but it is pending" warning and the cleanup never runs. On Cloud Run restart (SIGTERM), all pending tasks are cancelled immediately without running their cleanup logic.
+
+**Why it happens:**
+`asyncio.create_task()` returns a Task but fire-and-forget usage discards the reference. The asyncio event loop holds a weak reference to running tasks, not a strong one. Under memory pressure or GC cycles, the task disappears.
+
+**Consequences:**
+- Files accumulate on disk, never deleted
+- The drop box disk fills up over time with uploaded files past TTL
+- No error visible — the cleanup just silently stops running
+
+**Prevention:**
+- Store all pending cleanup Tasks in a module-level `set` and add a `done_callback` that removes the task from the set when it completes. This keeps a strong reference until completion: `_cleanup_tasks: set[asyncio.Task] = set(); t = asyncio.create_task(...); _cleanup_tasks.add(t); t.add_done_callback(_cleanup_tasks.discard)`.
+- On SIGTERM (Cloud Run shutdown), cancel all pending cleanup tasks and run a synchronous cleanup sweep as part of the lifespan shutdown handler.
+- Prefer a single periodic cleanup loop over per-file tasks: on each tick, scan all tracked files, delete those past their TTL. Fewer tasks, simpler lifecycle.
+
+**Detection:**
+- "Task was destroyed but it is pending" warning in uvicorn logs
+- Files with creation timestamps past their TTL still present on disk after hours
+- Drop box disk usage growing monotonically with no cleanup events in logs
+
+**Phase to address:** Per-file upload TTL with auto-deletion phase.
+
+---
+
+### Pitfall 10: WebSocket Connection Status UI Desynchronizes From Actual Agent State
+
+**What goes wrong:**
+The UI shows "Connected" because the browser WebSocket to the relay is alive. But the relay's TunnelConnection to the agent is offline (agent laptop slept, went behind a NAT, etc.). The relay's tunnel heartbeat detects the offline agent and marks the mount `OFFLINE` in the registry. The browser WebSocket to the relay is still connected — the browser doesn't know the agent is gone until it makes a proxied API call that returns 503.
+
+The inverse also occurs: the browser WebSocket drops (mobile WiFi handoff), but the React code only updates the status to "Disconnected" after a WebSocket `close` event. If the TCP connection is silently dropped (no FIN/RST), the browser WebSocket may stay in `OPEN` state for 30–90 seconds before the ping/pong timeout fires.
+
+**Why it happens:**
+There are two independent connection states that the UI must track: the browser-to-relay WebSocket AND the relay-to-agent tunnel. Most implementations only track the former. The UI infers agent health from "can I connect to the relay?" but the relay can be reachable while the agent is offline.
+
+**Prevention:**
+- Add a relay-side API endpoint `GET /m/{code}/status` that returns the current `MountStatus` (ONLINE/OFFLINE/EXPIRED). The UI polls this endpoint every 10 seconds or listens for a status push over the browser WebSocket.
+- Alternatively, inject mount status into WebSocket keepalive frames: when the relay sends a heartbeat ping to the browser WebSocket, include the current agent connection state as a JSON payload. The UI updates its status badge accordingly.
+- Use WebSocket `readyState` (`CONNECTING=0, OPEN=1, CLOSING=2, CLOSED=3`) for the browser-to-relay connection state, and the above mechanism for the relay-to-agent state. The UI should show "Relay connected, agent offline" as a distinct state from "Relay disconnected."
+
+**Detection:**
+- UI shows "Connected" while all API calls return 503
+- Status badge stays green for 60+ seconds after agent disconnects
+- Users report "everything looks fine but nothing works"
+
+**Phase to address:** Connection status indicator in web UI phase.
+
+---
+
+## Minor Pitfalls
+
+### Pitfall 11: Structured Logging Format Conflicts With Cloud Run's JSON Log Parser
+
+**What goes wrong:**
+Cloud Run expects JSON-formatted logs where the severity field is named `severity` (not `level`). Python's `logging` module by default emits plaintext. If logs are emitted as `{"level": "INFO", "message": "..."}` (a common Python structured logging format), Cloud Run's log viewer shows the entire JSON blob as a single string at severity INFO — no severity-based filtering, no log correlation by `trace` ID.
+
+**Prevention:**
+- Use `python-json-logger` with the Cloud Run-specific field mapping: `severity` (not `level`), `message` (standard), `time` (RFC 3339 format). See the [Cloud Run structured logging documentation](https://cloud.google.com/run/docs/logging#writing-structured-logs).
+- Set `LOG_FORMAT=json` via environment variable, falling back to human-readable plaintext for local development.
+
+**Phase to address:** Cloud Run Dockerization phase.
+
+---
+
+### Pitfall 12: `Dockerfile` Uses uv But Does Not Cache the Lock File Correctly
+
+**What goes wrong:**
+The `Dockerfile` runs `uv sync` to install dependencies. If the `COPY` instruction copies the entire project directory before running `uv sync`, every code change invalidates the Docker layer cache for the dependency install step. A 30-second dependency install runs on every `docker build`, even when `uv.lock` hasn't changed.
+
+**Prevention:**
+- Copy only `pyproject.toml` and `uv.lock` first, run `uv sync --frozen --no-install-project`, then copy the rest of the source. This caches the installed virtualenv layer and only invalidates it when the lock file changes.
+- Use `uv sync --frozen` (not `uv install`) to ensure the exact versions from `uv.lock` are installed without resolution.
+
+**Phase to address:** Cloud Run Dockerization phase.
+
+---
+
+### Pitfall 13: Mount Code in `X-Mount-Code` Response Header Leaks to Relay-Served Pages
+
+**What goes wrong:**
+The mount proxy currently rewrites HTML to prefix asset paths with `/m/{code}`. If the relay ever adds the mount code to response headers (e.g., for debugging, `X-Mount-Code: abc123`), those headers are forwarded to the browser. The mount code appears in browser DevTools and server-side access logs of any CDN or proxy sitting in front of Cloud Run, undermining the secrecy of short-lived codes.
+
+**Prevention:**
+- The relay should never add mount code identifiers to outbound response headers.
+- Review all headers added by middleware and ensure none leak the mount code outside the URL path.
+
+**Phase to address:** Cloud Run hardening / security review.
+
+---
+
+## Phase-Specific Warnings
+
+| Phase Topic | Likely Pitfall | Mitigation |
+|-------------|----------------|------------|
+| Cloud Run Dockerization | uvicorn not getting `--proxy-headers`; cookies show `Secure=False` in HTTPS context | Add `--proxy-headers --forwarded-allow-ips='*'` to CMD |
+| Cloud Run Dockerization | Docker layer cache invalidated on every build | Copy `pyproject.toml` + `uv.lock` before source files; use `uv sync --frozen` |
+| Cloud Run Dockerization | React SPA assets return 404 or hit mount proxy catch-all | Mount `/assets` before including mount proxy router; test with `docker run` locally |
+| Cloud Run Dockerization | Container ready before drop box agent registered | Use `lifespan` context manager; health check verifies drop box registration |
+| SQLite persistent mount registry | WAL mode corruption on GCS FUSE | Use `journal_mode=DELETE` + `synchronous=FULL` on FUSE; prefer Filestore or `--min-instances=1` |
+| SQLite persistent mount registry | DB not reopened correctly after cold start | Test full cold-start cycle: deploy, wait for scale-to-zero, send request, verify registry state |
+| Rate limiting | In-process counters split across Cloud Run instances | Use SQLite-backed failure counters for mount lookups; document multi-instance limitation |
+| Rate limiting | WebSocket connections not rate-limited by slowapi | Rate-limit agent connections in `agent_ws.py` using module-level IP counter |
+| CORS lockdown | `allow_credentials=True` with `allow_origins=["*"]` breaks cookies | Explicit origin list when credentials are used; never combine wildcard with credentials |
+| CORS lockdown | Relay serves SPA so most calls are same-origin; CORS only needed for agent WS | Scope CORSMiddleware to `/agent/ws` only, not globally |
+| Connection status UI | Browser WebSocket alive but agent tunnel dead; UI shows "Connected" | Poll `GET /m/{code}/status` or push agent state via browser WebSocket heartbeat |
+| Connection status UI | Stale "Connected" state during browser network handoff | Implement explicit ping/pong with 15-second timeout; update UI on pong timeout |
+| File TTL auto-deletion | Fire-and-forget `asyncio.create_task` silently dropped | Store task references in a module-level set; prefer single periodic cleanup loop |
+| File TTL auto-deletion | Cleanup tasks lost on Cloud Run SIGTERM | Register SIGTERM handler to run cleanup sweep before exit |
+| File TTL auto-deletion | File deleted mid-download causing EOF | Track open file handle reference counts before deleting |
+| Always-on drop box | Reserved code hijacked by user agent on startup race | Validate incoming `code` against RESERVED_CODES; reject with WS close 4009 |
+| Always-on drop box | Scale-to-zero destroys drop box; first request after cold start fails | Set `--min-instances=1`; health check waits for drop box registration |
+
+---
 
 ## Integration Gotchas
 
 | Integration | Common Mistake | Correct Approach |
 |-------------|----------------|------------------|
-| Relay + existing auth middleware | Applying v1.1's cookie-based auth middleware to relay routes; browsers accessing mounts are NOT authenticated via the LAN server's session | Relay has its own auth: mount code + optional per-mount password. Do NOT reuse `AuthMiddleware` from v1.1 |
-| Agent + existing ConnectionManager | Reusing the LAN server's `ConnectionManager` singleton for the tunnel WebSocket | Agent tunnel is a client-side WebSocket (connecting outbound). LAN `ConnectionManager` is server-side (accepting inbound). Different classes, different lifecycle |
-| Agent + existing file_service | Agent calls `file_service.list_directory()` etc. but `file_service` depends on `get_server_config()` global | Agent must set its own `ServerConfig` with the mounted directory. Verify `set_server_config()` is called before any file operations in agent mode |
-| Relay + Starlette static files | Relay's mount landing page conflicts with SPA catch-all `/{path:path}` route | Relay is a separate application/deployment. If co-hosted (dev mode), mount routes must be registered before the SPA catch-all |
-| Browser + CORS on relay | Relay serves mount pages to browsers; if mount UI is a separate SPA, CORS blocks API calls | Serve mount UI from the relay origin. Same-origin eliminates CORS issues entirely |
-| Agent CLI + existing CLI | `wfs mount` vs `wfs share` use the same `cli.py` argparse setup; conflicting flags | Use argparse subcommands. `share` and `mount` are separate subcommands with independent flag sets |
-| Relay + WebSocket ping/pong | Relying on TCP keepalive to detect dead agent connections; cloud load balancers and proxies drop idle WebSockets after 60-120 seconds | Implement application-level ping/pong at 30-second intervals. Do NOT rely on WebSocket protocol-level pings alone -- some proxies strip them |
-| Mount password + existing bcrypt | Reusing bcrypt for mount passwords adds 100-300ms per password check due to intentional slowness | For per-mount passwords, bcrypt is fine (checked once per session). But do NOT check bcrypt on every proxied request -- issue a session cookie after first check |
+| Cloud Run + uvicorn proxy headers | `request.url.scheme == "http"` inside container; cookies get `Secure=False` | Start uvicorn with `--proxy-headers --forwarded-allow-ips='*'` |
+| Cloud Run + SQLite WAL | WAL mode on GCS FUSE volume causes DB corruption | Use `journal_mode=DELETE` on FUSE; use `--min-instances=1` to avoid scale-to-zero |
+| Cloud Run + always-on drop box | Drop box unregistered between container startup and first traffic | Use `lifespan` to await registration; health check gates on drop box being registered |
+| CORSMiddleware + cookie auth | Wildcard origins + `allow_credentials=True` silently breaks session cookies | Explicit origin list when credentials enabled; validate with browser DevTools cookie inspector |
+| Rate limiter (slowapi) + Cloud Run autoscaling | Per-process counters split across instances; brute force succeeds at scale | SQLite-backed failed-attempt counters for high-value endpoints |
+| File TTL + asyncio | `create_task` fire-and-forget: task GC'd before firing | Strong reference in module-level set; periodic cleanup loop preferred over per-file tasks |
+| File TTL + Cloud Run SIGTERM | Container killed without running cleanup; files orphaned | lifespan shutdown handler runs cleanup sweep |
+| Connection status UI + dual connection model | UI tracks browser-to-relay WS only; agent going offline is invisible | Add relay-side `GET /m/{code}/status` endpoint; push status in WS heartbeat payloads |
+| Default drop box + reserved codes | User agent can claim drop box code during startup gap | Reserved code set in config; agent_ws.py checks against reserved codes on registration |
+| Multi-stage Docker + Vite | Assets served at wrong path or caught by mount proxy router | Mount `/assets` StaticFiles before mount proxy router; test locally with `docker run` |
 
-## Performance Traps
+---
 
-| Trap | Symptoms | Prevention | When It Breaks |
-|------|----------|------------|----------------|
-| Relay buffers entire file in memory before forwarding to browser | Memory usage proportional to total concurrent download size | Stream chunks directly from WebSocket to HTTP response. Never accumulate | 3+ concurrent large file downloads on a 512MB VM |
-| Agent reads entire file into memory before sending over WebSocket | Agent OOM on large files | Use `aiofiles` to read in chunks (64KB-256KB). Send each chunk as a binary frame | Any file larger than available RAM |
-| Relay creates new asyncio Task per proxied request without limit | Unbounded task creation; event loop starvation | Use `asyncio.Semaphore` to limit concurrent proxied requests per mount (e.g., 20) | 50+ concurrent requests to a single mount (browser tabs, download managers) |
-| DNS resolution for relay URL on every agent reconnection | Reconnection delayed by DNS timeout when network is flaky | Cache DNS result; use IP directly after initial resolution | Agent on unstable WiFi with DNS server issues |
-| Directory listing serialization for large directories | Agent serializes 10,000-file directory as JSON; relay buffers entire response | Paginate directory listings. Limit to 1000 entries per response with cursor | Mounting a directory with 10,000+ files |
-| Heartbeat ping/pong on same event loop as file transfer | Large file transfer starves heartbeat processing; relay declares agent dead | Use a separate asyncio task for heartbeat that is not blocked by data transfer tasks | During sustained large file transfer at network capacity |
-
-## Security Mistakes
+## Security Mistakes for v1.3
 
 | Mistake | Risk | Prevention |
 |---------|------|------------|
-| Mount code in URL path (`/mount/abc123/files/...`) | Code visible in browser history, server logs, referrer headers | Accept mount code via initial POST or cookie; subsequent requests use session token. Code appears in URL only on the landing page |
-| No agent authentication on tunnel registration | Anyone who guesses/brute-forces a mount code can register as the agent, serving malicious files | Agent must present a cryptographic secret (generated at mount creation) when connecting the tunnel |
-| Relay forwards agent's error tracebacks to browser | Internal path information, Python version, library versions leaked | Relay must sanitize all error responses. Return generic error messages; log details server-side only |
-| No origin validation on relay WebSocket | Cross-site WebSocket hijacking: malicious page connects to relay and registers a fake agent | Validate `Origin` header on agent WebSocket handshake. Only accept connections from expected agent origins (or skip origin check and rely on secret token) |
-| Mount code enumeration via timing | `404` for invalid code vs `401` for valid-but-password-protected code reveals which codes are active | Return identical response for invalid code and wrong password. Use constant-time comparison for codes |
-| Agent exposes upload capability through tunnel without explicit opt-in | User mounts `~/Documents` for sharing; attacker uploads malware into their documents folder | Default mount mode is read-only. Require explicit `--allow-upload` flag on the agent CLI to enable writes through the tunnel |
-| Relay trusts agent-provided file metadata (size, name, type) | Agent (or compromised agent) sends fake Content-Length, causing browser to allocate excessive memory | Relay should stream without trusting Content-Length. Let the browser handle chunked transfer encoding |
-| No TLS on agent-relay WebSocket | File content transmitted in plaintext between agent and relay; interceptable by ISP/network observer | Use `wss://` (WebSocket over TLS). The relay must have a valid TLS certificate. This is non-negotiable for internet-facing relay |
+| uvicorn without `--proxy-headers` | `request.url.scheme == "http"` causes `Secure=False` cookies sent over any protocol | Add `--proxy-headers` to uvicorn CMD in Dockerfile |
+| `allow_origins=["*"]` + cookie auth in production | Session cookies stripped by browser; all authenticated sessions fail | Explicit `allow_origins` list from environment variable |
+| No reserved code enforcement | User agent can claim well-known drop box code | Check incoming code against `RESERVED_CODES` frozenset before registration |
+| SQLite WAL on GCS FUSE | DB corruption after restart | Disable WAL on non-local filesystems; use `PRAGMA journal_mode=DELETE` |
+| Rate limiting per-process only | Brute force mount codes across Cloud Run instances | Accept limitation for v1.3; document; use SQLite-backed counters for critical endpoints |
+| File cleanup task GC | Orphaned files accumulate; disk fills; drop box degrades | Strong task references; periodic cleanup loop; SIGTERM cleanup sweep |
 
-## UX Pitfalls
-
-| Pitfall | User Impact | Better Approach |
-|---------|-------------|-----------------|
-| Mount succeeds silently with no feedback | User runs `wfs mount ~/Downloads` and sees nothing -- is it working? | Display: mount code, relay URL, QR code, TTL remaining, connection status. Mirror the existing `wfs share` output style |
-| Browser shows generic "error" when agent is disconnected | User cannot distinguish "mount expired" from "agent offline" from "wrong code" | Specific error states: "Mount not found" (invalid code), "Mount offline" (agent disconnected), "Mount expired" (TTL elapsed), "Connecting..." (agent reconnecting) |
-| No indication of relay latency vs LAN speed | User expects LAN-like speed through the relay and thinks it is broken | Show transfer speed in the browser UI. Note "Remote mount via relay -- speed depends on internet connection" |
-| Mount landing page requires entering code manually when QR was scanned | QR code contains the URL with mount code but landing page still asks for code input | QR URL should include the code in the path: `relay.example.com/m/abc123`. Landing page auto-navigates to mount when code is in URL |
-| Agent disconnects with no option to reconnect manually | Laptop sleeps, agent drops. User must kill and restart the CLI | Agent should auto-reconnect. Display reconnection attempts in terminal. Provide manual reconnect command or keep-alive info |
-| TTL expires with no warning | Mount suddenly stops working mid-session | Show countdown in agent CLI and browser UI. Warn at 5 minutes remaining. Offer "extend" option in agent CLI |
-
-## "Looks Done But Isn't" Checklist
-
-- [ ] **Tunnel protocol:** Two browser tabs downloading different files simultaneously receive correct file content (correlation IDs work)
-- [ ] **Tunnel protocol:** 1GB+ file download completes without relay memory exceeding 100MB (backpressure works)
-- [ ] **Tunnel protocol:** File download through tunnel has correct `Content-Type`, `Content-Length`, and `Content-Disposition` headers (not just raw bytes)
-- [ ] **Reconnection:** Agent laptop sleeps for 5 minutes, wakes up, auto-reconnects, and browser users can resume browsing within 10 seconds
-- [ ] **Reconnection:** In-flight downloads when agent disconnects return an error to the browser (not infinite spinner)
-- [ ] **Reconnection:** Agent reconnects to the SAME mount code (does not create a new mount)
-- [ ] **Mount lifecycle:** TTL expiry does not kill active downloads (grace period works)
-- [ ] **Mount lifecycle:** Expired mount code returns 410 Gone, not 404 (prevents confusion with invalid codes)
-- [ ] **Mount lifecycle:** Agent CLI displays time remaining and warns before expiry
-- [ ] **Security:** Rate limiting on mount code lookup prevents brute force (>5 failures per minute per IP returns 429)
-- [ ] **Security:** Agent authenticates with secret token, not just mount code
-- [ ] **Security:** Default mount mode is read-only (no uploads through tunnel unless `--allow-upload`)
-- [ ] **Security:** Path traversal via tunnel returns 400, not a file from outside shared directory
-- [ ] **Security:** Relay uses `wss://` (TLS) for agent connections
-- [ ] **LAN preservation:** `wfs share ~/Downloads` works identically to v1.1 with no new dependencies loaded
-- [ ] **LAN preservation:** All existing tests pass without modification
-- [ ] **LAN preservation:** `--help` output for `wfs share` is unchanged
-- [ ] **Performance:** Directory listing for 1000-file directory returns in under 2 seconds through tunnel
-- [ ] **Performance:** Concurrent downloads (5 users, 100MB each) complete without relay OOM
-
-## Recovery Strategies
-
-| Pitfall | Recovery Cost | Recovery Steps |
-|---------|---------------|----------------|
-| No backpressure (OOM on relay) | HIGH | Requires redesigning the data flow pipeline between WebSocket and HTTP response. Cannot be patched onto a buffering design |
-| Missing correlation IDs | HIGH | Requires rewriting the tunnel protocol wire format. Every message format changes |
-| JSON-encoded file data | MEDIUM | Switch `send_json` to `send_bytes` for data frames. Keep JSON for control. Requires protocol version bump |
-| Agent reconnection drops requests | MEDIUM | Add Future cleanup on disconnect. Moderate refactor of relay's request tracking |
-| Mount code brute force | LOW | Add rate limiting middleware. No protocol changes needed |
-| LAN mode regression | LOW | Revert imports, fix module boundaries. Tests catch this immediately |
-| TTL kills active downloads | LOW | Add grace period check before teardown. Small code change in lifecycle manager |
-| Missing agent authentication | MEDIUM | Add secret token field to mount registration. Requires coordinating agent + relay changes |
-
-## Pitfall-to-Phase Mapping
-
-| Pitfall | Prevention Phase | Verification |
-|---------|------------------|--------------|
-| No backpressure (OOM) | Tunnel protocol design | Load test: 5 concurrent 500MB downloads, relay RSS stays under 200MB |
-| Missing correlation IDs | Tunnel protocol design | Test: 10 parallel requests return correct responses (content hash comparison) |
-| JSON file encoding overhead | Tunnel protocol design | Benchmark: tunnel transfer speed within 80% of direct HTTP transfer speed |
-| Agent reconnection drops requests | Tunnel protocol + relay implementation | Test: kill agent WebSocket mid-download, browser gets 502 within 5 seconds |
-| Mount code brute force | Relay implementation | Test: 6th invalid code attempt within 60s returns 429 |
-| Open proxy / path traversal | Tunnel protocol design + agent implementation | Test: `../../../etc/passwd` through tunnel returns 400 |
-| LAN mode regression | Project structure (first phase) | Existing test suite passes with zero modifications |
-| TTL kills active downloads | Mount lifecycle implementation | Test: start download at TTL-30s, verify download completes |
-| Agent authentication missing | Relay + agent implementation | Test: agent with wrong secret gets WebSocket close code 4003 |
-| Binary framing vs JSON | Tunnel protocol design | Code review: `send_bytes()` used for file data, `send_json()` only for control |
+---
 
 ## Sources
 
-- Direct codebase analysis: `server/app/services/connection_manager.py` (singleton `manager`, `send_json()`-only API), `server/app/routers/websocket.py` (auth check pattern, message routing), `server/app/config.py` (global `ServerConfig` pattern), `server/app/main.py` (SPA catch-all, CORS config)
-- Direct codebase analysis: `server/app/services/file_service.py` (`resolve_safe_path()` validation pattern)
-- [WebSocket Backpressure in Streams](https://skylinecodes.substack.com/p/backpressure-in-websocket-streams) -- backpressure is not built into WebSocket; must be implemented at application layer
-- [Managing WebSocket Backpressure in FastAPI](https://hexshift.medium.com/managing-websocket-backpressure-in-fastapi-applications-893c049017d4) -- asyncio.Queue-based flow control pattern
-- [websockets library memory docs](https://websockets.readthedocs.io/en/stable/topics/memory.html) -- buffer sizing, max_size, max_queue parameters
-- [WSP - HTTP tunnel over WebSocket](https://github.com/root-gg/wsp) -- request-response correlation with UUID and timeout protection
-- [Reverse Proxying over WebSockets (Codemancers)](https://www.codemancers.com/blog/reverse-proxying-over-websockets) -- multiplexing, dynamic port allocation failures, WebSocket relay architecture
-- [How I built Ngrok Alternative](https://dev.to/azimjohn/how-i-built-ngrok-alternative-3n0g) -- JSON encoding mistake for binary data, Base64 overhead
-- [Building an HTTP Tunnel with WebSocket](https://dzone.com/articles/building-a-http-tunnel-with-websocket-and-nodejs) -- tunnel protocol design patterns
-- [OWASP WebSocket Security Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/WebSocket_Security_Cheat_Sheet.html) -- origin validation, authentication, rate limiting
-- [Cross-site WebSocket Hijacking (PortSwigger)](https://portswigger.net/web-security/websockets/cross-site-websocket-hijacking) -- CSWSH attack vector
-- [WebSocket Reconnect Strategies](https://apidog.com/blog/websocket-reconnect/) -- exponential backoff, jitter, max retry limits
-- [websockets keepalive docs](https://websockets.readthedocs.io/en/stable/topics/keepalive.html) -- ping/pong intervals, proxy timeout interaction
-- [Challenges of Scaling WebSockets](https://dev.to/ably/challenges-of-scaling-websockets-3493) -- connection lifecycle, stale connection cleanup
+- Direct codebase analysis: `relay/app/main.py` (`allow_origins=["*"]`, no CORS scoping), `relay/app/routers/agent_ws.py` (code reservation logic, no reserved code check), `relay/app/services/mount_registry.py` (in-memory only, no persistence), `relay/app/routers/mount_proxy.py` (proxy architecture)
+- [SQLite WAL mode documentation](https://sqlite.org/wal.html) — WAL requires shared memory; does not work over network filesystems
+- [SQLite on networked storage - GoToSocial documentation](https://docs.gotosocial.org/en/latest/advanced/sqlite-networked-storage/) — FUSE/NFS incompatibility with SQLite locking, corruption risk
+- [Cloud Run WebSocket documentation](https://docs.cloud.google.com/run/docs/triggering/websockets) — 5-minute default timeout; up to 60 minutes configurable; subject to request timeout
+- [Cloud Run minimum instances documentation](https://docs.cloud.google.com/run/docs/configuring/min-instances) — scale-to-zero behavior; how to keep instances warm
+- [How to Deploy SQLite on Cloud Run](https://www.wallacesharpedavidson.nz/post/sqlite-cloudrun/) — persistent volume options, FUSE limitations
+- [FastAPI CORS documentation](https://fastapi.tiangolo.com/tutorial/cors/) — wildcard + credentials incompatibility
+- [FastAPI CORSMiddleware + credentials restriction (GitHub #830)](https://github.com/TracecatHQ/tracecat/pull/830) — wildcard origins incompatible with `allow_credentials=True`
+- [slowapi GitHub](https://github.com/laurentS/slowapi) — per-process counter limitation; Redis backend for distributed rate limiting
+- [Cloud Run structured logging documentation](https://cloud.google.com/run/docs/logging) — `severity` field name; JSON format requirements
+- [FastAPI deployment with Docker](https://fastapi.tiangolo.com/deployment/docker/) — multi-stage build patterns, layer caching
+- [asyncio Task GC warning (Python docs)](https://docs.python.org/3/library/asyncio-task.html) — "Task was destroyed but it is pending" — fire-and-forget task pitfall
+- [WebSocket readyState MDN](https://developer.mozilla.org/en-US/docs/Web/API/WebSocket/readyState) — connection states; does not reflect tunnel-to-agent health
+- [OWASP WebSocket Security Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/WebSocket_Security_Cheat_Sheet.html) — connection exhaustion, rate limiting best practices
 
 ---
-*Pitfalls research for: WiFi File Server v1.2 remote mounts relay + agent*
-*Researched: 2026-03-11*
+*Pitfalls research for: Network File Server v1.3 — productionize friend tier*
+*Researched: 2026-03-16*

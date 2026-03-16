@@ -1,597 +1,562 @@
-# Architecture Research
+# Architecture Patterns
 
-**Domain:** Remote mount relay server for WiFi file sharing app
-**Researched:** 2026-03-11
+**Domain:** v1.3 Productionize Friend Tier — Cloud Run hardening of existing relay
+**Researched:** 2026-03-16
 **Confidence:** HIGH
 
-## System Overview
+---
+
+## System Overview (v1.2 Baseline — What Already Exists)
 
 ```
-                        INTERNET
-    ┌──────────────────────────────────────────────────────────┐
-    │                                                          │
-    │   ┌──────────────────────────────────────────────┐       │
-    │   │          RELAY SERVER (separate process)     │       │
-    │   │                                              │       │
-    │   │  ┌────────────┐   ┌───────────────────┐      │       │
-    │   │  │ Mount      │   │ HTTP Router       │      │       │
-    │   │  │ Registry   │   │ /m/{code}/*       │      │       │
-    │   │  │            │   │                   │      │       │
-    │   │  │ code->ws   │   │ Extracts code     │      │       │
-    │   │  │ mapping    │   │ from URL, proxies │      │       │
-    │   │  └─────┬──────┘   │ to agent tunnel   │      │       │
-    │   │        │          └────────┬──────────┘      │       │
-    │   │        │                   │                 │       │
-    │   │  ┌─────┴───────────────────┴──────────┐      │       │
-    │   │  │     Tunnel Manager                 │      │       │
-    │   │  │                                    │      │       │
-    │   │  │  Multiplexes HTTP requests over    │      │       │
-    │   │  │  agent WebSocket connections        │      │       │
-    │   │  └──────────────┬─────────────────────┘      │       │
-    │   │                 │ WebSocket                   │       │
-    │   └─────────────────┼────────────────────────────┘       │
-    │                     │                                    │
-    │   Browser           │              Agent (behind NAT)    │
-    │   ┌──────────┐      │              ┌──────────────────┐  │
-    │   │ React    │ HTTP │              │ Tunnel Client    │  │
-    │   │ SPA      │──────┘              │                  │  │
-    │   │          │                     │ WS ──────────────┘  │
-    │   │ Served   │                     │ (outbound to relay) │
-    │   │ by relay │                     │                     │
-    │   └──────────┘                     │ ┌────────────────┐  │
-    │                                    │ │ Local FastAPI   │  │
-    │                                    │ │ Server          │  │
-    │                                    │ │ (reuses         │  │
-    │                                    │ │  create_app())  │  │
-    │                                    │ └────────────────┘  │
-    │                                    └─────────────────────┘
-    └──────────────────────────────────────────────────────────┘
+                           INTERNET
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                                                                  │
+  │   ┌──────────────────────────────────────────────────────────┐   │
+  │   │           RELAY SERVER  (relay/app/main.py)              │   │
+  │   │                                                          │   │
+  │   │  create_relay_app()                                      │   │
+  │   │  ├── CORSMiddleware(allow_origins=["*"])   ← REPLACE     │   │
+  │   │  ├── landing router   GET /                              │   │
+  │   │  ├── agent_ws router  WS /agent/ws                       │   │
+  │   │  └── mount_proxy router  HTTP+WS /m/{code}/{path}        │   │
+  │   │                                                          │   │
+  │   │  MountRegistry (in-memory dict)            ← REPLACE     │   │
+  │   │  {code -> MountRecord(conn, MountStatus)}                │   │
+  │   └──────────────────────────────────────────────────────────┘   │
+  │                           ▲                                       │
+  │                           │ WebSocket /agent/ws                  │
+  │                           │                                       │
+  │   Browser                 │                Agent (behind NAT)    │
+  │   ┌──────────┐            │              ┌──────────────────────┐ │
+  │   │ React    │ HTTP/WS    │              │ agent/connection.py  │ │
+  │   │ SPA      │────────────┘              │ run_agent_loop()     │ │
+  │   │ served   │                           │                      │ │
+  │   │ at       │                           │ TunnelConnection     │ │
+  │   │ /m/{code}│                           │ → ASGITransport      │ │
+  │   └──────────┘                           │ → create_app()       │ │
+  │                                          └──────────────────────┘ │
+  └──────────────────────────────────────────────────────────────────┘
 ```
 
-### Separation Decision: Relay = Separate Process, Agent = New CLI Command
+The relay is a single FastAPI process. The in-memory `MountRegistry` maps 8-char codes to `TunnelConnection` objects. The tunnel protocol uses binary frames with 21-byte headers and UUID stream multiplexing. The agent connects outbound via WebSocket, proxies requests to a local `create_app()` instance via `httpx.ASGITransport`.
 
-The relay server MUST be a separate FastAPI process (not integrated into the existing LAN server) because:
+---
 
-1. **Deployment target differs.** The relay runs on a cloud VM. The LAN server runs on the user's machine. They have different lifecycles, configs, and network contexts.
-2. **No shared state needed.** The relay has its own mount registry; the LAN server has its own file_service config. Merging them creates coupling with zero benefit.
-3. **Security boundary.** The relay is internet-facing; the LAN server is LAN-only. Mixing them in one process means the LAN server inherits internet-attack surface.
+## v1.3 Features: Integration Analysis
 
-The agent is a new CLI subcommand (`wifi-file-server mount ...`) that reuses `create_app()` to spin up a local FastAPI server and connects outbound to the relay via WebSocket.
+Each v1.3 feature is analyzed as: what it touches, how it fits, and what it adds.
 
-## Component Responsibilities
+### Feature 1: Cloud Run Deployment (Docker + PORT + health check)
 
-| Component | Responsibility | New vs Modified |
-|-----------|----------------|-----------------|
-| **Relay Server** | Accept agent WS connections, route browser HTTP to correct agent, serve landing page + SPA | NEW process |
-| **Mount Registry** | Map mount codes to agent WS connections, track TTL/password, generate codes | NEW module in relay |
-| **Tunnel Manager** | Multiplex HTTP request/response pairs over a single WS per agent | NEW module in relay |
-| **Tunnel Protocol** | Binary framing for request/response over WS (headers + body streaming) | NEW shared module |
-| **Agent CLI** | `mount` subcommand: connect to relay, handle tunneled requests using local server | NEW CLI command |
-| **Agent Tunnel Client** | Maintain WS to relay, receive framed requests, proxy to local FastAPI, stream responses back | NEW module |
-| **Landing Page** | Code entry + QR scan page served by relay at `/` | NEW Jinja2 template |
-| **React SPA** | Existing SPA served by relay for `/m/{code}/` routes, API calls prefixed with mount path | MODIFIED (base URL awareness) |
-| **file_service.py** | File operations (list, download, upload, etc.) | UNCHANGED (reused by agent's local server) |
-| **connection_manager.py** | LAN WebSocket management | UNCHANGED (LAN only) |
-| **config.py / ServerConfig** | LAN server config | UNCHANGED |
+**What changes:** Build system only. Zero application code changes required.
 
-## Recommended Project Structure
+**Integration point:** `relay/cli.py` already reads `--port` via argparse. Cloud Run injects `$PORT` as an environment variable. The relay CLI needs to check `$PORT` env before falling back to the hardcoded default of 8001.
 
 ```
-server/
-├── app/                          # EXISTING - LAN server (unchanged)
-│   ├── cli.py                    # MODIFIED - add `mount` subcommand
-│   ├── config.py                 # UNCHANGED
-│   ├── main.py                   # UNCHANGED
-│   ├── routers/                  # UNCHANGED
-│   ├── services/
-│   │   ├── file_service.py       # UNCHANGED (reused by agent)
-│   │   ├── connection_manager.py # UNCHANGED
-│   │   └── ...
-│   └── middleware/               # UNCHANGED
-│
-├── relay/                        # NEW - relay server package
-│   ├── __init__.py
-│   ├── main.py                   # FastAPI app factory for relay
-│   ├── cli.py                    # `wifi-relay-server` entry point
-│   ├── config.py                 # RelayConfig (host, port, max_mounts)
-│   ├── registry.py               # MountRegistry: code -> AgentConnection
-│   ├── tunnel_manager.py         # Multiplex HTTP over agent WS
-│   └── routers/
-│       ├── landing.py            # GET / -- code entry page
-│       ├── agent_ws.py           # WS /agent/connect -- agent tunnel endpoint
-│       └── proxy.py              # /m/{code}/{path:path} -- proxy to agent
-│
-├── agent/                        # NEW - tunnel agent package
-│   ├── __init__.py
-│   ├── tunnel_client.py          # WS connection to relay, reconnect logic
-│   └── request_handler.py        # Forward tunneled requests to local server
-│
-└── tunnel/                       # NEW - shared tunnel protocol
-    ├── __init__.py
-    ├── protocol.py               # Frame types, serialization, constants
-    └── frames.py                 # RequestFrame, ResponseFrame, DataChunk
-
-templates/
-├── landing.html                  # NEW - mount code entry page
-└── ...                           # EXISTING share templates
+Current:  port = args.port if args.port is not None else 8001
+Required: port = args.port if args.port is not None else int(os.environ.get("PORT", "8001"))
 ```
 
-### Structure Rationale
+**New artifacts:**
+- `relay/Dockerfile` — multi-stage build (uv builder stage → slim runtime stage)
+- `relay/.dockerignore` — exclude client source, test files, planning docs
+- `relay/app/routers/health.py` — `GET /health` returning `{"status": "ok"}` for Cloud Run startup probe
 
-- **`relay/`**: Completely separate FastAPI app. Can be deployed independently. No imports from `app/` except shared tunnel protocol.
-- **`agent/`**: Thin orchestration layer. The agent starts a local FastAPI server using `create_app()` and proxies tunneled requests to it. This avoids duplicating any file operation logic.
-- **`tunnel/`**: Shared between relay and agent. Defines the wire protocol. No dependencies on either relay or agent internals.
-- **`app/` untouched**: The existing LAN server sees zero changes except `cli.py` gaining a `mount` subcommand that imports from `agent/`.
+**No changes to:** tunnel protocol, mount proxy, agent WS router, React SPA, landing page.
 
-## Architectural Patterns
+**Pattern:** Cloud Run injects `$PORT` (usually 8080). Container must listen on `0.0.0.0:$PORT`. Health check probe hits `/health` — Cloud Run marks instance healthy when it responds 200.
 
-### Pattern 1: Request-Response Multiplexing Over Single WebSocket
+```
+Dockerfile pattern (multi-stage with uv):
+  Stage 1 (builder):  FROM ghcr.io/astral-sh/uv:python3.11-bookworm-slim
+                      COPY pyproject.toml uv.lock ./
+                      RUN uv sync --frozen --no-dev --no-install-project
+                      COPY relay/ relay/
+                      COPY tunnel/ tunnel/
+                      RUN uv sync --frozen --no-dev
 
-**What:** Each agent maintains ONE WebSocket to the relay. Multiple concurrent browser requests for that mount are multiplexed over this single connection using request IDs.
+  Stage 2 (runtime):  FROM python:3.11-slim-bookworm
+                      COPY --from=builder /app/.venv /app/.venv
+                      ENV PATH="/app/.venv/bin:$PATH"
+                      ENV PYTHONUNBUFFERED=1
+                      CMD ["sh", "-c", "uvicorn relay.app.main:app --host 0.0.0.0 --port ${PORT:-8001}"]
+```
 
-**When to use:** Always. One WS per agent is simpler than connection pooling and avoids NAT/firewall issues with multiple outbound connections.
+**HTTPS cookies:** `relay/app/routers/agent_ws.py` does not set cookies. The per-mount auth cookies are set by the agent's local `create_app()` instance and proxied transparently. Those cookies need `Secure; SameSite=None` when the relay runs on HTTPS. This is set in `server/app/middleware/auth_middleware.py`'s `Set-Cookie` response header — a one-line change to add `secure=True` conditionally when `RELAY_HTTPS=true` env var is set.
 
-**Trade-offs:** Simpler connection management, but requires careful framing. Head-of-line blocking is possible if one large file transfer saturates the WS. Mitigation: chunk data frames into 64KB to allow interleaving of concurrent requests.
+---
 
-**Protocol design:**
+### Feature 2: SQLite Persistent Mount Registry
+
+**What changes:** `relay/app/services/mount_registry.py` — the registry gains a SQLite persistence layer. The in-memory dict is NOT removed; it remains the runtime source of truth. SQLite stores mount metadata (code, name, ttl, created_at) that survives restarts.
+
+**Why keep in-memory:** `TunnelConnection` objects are not serializable (they contain live WebSocket state). SQLite stores mount *metadata*; the active connections still live in memory. On restart, SQLite shows which codes were previously registered — useful for the agent's preferred_code reconnect feature.
+
+**Integration point:** `relay/app/services/mount_registry.py` — add a `MountPersistence` class alongside the existing `MountRegistry`. The `MountRegistry` calls `MountPersistence` on register/deregister.
+
+**New module:** `relay/app/services/mount_persistence.py`
+
+```
+MountPersistence
+├── __init__(db_path: str)  — opens aiosqlite connection, creates table
+├── async save_mount(code, name, ttl_seconds, created_at)
+├── async remove_mount(code)
+└── async load_all_mounts() -> list[MountRow]   — used at startup
+```
+
+**Database schema:**
+```sql
+CREATE TABLE IF NOT EXISTS mounts (
+    code TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    created_at INTEGER NOT NULL,   -- unix timestamp
+    ttl_seconds INTEGER,           -- NULL = no TTL
+    password_hash BLOB             -- NULL = no password
+);
+```
+
+**Lifespan integration:** `create_relay_app()` currently has no lifespan handler. Add one using FastAPI's `@asynccontextmanager` lifespan pattern:
 
 ```python
-from enum import IntEnum
-import struct
-from dataclasses import dataclass
-
-
-class FrameType(IntEnum):
-    """Types of frames in the tunnel protocol."""
-    REQUEST_HEADER = 0x01    # Relay -> Agent: HTTP request metadata
-    REQUEST_BODY = 0x02      # Relay -> Agent: request body chunk
-    REQUEST_END = 0x03       # Relay -> Agent: request body complete
-    RESPONSE_HEADER = 0x04   # Agent -> Relay: HTTP response metadata
-    RESPONSE_BODY = 0x05     # Agent -> Relay: response body chunk
-    RESPONSE_END = 0x06      # Agent -> Relay: response complete
-    HEARTBEAT = 0x07         # Bidirectional keepalive
-    ERROR = 0x08             # Either direction: request-level error
-
-
-# Wire format: [type:1][request_id:4][payload_len:4][payload:N]
-# Total header: 9 bytes. Max payload: 64KB per frame (for interleaving).
-FRAME_HEADER_SIZE = 9
-MAX_PAYLOAD_SIZE = 65536  # 64KB chunks for file streaming
-
-
-@dataclass(frozen=True)
-class TunnelFrame:
-    """Single frame in the tunnel protocol."""
-    frame_type: FrameType
-    request_id: int       # uint32, unique per request within a session
-    payload: bytes
-
-    def serialize(self) -> bytes:
-        header = struct.pack(
-            "!BII",
-            self.frame_type,
-            self.request_id,
-            len(self.payload),
-        )
-        return header + self.payload
-
-    @staticmethod
-    def deserialize(data: bytes) -> "TunnelFrame":
-        frame_type, request_id, payload_len = struct.unpack(
-            "!BII", data[:FRAME_HEADER_SIZE]
-        )
-        payload = data[FRAME_HEADER_SIZE:FRAME_HEADER_SIZE + payload_len]
-        return TunnelFrame(
-            frame_type=FrameType(frame_type),
-            request_id=request_id,
-            payload=payload,
-        )
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    persistence = MountPersistence(db_path=os.environ.get("DB_PATH", "/data/relay.db"))
+    await persistence.initialize()
+    set_persistence(persistence)
+    yield
+    await persistence.close()
 ```
 
-### Pattern 2: Reverse Tunnel (Agent Connects Outbound)
+**Cloud Run storage:** Cloud Run filesystem is ephemeral. For persistence across deploys, mount a Cloud Storage bucket via GCS FUSE as a volume at `/data/`. The SQLite file lives at `/data/relay.db`. GCS FUSE has no file locking — this is acceptable because the relay is single-instance (Cloud Run max-instances=1 for this use case) and SQLite WAL mode handles concurrent reads from the same process.
 
-**What:** The agent initiates the WebSocket connection to the relay (outbound). The relay never connects to the agent. This is the ngrok/localtunnel pattern.
+**MEDIUM confidence warning:** GCS FUSE SQLite has documented no-file-locking limitation. For this app (low write frequency — one write per mount/unmount, not per request), this is safe. If max-instances > 1 is ever needed, migrate to Cloud Firestore or Cloud SQL.
 
-**When to use:** Always for this use case. Users behind NAT/firewalls cannot accept inbound connections.
+---
 
-**Trade-offs:** Agent must handle reconnection (relay restarts, network flaps). Relay cannot "push" to an agent that hasn't connected yet.
+### Feature 3: Rate Limiting and Abuse Prevention
 
-**Connection lifecycle:**
+**What changes:** `relay/app/main.py` — add SlowAPI middleware. New module: `relay/app/middleware/rate_limit.py`.
 
-```
-Agent                           Relay
-  |                               |
-  |-- WS CONNECT /agent/connect ->|
-  |   (with mount_code, password, |
-  |    ttl in query params)       |
-  |                               |
-  |<- ACCEPT + mount registered --|
-  |                               |
-  |<-- HEARTBEAT (every 30s) ---->|  (bidirectional)
-  |                               |
-  |<-- REQUEST_HEADER (req #1) ---|  (browser request arrives)
-  |                               |
-  |--- RESPONSE_HEADER (req #1)->-|
-  |--- RESPONSE_BODY (req #1) -->|
-  |--- RESPONSE_END (req #1) --->|
-  |                               |
-  |<-- WS CLOSE ------------------|  (TTL expired / agent disconnect)
-```
+**What to rate limit:**
+1. `/agent/ws` — agent connection registration: 10 mounts per IP per hour (prevents code exhaustion)
+2. `POST /m/{code}/api/files/upload` — upload bandwidth: 20 uploads per IP per minute
+3. `GET /` landing page — 60 requests per IP per minute (bot protection)
+4. All routes as global fallback — 120 requests per IP per minute
 
-### Pattern 3: URL-Based Mount Routing
+**Library:** SlowAPI (wraps limits-based rate limiting, works with FastAPI/Starlette). Confidence: HIGH — well-established, works without Redis for single-instance deployments.
 
-**What:** Browser requests to `/m/{code}/api/files` are routed to the agent registered under `{code}`. The relay strips the `/m/{code}` prefix before forwarding to the agent, so the agent sees `/api/files` -- identical to LAN server paths.
-
-**When to use:** This is the only routing strategy that works with the existing React SPA without rewriting API calls.
-
-**Trade-offs:** The SPA needs to know its base URL (`/m/{code}`) so it prefixes API calls correctly. This is a small change: inject `window.__MOUNT_BASE__` via the HTML template or use a relative URL strategy.
-
-**Relay-side implementation:**
-
+**Integration:**
 ```python
-# relay/routers/proxy.py
-@router.api_route(
-    "/m/{code}/{path:path}",
-    methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+# relay/app/main.py
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
+```
+
+**Mandatory TTL for agent connections:** The `/agent/ws` endpoint currently accepts agents with no TTL. Add enforcement: if `ttl_seconds` is not provided in the connection query params, assign a default maximum TTL (e.g., 24 hours). This prevents indefinite connections accumulating.
+
+**Per-IP mount cap:** At `/agent/ws` registration time, the `MountRegistry` checks how many active mounts exist from the connecting IP. If it exceeds 5 (configurable via env var `MAX_MOUNTS_PER_IP`), reject with 429.
+
+**Important:** SlowAPI's in-memory storage does not survive restart and is not shared across instances. For single-instance Cloud Run (max-instances=1), this is acceptable. If scaling horizontally, switch to Redis storage.
+
+---
+
+### Feature 4: CORS Lockdown
+
+**What changes:** `relay/app/main.py` — replace wildcard `allow_origins=["*"]` with explicit origin list.
+
+**Current state:** `CORSMiddleware(allow_origins=["*"])` — this is what v1.2 ships with.
+
+**Why it matters for Cloud Run:** CORS is a browser defense. The relay serves browser clients. With `allow_origins=["*"]` and no `allow_credentials=True`, cookies are NOT sent cross-origin. But API endpoints that don't use credentials are callable from any origin — including malicious sites that might abuse the relay.
+
+**New pattern:**
+```python
+allowed_origins = os.environ.get("ALLOWED_ORIGINS", "").split(",")
+if not allowed_origins or allowed_origins == [""]:
+    # Development fallback — permissive
+    allowed_origins = ["*"]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=True,    # required for cookie-based auth
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
+    allow_headers=["Content-Type", "X-Device-Name"],
 )
-async def proxy_to_agent(
-    code: str, path: str, request: Request,
-) -> StreamingResponse:
-    registry = get_mount_registry()
-    agent_conn = registry.get_agent(code)  # Raises MountNotFoundError
-
-    # Build tunneled request (strip /m/{code} prefix)
-    request_id = agent_conn.next_request_id()
-    header_frame = build_request_header_frame(
-        request_id=request_id,
-        method=request.method,
-        path=f"/{path}",
-        headers=dict(request.headers),
-        query=str(request.query_params),
-    )
-
-    # Send request through tunnel, stream response back
-    response_queue = agent_conn.create_response_queue(request_id)
-    await agent_conn.send_frame(header_frame)
-
-    # Stream request body if present
-    async for chunk in request.stream():
-        body_frame = TunnelFrame(FrameType.REQUEST_BODY, request_id, chunk)
-        await agent_conn.send_frame(body_frame)
-    await agent_conn.send_frame(
-        TunnelFrame(FrameType.REQUEST_END, request_id, b"")
-    )
-
-    # Wait for response header
-    resp_header = await response_queue.get_header()
-
-    return StreamingResponse(
-        response_queue.body_iterator(),
-        status_code=resp_header.status_code,
-        headers=resp_header.headers,
-    )
 ```
 
-### Pattern 4: Agent Proxies to Local FastAPI Server
+**Env var `ALLOWED_ORIGINS`:** Set in Cloud Run to the relay's own domain (e.g., `https://relay.example.com`). In local dev, omit for permissive fallback.
 
-**What:** The agent starts a local FastAPI server using the SAME `create_app()` factory on a random port. Tunneled requests are forwarded to this local server via `httpx`. The local server handles all file operations identically to LAN mode.
+**Note:** `allow_credentials=True` + explicit origins (not `*`) is the CORS spec-compliant combination for cookie-based auth. This is a required change for HTTPS production cookies to work.
 
-**When to use:** Always. This is the simplest approach that guarantees behavior parity between LAN and remote modes.
+---
 
-**Trade-offs:** Slight overhead of localhost HTTP roundtrip (negligible -- sub-millisecond). Massive simplification: the agent does not need to reimplement response formatting, content negotiation, FileResponse, StreamingResponse, middleware, or any routing logic.
+### Feature 5: Per-File Upload TTL with Auto-Deletion
+
+**What changes:** Server-side (`server/app/`) — new TTL tracking layer on uploads. This lives in the local server that the agent runs, NOT in the relay.
+
+**Integration point:** `server/app/services/file_service.py` upload path + a new background task scheduler.
+
+**Data model:** Upload TTL metadata stored as a sidecar JSON file (`.nfs-meta/<filename>.json`) or as an in-memory dict in a new `UploadTTLService`. The in-memory approach is simpler and matches the "ephemeral is a feature" philosophy.
+
+**New module:** `server/app/services/upload_ttl_service.py`
+```
+UploadTTLService
+├── schedule_deletion(file_path: Path, ttl_seconds: int)
+│     — creates asyncio.Task that sleeps then unlinks the file
+├── cancel_deletion(file_path: Path)
+│     — cancels pending task if file is explicitly deleted first
+└── list_pending() -> list[PendingDeletion]
+      — returns all scheduled deletions with remaining seconds
+```
+
+**Trigger:** The upload endpoint (`POST /api/files/upload`) gains an optional `ttl_seconds` query param. If provided, after successful upload, `UploadTTLService.schedule_deletion()` is called.
+
+**UI integration:** When a file has a pending TTL deletion, the file listing API (`GET /api/files`) should include a `ttl_expires_at` field in `FileEntry`. The React SPA can show a countdown badge on the file card.
+
+**Restart prompt:** When the local server restarts, in-memory TTL state is lost. On agent startup, if the shared folder has been used before, the agent prints: "Warning: upload TTLs are lost on restart. Files uploaded with TTL may outlive their expiry." This is acceptable behavior — the user controls the agent process.
+
+**Default public drop box mount:** This feature (always-on mount on Cloud Run) uses `--receive` mode. The default drop box is started by the relay's own startup logic, not by an external agent. This requires the relay to optionally self-host a local drop box:
 
 ```python
-# agent/request_handler.py
-import httpx
-
-
-class AgentRequestHandler:
-    """Forwards tunneled requests to the local FastAPI server."""
-
-    def __init__(self, local_port: int) -> None:
-        self._base_url = f"http://127.0.0.1:{local_port}"
-        self._client = httpx.AsyncClient(base_url=self._base_url)
-
-    async def handle_request(
-        self,
-        request_id: int,
-        method: str,
-        path: str,
-        headers: dict[str, str],
-        query: str,
-        body_chunks: list[bytes],
-    ) -> AsyncIterator[TunnelFrame]:
-        """Forward request to local server, yield response frames."""
-        url = path
-        if query:
-            url = f"{path}?{query}"
-
-        # Remove hop-by-hop headers
-        filtered_headers = {
-            k: v for k, v in headers.items()
-            if k.lower() not in ("host", "transfer-encoding", "connection")
-        }
-
-        body = b"".join(body_chunks) if body_chunks else None
-
-        response = await self._client.request(
-            method=method,
-            url=url,
-            headers=filtered_headers,
-            content=body,
-        )
-
-        # Yield response header frame
-        yield build_response_header_frame(
-            request_id, response.status_code, dict(response.headers),
-        )
-
-        # Yield body in 64KB chunks
-        offset = 0
-        while offset < len(response.content):
-            chunk = response.content[offset:offset + MAX_PAYLOAD_SIZE]
-            yield TunnelFrame(FrameType.RESPONSE_BODY, request_id, chunk)
-            offset += MAX_PAYLOAD_SIZE
-
-        yield TunnelFrame(FrameType.RESPONSE_END, request_id, b"")
-
-    async def close(self) -> None:
-        await self._client.aclose()
+# relay/app/main.py — lifespan addition
+if os.environ.get("ENABLE_DROP_BOX") == "true":
+    drop_box_path = Path(os.environ.get("DROP_BOX_PATH", "/tmp/dropbox"))
+    drop_box_path.mkdir(exist_ok=True)
+    asyncio.create_task(start_embedded_agent(drop_box_path))
 ```
 
-**Streaming improvement for v1.2+:** The above buffers the full response. For large file downloads, use `httpx` streaming mode:
+The embedded agent runs `run_agent_loop()` in-process, targeting `ws://localhost:{port}/agent/ws`. This means the relay connects to itself as both relay and agent — no separate process needed on Cloud Run.
 
+---
+
+### Feature 6: Connection Status WebSocket Events
+
+**What changes:** React SPA — `client/src/hooks/useWebSocket.ts` + `client/src/components/ConnectionStatus.tsx`. The relay — `relay/app/routers/mount_proxy.py` (optional: relay can send a control message when mount status changes).
+
+**Current state:** The SPA's `useWebSocket` hook already has reconnect logic and `ConnectionStatus` component showing "Reconnecting..." banner. When in remote mode (`isRemoteMount() === true`), the WS is connected to the local agent's `/ws` endpoint via the tunnel.
+
+**What v1.3 adds:** A `status` event pushed by the relay or agent over the existing WebSocket tunnel when mount state changes (e.g., agent is about to expire, relay restarts, TTL countdown).
+
+**Two approaches:**
+
+*Option A — Relay-side status endpoint (recommended):* Add `GET /m/{code}/status` on the relay returning `{"status": "online"|"offline"|"expired", "ttl_remaining": N}`. The SPA polls this every 30 seconds in remote mode. No new WebSocket channel needed.
+
+*Option B — WebSocket status frame:* The relay sends a JSON control message over the existing WS tunnel when mount status changes. This is lower latency but more complex.
+
+Option A is recommended because polling is simpler, the relay already knows mount status from `MountRegistry`, and it doesn't require any tunnel protocol changes.
+
+**UI indicator:** The `ConnectionStatus` component is extended to show three states:
+- Online (green dot) — mount is ONLINE
+- Offline (yellow dot) — mount is OFFLINE (agent disconnected, may reconnect)
+- Expired (red dot, no reconnect) — mount TTL elapsed, manual action required
+
+The indicator is only shown in remote mount mode (`isRemoteMount() === true`).
+
+---
+
+### Feature 7: Relay Landing Page Branding and OG Tags
+
+**What changes:** `relay/templates/landing.html` — existing file gets extended with branding, OG meta tags, and improved mount code entry form.
+
+**Current state:** The landing page exists (`relay/app/routers/landing.py`) and renders `landing.html`. The page likely has a basic form. The router already handles `GET /?code=ABC` redirect to `/m/{code}/`.
+
+**What v1.3 adds:**
+- Open Graph meta tags (`og:title`, `og:description`, `og:image`) for social sharing previews
+- App name / tagline branding in the page header
+- Improved copy and visual hierarchy
+
+**Integration point:** Pure template change. No Python code changes needed.
+
+---
+
+## Component Map: New vs Modified vs Unchanged
+
+| Component | File(s) | v1.3 Status | What Changes |
+|-----------|---------|-------------|--------------|
+| **Health endpoint** | `relay/app/routers/health.py` | NEW | `GET /health` → `{"status": "ok"}` |
+| **Dockerfile** | `relay/Dockerfile` | NEW | Multi-stage uv build for Cloud Run |
+| **Dockerignore** | `relay/.dockerignore` | NEW | Exclude non-runtime files |
+| **MountPersistence** | `relay/app/services/mount_persistence.py` | NEW | aiosqlite-backed mount metadata store |
+| **UploadTTLService** | `server/app/services/upload_ttl_service.py` | NEW | asyncio-task-based TTL deletion scheduler |
+| **Rate limit config** | `relay/app/middleware/rate_limit.py` | NEW | SlowAPI limiter configuration |
+| **create_relay_app()** | `relay/app/main.py` | MODIFIED | Add lifespan, SlowAPI, CORS lockdown, health router, drop box task |
+| **relay/cli.py** | `relay/cli.py` | MODIFIED | Read `$PORT` env var; add `--db-path` flag |
+| **MountRegistry** | `relay/app/services/mount_registry.py` | MODIFIED | Call `MountPersistence` on register/deregister; add per-IP mount count |
+| **agent_ws router** | `relay/app/routers/agent_ws.py` | MODIFIED | Enforce mandatory TTL default; enforce per-IP mount cap |
+| **mount_proxy router** | `relay/app/routers/mount_proxy.py` | MODIFIED | Add `GET /m/{code}/status` endpoint for SPA polling |
+| **auth_middleware** | `server/app/middleware/auth_middleware.py` | MODIFIED | Add `Secure; SameSite=None` to cookies when `RELAY_HTTPS` env set |
+| **files upload router** | `server/app/routers/files.py` | MODIFIED | Accept optional `ttl_seconds` query param, call `UploadTTLService` |
+| **file listing schema** | `server/app/models/schemas.py` | MODIFIED | Add `ttl_expires_at: int | None` to `FileEntry` |
+| **landing template** | `relay/templates/landing.html` | MODIFIED | Add OG tags, branding, improved form |
+| **ConnectionStatus** | `client/src/components/ConnectionStatus.tsx` | MODIFIED | Show online/offline/expired states in remote mode |
+| **useWebSocket** | `client/src/hooks/useWebSocket.ts` | MODIFIED | Poll `/m/{code}/status` in remote mode |
+| **FileList/FileCard** | `client/src/components/FileList.tsx` | MODIFIED | Show TTL countdown badge when `ttl_expires_at` present |
+| **TunnelConnection** | `tunnel/connection.py` | UNCHANGED | Binary protocol unchanged |
+| **Tunnel frames** | `tunnel/frames.py` | UNCHANGED | Frame format unchanged |
+| **agent/connection.py** | `agent/connection.py` | UNCHANGED (mostly) | run_agent_loop reused for embedded drop box |
+| **mount_proxy** (proxy logic) | `relay/app/routers/mount_proxy.py` | UNCHANGED | HTTP + WS proxying unchanged |
+| **create_app()** | `server/app/main.py` | UNCHANGED | LAN server factory unchanged |
+| **file_service.py** | `server/app/services/file_service.py` | UNCHANGED | File operations unchanged |
+
+---
+
+## Data Flow Changes
+
+### Mount Registration (v1.3 addition)
+
+```
+Agent WS /agent/ws?code=preferred
+    │
+    ▼
+agent_ws router
+    │  1. Check per-IP mount count (MountRegistry.count_by_ip)
+    │     → 429 if exceeded MAX_MOUNTS_PER_IP
+    │  2. Assign code, wrap in TunnelConnection
+    │  3. registry.register(code, conn)
+    │     → MountPersistence.save_mount(code, ...) [async, non-blocking]
+    │  4. Enforce TTL default if not provided
+    │
+    ▼
+Agent receives {"type": "mount_registered", "code": "..."}
+```
+
+### Relay Restart Recovery
+
+```
+Relay restarts (Cloud Run redeploy)
+    │
+    ▼
+lifespan startup
+    │  1. MountPersistence.initialize() — connects to SQLite
+    │  2. MountPersistence.load_all_mounts() — reads previously registered codes
+    │  3. For each loaded code: log "Previously registered mount {code} — awaiting reconnect"
+    │     (No connection exists yet; agents reconnect via run_agent_loop's preferred_code)
+    │
+    ▼
+Agent reconnects with preferred_code=last_assigned_code
+    │
+    ▼
+agent_ws router assigns the same code (preferred_code not occupied → reuse)
+    │
+    ▼
+Mount URL is stable across relay restarts ✓
+```
+
+### Connection Status Poll (SPA side)
+
+```
+SPA loads at /m/{code}/ (isRemoteMount() === true)
+    │
+    ▼
+useWebSocket detects remote mode
+    │  Every 30s: fetch /m/{code}/status
+    │
+    ▼
+mount_proxy GET /m/{code}/status handler
+    │  — try registry.get_connection(code)
+    │  — ONLINE: {"status": "online", "ttl_remaining": N | null}
+    │  — MountOfflineError: {"status": "offline"}
+    │  — MountExpiredError: {"status": "expired"}
+    │  — MountNotFoundError: {"status": "not_found"}
+    │
+    ▼
+ConnectionStatus component updates indicator
+```
+
+### Upload with TTL
+
+```
+Browser: POST /api/files/upload?path=...&ttl_seconds=3600
+    │
+    ▼
+(Through tunnel → agent → local create_app())
+    │
+    ▼
+files router upload handler
+    │  1. file_service.upload_file(...)  [existing]
+    │  2. if ttl_seconds: upload_ttl_service.schedule_deletion(file_path, ttl_seconds)
+    │
+    ▼
+UploadTTLService creates asyncio.Task:
+    │  asyncio.sleep(ttl_seconds) → file_path.unlink(missing_ok=True)
+    │
+    ▼
+FileEntry in GET /api/files includes ttl_expires_at for scheduled files
+```
+
+---
+
+## Architectural Patterns for v1.3
+
+### Pattern 1: Lifespan-Managed Services (FastAPI lifespan)
+
+**What:** All services that need startup/shutdown (SQLite connection, drop box task, rate limiter state) are initialized in the FastAPI `@asynccontextmanager` lifespan handler, not at module import time.
+
+**Why:** Cloud Run may spin up multiple instances during a deploy. Module-level side effects are harder to control than lifespan-scoped initialization. Lifespan also guarantees clean shutdown before Cloud Run terminates the instance.
+
+**Pattern:**
 ```python
-async with self._client.stream(method, url, headers=filtered_headers) as response:
-    yield build_response_header_frame(request_id, response.status_code, dict(response.headers))
-    async for chunk in response.aiter_bytes(chunk_size=MAX_PAYLOAD_SIZE):
-        yield TunnelFrame(FrameType.RESPONSE_BODY, request_id, chunk)
-    yield TunnelFrame(FrameType.RESPONSE_END, request_id, b"")
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    # startup
+    persistence = MountPersistence(db_path=_resolve_db_path())
+    await persistence.initialize()
+    set_persistence(persistence)
+    registry = MountRegistry()
+    set_registry(registry)
+    # optional embedded drop box
+    drop_box_task: asyncio.Task | None = None
+    if os.environ.get("ENABLE_DROP_BOX") == "true":
+        drop_box_task = asyncio.create_task(_start_drop_box())
+    yield
+    # shutdown
+    if drop_box_task is not None:
+        drop_box_task.cancel()
+    await persistence.close()
 ```
 
-This is the recommended approach -- it streams files through the tunnel without buffering.
+### Pattern 2: Environment-Driven Configuration
 
-## Data Flow
+**What:** All production-specific behavior is controlled by environment variables, not code branches. Development defaults are permissive (CORS=*, no auth, in-memory only). Production env sets restrictive values.
 
-### Browser Request Through Tunnel
+**Env vars:**
+| Variable | Development Default | Production Value |
+|----------|--------------------|--------------------|
+| `PORT` | 8001 | 8080 (Cloud Run injects) |
+| `ALLOWED_ORIGINS` | `""` (wildcard fallback) | `https://relay.example.com` |
+| `DB_PATH` | `/tmp/relay-dev.db` | `/data/relay.db` (GCS mount) |
+| `MAX_MOUNTS_PER_IP` | `100` | `5` |
+| `RELAY_HTTPS` | `false` | `true` |
+| `ENABLE_DROP_BOX` | `false` | `true` |
+| `DROP_BOX_PATH` | `/tmp/dropbox` | `/data/dropbox` (GCS mount) |
 
+### Pattern 3: Status Polling over New WebSocket Channel
+
+**What:** The connection status indicator uses REST polling (`GET /m/{code}/status`) instead of a dedicated status WebSocket. The existing WS tunnel already carries real-time events from the local server; a second WS channel for relay-level status adds complexity without proportional benefit.
+
+**Why polling is correct here:** Status changes are rare events (mount offline, TTL expired). 30-second polling introduces at most 30-second lag in status display. The cost of a missed event (user sees "online" for 30 extra seconds after agent disconnects) is negligible. The cost of maintaining a second bidirectional WS channel (relay-to-browser) is non-trivial — it would require the relay to maintain a browser WS connection registry alongside the agent WS registry.
+
+---
+
+## Anti-Patterns to Avoid in v1.3
+
+### Anti-Pattern 1: SQLite Without WAL on GCS FUSE
+
+**What goes wrong:** Default SQLite journal mode (`DELETE`) holds an exclusive lock during writes. GCS FUSE has no file locking support. Concurrent reads during a write may corrupt the database.
+
+**Prevention:** Enable WAL mode in `MountPersistence.initialize()`:
+```python
+await conn.execute("PRAGMA journal_mode=WAL")
+await conn.execute("PRAGMA synchronous=NORMAL")
 ```
-Browser (GET /m/abc123/api/files?path=docs)
-    |
-    v
-Relay HTTP Router
-    | strips /m/abc123, looks up agent for "abc123"
-    v
-Tunnel Manager
-    | assigns request_id=42, serializes to binary frames
-    v
-Agent WebSocket (binary frames over WS)
-    | REQUEST_HEADER(42, "GET /api/files?path=docs", headers)
-    v
-Agent Tunnel Client
-    | deserializes frame, forwards to local FastAPI via httpx
-    v
-Local FastAPI (127.0.0.1:random_port)
-    | file_service.list_directory(shared_folder, "docs")
-    v
-Agent Tunnel Client
-    | reads httpx response, serializes to binary frames
-    | RESPONSE_HEADER(42, 200, headers)
-    | RESPONSE_BODY(42, json_bytes)
-    | RESPONSE_END(42)
-    v
-Relay Tunnel Manager
-    | reassembles response for request_id=42
-    v
-Browser receives JSON response
-```
+WAL mode allows concurrent readers while one writer is active. The relay has only one writer (itself), so this is safe.
 
-### File Download Through Tunnel (Streaming)
+### Anti-Pattern 2: Running Rate Limiter Across Multiple Instances
 
-```
-Browser (GET /m/abc123/api/files/download?path=video.mp4)
-    |
-    v
-Relay: creates request_id=99, sends REQUEST_HEADER to agent
-    |
-    v
-Agent: httpx streams from local server (FileResponse)
-Agent: streams file in 64KB RESPONSE_BODY frames
-    | RESPONSE_HEADER(99, 200, {"content-type": "video/mp4", ...})
-    | RESPONSE_BODY(99, <64KB chunk>)
-    | RESPONSE_BODY(99, <64KB chunk>)
-    | ...
-    | RESPONSE_END(99)
-    v
-Relay: StreamingResponse yields chunks as they arrive from WS
-    v
-Browser: downloads file progressively
-```
+**What goes wrong:** SlowAPI's default in-memory storage is per-process. If Cloud Run scales to 2+ instances, each instance has its own rate limit counter. An abuser can hit 5x the configured rate by hitting 5 instances.
 
-### Mount Registration Flow
+**Prevention:** Set Cloud Run `--max-instances=1` for the relay. The relay is a stateful service (WebSocket connections); multiple instances require sticky sessions anyway. For this use case, single-instance is correct. Document this constraint explicitly.
 
-```
-Agent CLI: wifi-file-server mount ./photos --relay wss://relay.example.com
-    |
-    | 1. Start local FastAPI on random port (using create_app())
-    | 2. Set ServerConfig for the local server
-    | 3. Generate or accept mount code
-    | 4. Connect WS to relay
-    v
-Relay /agent/connect?code=abc123&ttl=3600
-    |
-    | 5. Validate code uniqueness
-    | 6. Register in MountRegistry {code -> ws}
-    | 7. Start TTL countdown (asyncio.Task with sleep)
-    | 8. Accept WS
-    v
-Agent: print "Mounted at https://relay.example.com/m/abc123"
-Agent: print QR code for the mount URL
-```
+### Anti-Pattern 3: Cookies Without Secure Flag on HTTPS
 
-### Key Data Flows
+**What goes wrong:** Auth cookies set without `Secure=True` over HTTPS are sent in plaintext fallback requests. Also, `SameSite=Lax` blocks cross-site requests needed for the relay pattern. Browsers may reject the cookie.
 
-1. **Mount registration:** Agent connects outbound, relay registers code in memory. No persistence needed -- mounts are ephemeral by design, matching the share links pattern from v1.1.
-2. **Request proxying:** Relay receives browser HTTP, serializes to binary WS frames, agent deserializes and proxies to local server, response flows back.
-3. **File streaming:** Large files are chunked into 64KB frames. Relay yields chunks to browser as StreamingResponse as they arrive -- no buffering the full file on relay.
-4. **Heartbeat:** Bidirectional ping every 30 seconds. Three missed heartbeats = connection dead, mount deregistered.
-5. **TTL expiry:** Relay asyncio.Task sleeps for TTL duration, then closes agent WS and removes mount from registry. Agent detects close and exits cleanly.
+**Prevention:** `AuthMiddleware.set_cookie()` must check `RELAY_HTTPS` env var and add `secure=True, samesite="none"` when running on HTTPS.
 
-## Integration Points
+### Anti-Pattern 4: Embedding the Drop Box Agent at Module Import
 
-### With Existing Codebase
+**What goes wrong:** If `run_agent_loop()` is called at module import time (e.g., in a module-level `asyncio.run()`), it blocks the event loop before the FastAPI app is ready to accept connections. The agent connects to `/agent/ws` which doesn't exist yet.
 
-| Integration Point | What Changes | Risk |
-|-------------------|-------------|------|
-| `cli.py` | Add `mount` subcommand via argparse subparsers | LOW -- additive, existing `serve` behavior becomes default subcommand |
-| `create_app()` | Nothing -- agent calls it as-is to start local server | NONE |
-| `file_service.py` | Nothing -- reused as-is by agent's local FastAPI | NONE |
-| `config.py` | Nothing -- agent creates its own `ServerConfig` | NONE |
-| React SPA | Must support configurable API base URL | MEDIUM -- need to audit all `fetch()` calls in `client/src/api/` |
-| `connection_manager.py` | Nothing -- LAN-only, not used by relay | NONE |
-| `pyproject.toml` | Add httpx + websockets dependencies, add relay entry point | LOW |
-| SPA build (vite) | Relay serves the same `client/dist` build output | NONE -- no build changes needed |
+**Prevention:** Start the embedded agent task inside the lifespan handler, after the relay app is fully initialized. Use `asyncio.create_task()` so it runs concurrently with request handling.
 
-### New External Dependencies
+### Anti-Pattern 5: Storing TTL State in the Relay
 
-| Dependency | Purpose | Notes |
-|------------|---------|-------|
-| `httpx` | Agent's async HTTP client to local server | Mature, async-native, streaming support. Already widely used in FastAPI ecosystem. |
-| `websockets` | Agent's WS client to relay | FastAPI/Starlette WS is server-side only; agent needs a client library. `websockets` is the standard Python async WS client. |
+**What goes wrong:** Per-file upload TTL is a feature of the local server (the folder being shared). Putting TTL tracking in the relay (or in SQLite on the relay) creates a split state problem: the relay knows about file TTLs but the file lives on the agent's local disk.
 
-### Internal Boundaries
+**Prevention:** Upload TTL state lives exclusively in `UploadTTLService` inside the agent's local `create_app()` instance. The relay knows nothing about file TTLs. The relay's SQLite stores mount-level metadata only (code, name, created_at, mount TTL).
 
-| Boundary | Communication | Notes |
-|----------|---------------|-------|
-| Relay <-> Agent | WebSocket (binary frames) | Custom tunnel protocol defined in `tunnel/` |
-| Agent <-> Local Server | HTTP (localhost) | Standard FastAPI request/response via httpx |
-| Browser <-> Relay | HTTP + (optionally WS) | Standard web, relay serves SPA static files |
-| Relay landing <-> SPA | HTTP redirect | `/m/{code}/` serves the SPA with injected base URL |
-
-## SPA Base URL Strategy
-
-The React SPA currently makes API calls to hardcoded paths (`/api/files`, `/ws`). When served through the relay at `/m/{code}/`, these calls must target `/m/{code}/api/files` instead.
-
-**Recommended approach:** The relay serves the SPA's `index.html` with an injected `<script>` tag:
-
-```html
-<script>window.__MOUNT_BASE__ = "/m/abc123";</script>
-```
-
-The SPA reads `window.__MOUNT_BASE__` (defaulting to `""` for LAN mode) and prefixes all API/WS URLs. This requires:
-
-1. A `getBaseUrl()` function in `client/src/api/` that returns `window.__MOUNT_BASE__ || ""`
-2. All `fetch()` calls in 5-6 API files prefixed with `getBaseUrl()`
-3. The WebSocket hook uses the base URL for its WS endpoint
-4. Zero changes to React components -- only the API layer changes
-
-This is the lowest-risk approach because:
-- LAN mode is completely unaffected (base is `""`)
-- No React Router needed (the SPA is a single page, no client-side routing)
-- The relay controls the injected value per mount code
-
-### WebSocket in Remote Mode
-
-The existing SPA WebSocket (`/ws`) provides clipboard sync, device notifications, file requests, and device discovery. In remote mode:
-
-**Recommendation for v1.2:** Disable real-time WS features in remote mode. The remote SPA does not connect to the LAN server's WS. Remote users only need file browsing and downloading. Clipboard sync and device discovery are LAN-context features that make no sense over a relay tunnel.
-
-The SPA already gracefully handles WS unavailability -- it shows a "reconnecting" banner via `ConnectionStatus`. In remote mode, the SPA detects `window.__MOUNT_BASE__` is set and skips the WS connection entirely. The banner is hidden since WS is intentionally disabled, not failing.
-
-### Password Protection in Remote Mode
-
-The existing cookie-based auth middleware works through the tunnel because:
-1. Browser sends HTTP to relay, relay forwards to agent, agent's local server has auth middleware
-2. Cookies are set on the relay domain (the browser's perspective), not localhost
-3. The relay transparently proxies Set-Cookie headers from agent responses
-
-The agent's `mount` subcommand accepts `--password` the same way `serve` does. If set, the local FastAPI server has auth middleware. Browser must log in through the relay before accessing files.
-
-## Scaling Considerations
-
-| Scale | Architecture Adjustments |
-|-------|--------------------------|
-| 1-50 mounts | Single relay process, in-memory registry. This is the v1.2 target. |
-| 50-500 mounts | Still single process. Python async handles this -- each mount is just a WS connection + request forwarding. Bottleneck is bandwidth, not connections. |
-| 500+ mounts | Redis-backed registry for multi-process relay. Sticky sessions or WS connection pinning. Out of scope for v1.2. |
-
-### Scaling Priorities
-
-1. **First bottleneck:** Bandwidth per relay instance. Large file downloads through the relay consume relay egress. No mitigation in v1.2 -- this is inherent to the relay model. Future: WebRTC P2P fallback (already planned for v2+).
-2. **Second bottleneck:** Head-of-line blocking when multiple large downloads happen concurrently over a single agent WS. 64KB chunking with interleaving mitigates this, but sustained throughput will be lower than direct LAN. Acceptable tradeoff.
-
-## Anti-Patterns
-
-### Anti-Pattern 1: Buffering Full Responses on Relay
-
-**What people do:** Read the entire agent response into memory before sending to browser.
-**Why it's wrong:** A 2GB video file would OOM the relay server.
-**Do this instead:** Stream response body frames directly to the browser StreamingResponse as they arrive over WS. Use an `asyncio.Queue` per request_id: agent pushes frames, relay pops and yields.
-
-### Anti-Pattern 2: Using JSON for Tunnel Protocol
-
-**What people do:** JSON-encode every request/response including binary file data (base64).
-**Why it's wrong:** Base64 inflates data by 33%. JSON parsing is slow for high-throughput file transfers. Cannot efficiently stream.
-**Do this instead:** Use binary WebSocket frames with a compact binary header (9 bytes: type + request_id + length). Payload is raw bytes.
-
-### Anti-Pattern 3: One WebSocket Per Browser Request
-
-**What people do:** Agent opens a new WS connection for each incoming browser request (the ngrok "on-demand tunnel" pattern).
-**Why it's wrong:** Connection setup latency (WS handshake) adds 100-300ms per request. Firewall/NAT may rate-limit new connections.
-**Do this instead:** Multiplex all requests over the single persistent agent WS. Use request IDs to demultiplex.
-
-### Anti-Pattern 4: Merging Relay Into LAN Server
-
-**What people do:** Add relay routes to the existing FastAPI app and deploy "one server does everything."
-**Why it's wrong:** LAN server is private, relay is public. Different security models, deployment targets, and lifecycles. Users running LAN mode should not expose relay endpoints.
-**Do this instead:** Separate processes. Shared code (tunnel protocol) lives in shared packages.
-
-### Anti-Pattern 5: Agent Re-implements File Operations
-
-**What people do:** Write a parallel set of file listing/download/upload handlers in the agent instead of reusing the existing server.
-**Why it's wrong:** Code duplication. Bugs fixed in `file_service.py` won't be fixed in agent's copy. Behavior divergence between LAN and remote modes.
-**Do this instead:** Agent starts a local FastAPI server using the SAME `create_app()` factory and proxies tunneled requests to it via localhost HTTP using httpx.
-
-### Anti-Pattern 6: Subdomain-Based Routing
-
-**What people do:** Route mounts via subdomains (`abc123.relay.example.com`) like ngrok does.
-**Why it's wrong:** Requires wildcard DNS, wildcard TLS certificates, and DNS propagation time. Massively increases deployment complexity for a simple file sharing tool.
-**Do this instead:** Path-based routing (`relay.example.com/m/abc123/`). Works with a single domain, single TLS cert, zero DNS complexity.
+---
 
 ## Build Order (Dependency-Driven)
 
-This ordering is based on strict dependency analysis. Each step can be tested in isolation before proceeding.
+Each step is independently testable. Dependencies are shown explicitly.
 
-| Order | Component | Depends On | Can Test Without |
-|-------|-----------|------------|------------------|
-| 1 | Tunnel Protocol (`server/tunnel/`) | Nothing | Everything -- pure data structures |
-| 2 | Mount Registry (`server/relay/registry.py`) | Nothing | Everything -- in-memory dict with TTL |
-| 3 | Relay Server skeleton + landing page | #2 | Agents -- can verify landing page renders |
-| 4 | Agent `mount` subcommand + local server | Existing `create_app()` | Relay -- can verify local server starts |
-| 5 | Agent tunnel client (WS to relay) | #1, #4 | Browser proxy -- can verify WS connects |
-| 6 | Relay agent WS endpoint + tunnel manager | #1, #2, #3 | Browser -- can verify agent registers |
-| 7 | Relay proxy router (`/m/{code}/*`) | #1, #6 | Nothing -- full E2E works |
-| 8 | SPA base URL support | #7 | Nothing -- this is the UI polish |
-| 9 | Password + TTL for mounts | #7 | Nothing -- reuses existing auth patterns |
+| Order | Feature | Depends On | Test Without |
+|-------|---------|------------|--------------|
+| 1 | Health endpoint (`GET /health`) | Nothing | Everything — trivial 200 response |
+| 2 | `relay/cli.py` `$PORT` env var | Nothing | Cloud Run — test with `PORT=9000 uv run network-relay` |
+| 3 | CORS lockdown (`ALLOWED_ORIGINS` env) | Nothing | Browsers — test with curl to verify headers |
+| 4 | `relay/Dockerfile` + `.dockerignore` | #1, #2 | Cloud Run — test with `docker build && docker run` |
+| 5 | SQLite `MountPersistence` | Nothing | Everything — unit-testable with tmp file |
+| 6 | Relay lifespan + `MountPersistence` integration | #5 | Nothing — integration test restart recovery |
+| 7 | Rate limiting middleware | Nothing | Load testing — `slowapi` unit-testable |
+| 8 | Agent WS: per-IP cap + mandatory TTL default | #7 | Drop box — test with multiple agent connects |
+| 9 | `GET /m/{code}/status` endpoint | Existing `MountRegistry` | SPA — testable with curl |
+| 10 | `ConnectionStatus` SPA indicator | #9 | Nothing — full E2E works |
+| 11 | `UploadTTLService` | Existing file_service | Nothing — unit-testable with tmp dir |
+| 12 | Upload endpoint `ttl_seconds` param | #11 | Drop box — testable with curl |
+| 13 | `FileEntry.ttl_expires_at` in API | #11 | SPA badge — testable with curl |
+| 14 | SPA file card TTL badge | #13 | Nothing — final E2E |
+| 15 | `RELAY_HTTPS` env var + Secure cookies | #4 | Production — test with ngrok or Cloud Run staging |
+| 16 | Default drop box embedded agent | #6, #8 | Cloud Run — test with `ENABLE_DROP_BOX=true` locally |
+| 17 | Landing page OG tags + branding | Nothing | Everything — pure HTML/template change |
 
-**Rationale:**
-- Tunnel protocol first because it is a pure shared library with no dependencies. Unit-testable with pytest alone.
-- Registry before relay because the relay needs it, but registry needs nothing.
-- Agent local server before tunnel client because we want to verify `create_app()` works in agent context before adding WS complexity.
-- Proxy router last among core components because it requires both relay and agent to be functional.
-- SPA changes deferred until proxy works so we can test with curl/httpie first.
-- Auth/TTL last because they are additive features on a working tunnel.
+**Rationale for ordering:**
+- Steps 1-4 first because they unblock Cloud Run deployment testing early. You want a working Docker image before writing all other features.
+- SQLite persistence (#5-6) before rate limiting (#7-8) because the lifespan handler must be in place before adding more lifespan-scoped services.
+- Connection status (#9-10) before upload TTL (#11-14) because status is relay-side (simpler, no protocol changes) while TTL touches server + SPA.
+- Secure cookies (#15) and drop box (#16) last — they require a working HTTPS deployment to fully test.
+- Landing page (#17) is pure HTML; it has no dependencies and can be done at any point.
+
+---
+
+## New Dependencies
+
+| Package | Current | Why Needed | Confidence |
+|---------|---------|------------|-----------|
+| `aiosqlite` | Not in pyproject.toml | Async SQLite for MountPersistence | HIGH — standard library, no alternatives needed |
+| `slowapi` | Not in pyproject.toml | Rate limiting middleware | HIGH — standard choice for FastAPI/Starlette, no Redis needed for single instance |
+
+All other features use existing dependencies (FastAPI lifespan, asyncio tasks, existing env var patterns).
+
+---
+
+## Scaling Considerations
+
+| Concern | v1.3 (single instance) | If scaled later |
+|---------|------------------------|-----------------|
+| Rate limiting | In-memory per-process (SlowAPI default) | Migrate to Redis-backed SlowAPI |
+| SQLite | GCS FUSE single writer (WAL mode) | Migrate to Cloud Firestore or Cloud SQL |
+| Mount registry | In-memory (runtime) + SQLite (metadata) | Add Cloud Pub/Sub for cross-instance mount events |
+| Drop box | Embedded in-process agent | Break out as separate Cloud Run service |
+
+**For v1.3:** Single instance is the correct deployment model. Document `--max-instances=1` in the Cloud Run deployment instructions. The relay is stateful (WebSocket connections) — horizontal scaling requires sticky sessions, which adds infrastructure complexity out of scope for v1.3.
+
+---
 
 ## Sources
 
-- [IETF WebSocket Multiplexing Draft](https://datatracker.ietf.org/doc/html/draft-ietf-hybi-websocket-multiplexing-01) -- multiplexing extension design for WS channel IDs
-- [wsrtunnel - Python Reverse HTTP Tunnel](https://github.com/defreng/wsrtunnel) -- reference implementation of WS-based reverse HTTP tunnel
-- [wstunnel - Tunnel over WebSocket](https://github.com/erebe/wstunnel) -- production WS tunnel with binary framing
-- [awesome-tunneling](https://github.com/anderspitman/awesome-tunneling) -- comprehensive list of tunnel architectures
-- [FastAPI WebSocket docs](https://fastapi.tiangolo.com/advanced/websockets/) -- binary data handling with receive_bytes/send_bytes
-- [WebSocket binary framing](https://www.appetenza.com/websocket-handling-binary-data) -- binary data handling patterns
-- Existing codebase: `server/app/main.py`, `server/app/services/connection_manager.py`, `server/app/routers/websocket.py`, `server/app/services/file_service.py`, `server/app/cli.py`, `server/app/config.py`
+- [Cloud Run Volume Mounts (GCS FUSE)](https://docs.cloud.google.com/run/docs/configuring/services/cloud-storage-volume-mounts) — official GCS FUSE volume mount docs
+- [SQLite on Cloud Run with GCS FUSE](https://www.wallacesharpedavidson.nz/post/sqlite-cloudrun/) — SQLite + GCS FUSE pattern with WAL mode
+- [GCS FUSE limitations (no file locking)](https://discuss.google.dev/t/connecting-cloud-run-to-a-persistent-storage-solution/124337) — confirmed locking limitation
+- [FastAPI Lifespan Events](https://fastapi.tiangolo.com/advanced/events/) — lifespan context manager pattern
+- [aiosqlite PyPI](https://pypi.org/project/aiosqlite/) — async SQLite library
+- [SlowAPI GitHub](https://github.com/laurentS/slowapi) — FastAPI/Starlette rate limiting
+- [SlowAPI in-memory multi-instance caveat](https://github.com/laurentS/slowapi/issues/226) — confirmed per-process limitation
+- [Cloud Run PORT env var](https://cloud.google.com/run/docs/configuring/services/environment-variables) — Cloud Run injects PORT, must not hardcode
+- [Cloud Run health checks](https://docs.cloud.google.com/run/docs/configuring/healthchecks) — startup probe configuration
+- [uv Docker guide](https://docs.astral.sh/uv/guides/integration/docker/) — multi-stage Dockerfile patterns
+- [FastAPI CORS production 2026](https://fastlaunchapi.dev/blog/fastapi-best-practices-production-2026) — CORS lockdown with `allow_credentials=True`
+- [Cloud Run min-instances](https://docs.cloud.google.com/run/docs/configuring/min-instances) — keep-warm instance for WebSocket services
 
 ---
-*Architecture research for: Remote mount relay server integration with existing WiFi file sharing app*
-*Researched: 2026-03-11*
+*Architecture research for: v1.3 Productionize Friend Tier — Cloud Run hardening of relay*
+*Researched: 2026-03-16*

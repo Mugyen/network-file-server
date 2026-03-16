@@ -1,220 +1,159 @@
-# Stack Research: v1.2 Remote Mounts
+# Technology Stack
 
-**Domain:** WebSocket tunnel relay + agent CLI for remote file sharing
-**Researched:** 2026-03-11
-**Confidence:** HIGH
+**Project:** Network File Server — v1.3 Productionize Friend Tier
+**Researched:** 2026-03-16
+**Scope:** NEW additions only — existing stack (FastAPI, uvicorn, pydantic, bcrypt, itsdangerous, jinja2, aiofiles, websockets, httpx, httpx-ws) is validated and unchanged.
 
-## Guiding Principle: Zero New Dependencies Where Possible
+---
 
-The existing stack (FastAPI + Starlette WebSocket + argparse + asyncio) already provides every primitive needed for the relay server and agent CLI. The tunnel is a custom protocol over WebSocket -- no off-the-shelf library solves this exact problem, so we build it with what we have. The only new dependency is `websockets` for the agent's outbound WebSocket client connection.
+## Guiding Principle: Minimal New Dependencies
 
-## Recommended Stack Additions
+Every new dependency must pull its weight. v1.3 is a productionization milestone — correctness, security, and operability matter more than features. When stdlib or existing libraries cover a need, use them. When a new library is justified, pin to a specific minimum version that has been verified.
 
-### Core Technologies (NEW)
+---
 
-| Technology | Version | Purpose | Why Recommended |
-|------------|---------|---------|-----------------|
-| `websockets` | `>=16.0` | Agent-side WebSocket client connecting outbound to relay | The standard Python WebSocket client library. FastAPI/Starlette only provides server-side WebSocket -- the agent needs a client. `websockets` 16.0 supports asyncio natively, handles ping/pong keepalive, binary frames, and reconnection. Already battle-tested, pure Python, no C extensions needed. uvicorn already uses it internally so it is likely already installed. |
+## New Stack Additions
 
-### Existing Technologies (REUSED -- no version changes)
+### Rate Limiting
 
-| Technology | Already In Stack | Reuse For |
-|------------|-----------------|-----------|
-| FastAPI WebSocket (`starlette.websockets`) | `fastapi>=0.115.0` | Relay server accepts agent tunnel connections and browser WebSocket connections via `@app.websocket()` endpoints |
-| `argparse` | stdlib | Agent CLI `wifi-file-server mount` subcommand -- project already uses argparse, no reason to switch |
-| `asyncio` | stdlib | Agent event loop: reads local files, sends responses through WebSocket tunnel |
-| `aiofiles` | `>=24.1.0` | Agent reads local files asynchronously for streaming through tunnel |
-| `qrcode` | `>=8.0` | Generate QR code for mount URL (same as LAN mode) |
-| `itsdangerous` | `>=2.2.0` | Mount code generation and validation with TTL expiry -- reuse existing token signing infra |
-| `uvicorn[standard]` | `>=0.34.0` | Relay server runtime (same ASGI server) |
-| `pydantic` | `>=2.10.0` | Request/response schemas for tunnel protocol messages |
-| `jinja2` | `>=3.1.0` | Mount landing page (code entry + QR scan) -- same server-rendered pattern as share links |
-| `httpx` | `>=0.28.0` (dev) | Testing relay server HTTP endpoints in integration tests |
-| `httpx-ws` | `>=0.8.2` (dev) | Testing WebSocket tunnel endpoints in relay server |
+| Technology | Version | Purpose | Why |
+|------------|---------|---------|-----|
+| `slowapi` | `>=0.1.9` | Per-IP rate limiting on relay endpoints — mount connect rate, landing page, upload endpoints | Direct port of flask-limiter for Starlette/FastAPI. Zero external services needed — uses in-memory storage by default (fine for single-instance Cloud Run with `--min-instances=1`). Decorator-based `@limiter.limit("5/minute")` integrates at the route level without rewriting middleware. No Redis dependency. v0.1.9 is the latest stable release (released February 2024, still maintained). |
 
-## Tunnel Wire Protocol (Custom, No Library Needed)
+**Verification:** slowapi 0.1.9 confirmed on PyPI. `limits` package (its backend) handles in-memory storage with no Redis. The project currently has CORS wildcard and zero rate limiting — slowapi is the smallest correct fix.
 
-The relay proxies browser HTTP requests to the agent over a single WebSocket connection. This requires a simple multiplexing protocol.
+**What NOT to use:** `fastapi-limiter` requires Redis. Writing custom rate-limit middleware in asyncio is error-prone and untestable. slowapi is the standard recommendation for FastAPI without Redis.
 
-**Format:** JSON control frames + binary data frames over WebSocket.
+---
 
-```
-Browser -> Relay:  normal HTTP request
-Relay -> Agent (WS text):   {"id": "req-uuid", "method": "GET", "path": "/api/files", "headers": {...}, "query": "..."}
-Agent -> Relay (WS text):   {"id": "req-uuid", "status": 200, "headers": {...}, "content_length": 4096}
-Agent -> Relay (WS binary):  <16-byte request ID><chunk bytes>
-Agent -> Relay (WS text):   {"id": "req-uuid", "done": true}
-Relay -> Browser:  reconstructed HTTP StreamingResponse
-```
+### Async SQLite (Persistent Mount Registry)
 
-- JSON text frames for control/metadata -- human-readable, debuggable.
-- Binary frames for file content -- 16-byte UUID prefix identifies which request the chunk belongs to.
-- Explicit `done` signal per request -- relay knows when to close the response stream.
-- No need for msgpack or protobuf -- JSON overhead is negligible for metadata, and binary frames handle bulk data.
+| Technology | Version | Purpose | Why |
+|------------|---------|---------|-----|
+| `aiosqlite` | `>=0.22.0` | Async SQLite access for mount registry persistence | The relay currently uses an in-memory `dict` for mount registry. v1.3 adds SQLite persistence so registered mounts survive relay restarts. `aiosqlite` wraps Python stdlib `sqlite3` with an asyncio interface — no ORM, no migrations framework, no extra surface area. One file. One table. Queries are simple enough that raw SQL with `aiosqlite` is cleaner than SQLAlchemy for this scope. |
 
-**Request multiplexing:** Tag each request/response pair with a UUID. The agent processes multiple requests concurrently using asyncio tasks. No WebSocket multiplexing extension needed -- just application-level request IDs.
+**Verification:** aiosqlite 0.22.1 released December 23, 2025. Actively maintained by the Omnilib project. Works with Python 3.11+.
 
-**Upload handling (browser -> agent):** For file uploads, the relay streams the request body to the agent the same way but in reverse:
+**Cloud Run constraint — important:** Cloud Run instances have ephemeral filesystems. SQLite on a bare local path (`./mounts.db`) survives between requests on the same instance but is wiped on redeploy or scale-to-zero. The relay MUST be deployed with `--min-instances=1` (keeps one warm instance alive), and the DB file written to `/tmp/mounts.db` within the container. This is acceptable because:
+1. Mount codes are short-lived — agents reconnect and get new codes on relay restart.
+2. The *persistent* value is surviving within-session relay restarts (e.g., container crash), not cross-deploy persistence.
+3. Full cross-deploy persistence would require Cloud Storage FUSE (high-latency, no file locking) or Cloud SQL ($50+/month) — both disproportionate for this use case.
 
-```
-Relay -> Agent (WS text):   {"id": "req-uuid", "method": "POST", "path": "/api/files/upload", "headers": {...}, "content_length": 50000}
-Relay -> Agent (WS binary):  <16-byte request ID><body chunk>
-Relay -> Agent (WS text):   {"id": "req-uuid", "body_done": true}
-Agent -> Relay (WS text):   {"id": "req-uuid", "status": 200, "headers": {...}}
-```
+**What NOT to use:** SQLAlchemy — adds ORM complexity for a single-table registry. Cloud SQL — $50/month for a two-column table. Cloud Storage FUSE for SQLite — no file locking, high write latency, officially unsupported for databases by GCP.
 
-## Installation
+---
 
-```bash
-# Only one new production dependency
-uv add "websockets>=16.0"
+### Structured Logging
 
-# No new dev dependencies needed -- httpx and httpx-ws already present
-```
+| Technology | Version | Purpose | Why |
+|------------|---------|---------|-----|
+| `structlog` | `>=25.0.0` | JSON-formatted structured logs to stdout for Cloud Run / Cloud Logging ingestion | Cloud Run captures stdout and pipes to Google Cloud Logging. Cloud Logging parses JSON logs natively — severity, trace, message, and arbitrary fields become queryable. `structlog` outputs JSON in production and human-readable logs in dev via a single env-var toggle. Integrates with Python stdlib `logging` so FastAPI/uvicorn access logs are captured in the same format. No external agent or sidecar needed. v25.5.0 is the latest (released October 2025). |
 
-## Alternatives Considered
+**Verification:** structlog 25.5.0 confirmed on PyPI (GitHub releases). Well-maintained (Hynek Schlawack). FastAPI integration documented with request context binding.
 
-| Recommended | Alternative | Why Not |
-|-------------|-------------|---------|
-| `websockets` (agent client) | `aiohttp` client | `aiohttp` is a full HTTP framework -- massive dependency for just a WebSocket client. `websockets` is focused, lightweight, and better maintained for pure WebSocket use. |
-| `websockets` (agent client) | `websocket-client` | `websocket-client` is synchronous by default. The agent needs async to handle concurrent requests through the tunnel. |
-| `argparse` subcommands (CLI) | `typer` or `click` | Project already uses argparse. Adding a CLI framework dependency for one subcommand is unjustified. `add_subparsers()` works fine. |
-| Custom tunnel protocol | `fastapi-websocket-rpc` | Adds abstraction we do not need. Our protocol is simple request/response pairs with IDs. RPC libraries add bidirectional call semantics, serialization layers, and reconnection logic we would fight against. |
-| Custom tunnel protocol | `fastapi-proxy-lib` | Designed for HTTP-to-HTTP proxying, not HTTP-to-WebSocket tunneling. Does not solve our core problem. |
-| JSON + binary frames | `msgpack` everywhere | JSON is human-readable for debugging the tunnel protocol. Binary frames already handle file content efficiently. msgpack saves bytes on metadata but adds a dependency and debugging friction for negligible gain. |
-| Single `pyproject.toml` package | Separate relay server package | The relay server shares models, auth infra, and config with the existing server. Splitting into a separate package creates duplication. Keep it in the same package with separate entry points. |
+**What NOT to use:** `python-json-logger` — less ergonomic, fewer features, less actively maintained. `google-cloud-logging` SDK — adds 15MB of GCP client deps; structured stdout is sufficient and simpler for Cloud Run. Raw `logging.basicConfig` with a JSON formatter — works but structlog's processor pipeline is cleaner for adding per-request context.
 
-## What NOT to Use
+---
 
-| Avoid | Why | Use Instead |
-|-------|-----|-------------|
-| `aiohttp` | Heavyweight HTTP framework just for a WebSocket client | `websockets` -- focused, lightweight |
-| `paramiko` / SSH tunneling | Wrong abstraction; SSH adds key management and encryption overhead we handle differently | Raw WebSocket tunnel |
-| `ngrok` / tunnel services | External dependency, not embeddable, costs money at scale | Custom relay server |
-| `protobuf` / `msgpack` | Over-engineering for wire format; JSON + binary frames are sufficient and debuggable | JSON text frames + binary data frames |
-| `celery` / task queues | No background job queue needed; tunnel is synchronous request/response per connection | asyncio tasks for concurrent request handling |
-| HTTP/2 multiplexing | Would require the agent to run an HTTP/2 server, defeating the outbound-only design | Application-level request IDs over WebSocket |
-| `Textual` / `rich` for relay | Relay is a headless cloud server; no terminal UI needed | Standard logging |
-| `redis` / `postgres` | No persistence needed; mount registry is in-memory per relay instance | In-memory dict of mount code -> WebSocket connection |
-| `cryptography` / TLS certs | E2E encryption is deferred to v2 per PROJECT.md | Plain WebSocket (wss:// via reverse proxy in production) |
-| `typer` / `click` | Project uses argparse; switching CLI frameworks for a subcommand wastes effort | `argparse.add_subparsers()` |
+### Configuration / Environment Variables
 
-## Architecture Integration Points
+| Technology | Version | Purpose | Why |
+|------------|---------|---------|-----|
+| `pydantic-settings` | `>=2.13.0` | Typed settings class that reads from environment variables and `.env` files | Cloud Run injects config as environment variables (`RELAY_ALLOWED_ORIGINS`, `RELAY_MAX_MOUNTS_PER_IP`, `RELAY_DB_PATH`, etc.). `pydantic-settings` validates and types them at startup — fail-fast if a required var is missing. Dev uses `.env` file. Production uses Cloud Run env vars. This replaces the current hardcoded defaults in `relay/cli.py`. Already indirectly used (pydantic is a project dep) — `pydantic-settings` is a lightweight separate package that plugs in with zero friction. |
 
-### Relay Server (separate FastAPI app, same package)
+**Verification:** pydantic-settings 2.13.1 released February 19, 2026. Part of the Pydantic organization. FastAPI officially recommends it for settings management (https://fastapi.tiangolo.com/advanced/settings/).
 
-The relay server is a **separate FastAPI application** with its own entry point, NOT a mode of the existing LAN server. Rationale:
-- Different middleware stack (no file system access, no LAN auth middleware)
-- Different deployment target (cloud VM vs local machine)
-- Different security model (mount codes, not passwords)
-- Shares code via Python imports, not by running in the same process
+**What NOT to use:** `python-dotenv` alone — no type validation. `os.environ.get()` scattered inline — untestable, no schema. `dynaconf` — heavy, not idiomatic for FastAPI.
 
-```
-wifi-file-server serve ./folder     # existing LAN mode (unchanged)
-wifi-file-server relay --port 443   # new relay server (cloud deployment)
-wifi-file-server mount ./folder     # new agent connecting to relay
-```
+---
 
-### Agent CLI (new subcommand, same package)
+## Per-File Upload TTL: No New Dependency
 
-The agent is a subcommand of the existing CLI. It:
-- Opens an outbound WebSocket to the relay using `websockets` library
-- Registers with a mount code received from the relay
-- Receives proxied HTTP requests via the tunnel protocol
-- Reads local files with `aiofiles` and streams responses back as binary frames
-- Reuses `ServerConfig` for shared folder path validation
-- Reuses `qrcode` to display mount URL QR code in terminal
-- Reuses `file_service` to list/read/serve files from the shared folder
+The per-file upload TTL feature (auto-delete uploaded files after N minutes) does NOT require APScheduler or any external task library. The existing stack already has everything needed:
 
-### CLI Structure Change: argparse Subcommands
-
-The existing CLI uses a flat argparse parser. v1.2 converts to subcommands:
+**Pattern:** `asyncio.create_task()` with `asyncio.sleep()` spawned at upload time.
 
 ```python
-# Before (v1.1)
-parser.add_argument("folder", ...)
-parser.add_argument("--port", ...)
+async def _schedule_file_deletion(path: Path, ttl_seconds: int) -> None:
+    await asyncio.sleep(ttl_seconds)
+    path.unlink(missing_ok=True)
 
-# After (v1.2)
-subparsers = parser.add_subparsers(dest="command")
-
-serve_parser = subparsers.add_parser("serve")  # default, backward-compat
-serve_parser.add_argument("folder", ...)
-serve_parser.add_argument("--port", ...)
-# ... all existing flags
-
-mount_parser = subparsers.add_parser("mount")
-mount_parser.add_argument("folder", ...)
-mount_parser.add_argument("--relay", required=True)  # relay server URL
-mount_parser.add_argument("--password", ...)          # per-mount password
-mount_parser.add_argument("--ttl", type=int)          # auto-expire seconds
-
-relay_parser = subparsers.add_parser("relay")
-relay_parser.add_argument("--port", type=int)
-relay_parser.add_argument("--host", type=str)
+# In upload handler:
+asyncio.create_task(_schedule_file_deletion(uploaded_path, ttl_seconds))
 ```
 
-**Backward compatibility:** If no subcommand is given and a folder path is the first positional argument, default to `serve` behavior. This preserves `wifi-file-server ./folder` working unchanged.
+**Why no APScheduler:** APScheduler 3.x (stable, v3.11.2) requires a separate scheduler object, job stores, and startup/shutdown hooks. For a fire-and-forget deletion that runs once after N seconds, `asyncio.create_task` is the stdlib primitive designed exactly for this. APScheduler 4.x is still in alpha (4.0.0a6, not production-safe per maintainer). No new dependency is justified.
 
-### Shared Code Reuse
+**Caveat:** If the relay process dies before TTL fires, the file is not deleted. This is acceptable — the feature is best-effort auto-cleanup, not a security guarantee. The "restart prompt" in PROJECT.md covers this case at the UX level.
 
-| Module | Used By | Purpose |
-|--------|---------|---------|
-| `server.app.config.ServerConfig` | Agent | Validate shared folder path |
-| `server.app.services.qr_service` | Agent | Display mount URL QR in terminal |
-| `server.app.services.file_service` | Agent | List/read files from shared folder |
-| `server.app.models.enums` | Agent + Relay | Shared enum types for tunnel protocol message types |
-| `server.app.models.schemas` | Agent + Relay | Pydantic models for tunnel request/response messages |
-| `itsdangerous` | Relay | Generate and validate mount codes with TTL |
-| `jinja2` | Relay | Mount landing page with code entry and QR scan |
+---
 
-### New Modules (expected)
+## Connection Status UI: No New Dependency
 
-| Module | Component | Purpose |
-|--------|-----------|---------|
-| `server/relay/app.py` | Relay | Separate FastAPI app for the relay server |
-| `server/relay/tunnel.py` | Relay | WebSocket tunnel manager -- maps mount codes to agent connections |
-| `server/relay/routes.py` | Relay | HTTP catch-all that proxies to agent via tunnel |
-| `server/agent/client.py` | Agent | WebSocket client that connects to relay and handles tunneled requests |
-| `server/agent/handler.py` | Agent | Processes tunneled HTTP requests against local filesystem |
-| `server/tunnel/protocol.py` | Shared | Pydantic models for tunnel wire protocol messages |
+The React frontend already has WebSocket infrastructure. Connection status (online/offline/expired) is implemented as:
+- A new WebSocket message type in the existing tunnel protocol
+- A React context/state hook consuming the existing WebSocket connection
+- No new frontend library needed — Tailwind CSS (already in use) handles the indicator styling
 
-## Version Compatibility
+---
 
-| Package | Compatible With | Notes |
-|---------|-----------------|-------|
-| `websockets>=16.0` | Python `>=3.10` | Matches project's `>=3.11` requirement |
-| `websockets>=16.0` | `uvicorn[standard]>=0.34.0` | No conflict; uvicorn already depends on `websockets` for its WebSocket protocol implementation, so the dependency is likely already installed |
-| `fastapi>=0.115.0` | Starlette WebSocket | WebSocket support is mature; `send_bytes`/`receive_bytes` available for binary frames |
+## CORS Lockdown: No New Dependency
 
-## Key Technical Decisions
+The relay currently uses `CORSMiddleware` with `allow_origins=["*"]`. Lockdown is a configuration change, not a library change:
 
-### Binary Streaming for File Content
+```python
+# Before (v1.2 — wildcard)
+allow_origins=["*"]
 
-FastAPI/Starlette WebSocket supports `send_bytes()` / `receive_bytes()`. The agent streams file chunks as binary frames with a fixed-length 16-byte request-ID prefix (UUID bytes). This avoids base64-encoding file content into JSON, which would roughly double bandwidth usage.
+# After (v1.3 — env-var driven list)
+allow_origins=settings.allowed_origins  # e.g. ["https://yourrelay.run.app"]
+```
 
-### Chunked Transfer for Large Files
+`pydantic-settings` handles parsing a comma-separated `RELAY_ALLOWED_ORIGINS` env var into a `list[str]`. No additional CORS library needed.
 
-Files are streamed in 64KB chunks through the tunnel, not loaded entirely into memory. The agent reads with `aiofiles` in chunks and sends each chunk as a binary WebSocket frame. The relay reconstructs a `StreamingResponse` for the browser, yielding chunks as they arrive over the WebSocket.
+---
 
-### No `websockets` Dependency on Relay Side
+## Cloud Run Deployment: No New Python Dependency
 
-The relay server uses FastAPI/Starlette's built-in WebSocket support (which internally uses `websockets` via uvicorn). Adding `websockets` as a direct dependency is only needed for the agent's outbound client connection.
+The Dockerfile and Cloud Run configuration are infrastructure concerns, not Python library concerns:
 
-### Mount Code via itsdangerous (Reuse Existing Infra)
+**Dockerfile pattern:**
+```dockerfile
+FROM python:3.11-slim-bullseye
+WORKDIR /app
+COPY pyproject.toml uv.lock ./
+RUN pip install uv && uv sync --no-dev
+COPY . .
+ENV PORT=8080
+ENV PYTHONUNBUFFERED=1
+CMD ["uv", "run", "uvicorn", "relay.app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+```
 
-Mount codes are short, human-readable codes (e.g., 6 alphanumeric chars) that map to an agent connection on the relay. The relay generates them when an agent connects. TTL expiry reuses `itsdangerous.URLSafeTimedSerializer` with `max_age` -- the same pattern already used for share links in v1.1.
+**Health check:** A `GET /healthz` endpoint returning `{"status": "ok"}` — pure FastAPI route, no library.
 
-### In-Memory Mount Registry
+**Structured logging to stdout:** Handled by `structlog` (see above) + `PYTHONUNBUFFERED=1` env var so logs flush immediately to Cloud Logging.
 
-The relay keeps an in-memory `dict[str, WebSocket]` mapping mount codes to agent WebSocket connections. No database needed -- if the relay restarts, agents reconnect and get new codes. This matches the project's existing pattern of in-memory state (share links, clipboard, device list).
+**Secure cookie flags (HTTPS):** `itsdangerous` already handles cookie signing. HTTPS `Secure` and `SameSite=Strict` flags are set conditionally based on a `RELAY_ENV=production` env var in the existing cookie-setting code. No new library.
+
+---
+
+## Default Always-On Drop Box Mount: No New Dependency
+
+The default public drop box is a relay feature — an always-registered mount that the relay server itself "hosts" (no external agent). This requires:
+- A mount registered at relay startup with a fixed well-known code
+- The mount proxied to a local in-process FastAPI "sub-app" (using `httpx.ASGITransport` — already in the stack from v1.2 agent work)
+- The sub-app serves a simple receive-only filesystem rooted at `/tmp/dropbox/`
+
+`httpx.ASGITransport` is already used by the agent to proxy tunnel requests locally. The same pattern works here — the relay registers a "self" mount that routes to an internal ASGI app. Zero new dependencies.
+
+---
 
 ## Updated pyproject.toml Dependencies
 
 ```toml
 [project]
 dependencies = [
-    # Existing (unchanged)
+    # Existing (unchanged from v1.2)
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.34.0",
     "pydantic>=2.10.0",
@@ -226,23 +165,139 @@ dependencies = [
     "bcrypt>=5.0.0",
     "itsdangerous>=2.2.0",
     "jinja2>=3.1.0",
-    # NEW for v1.2
-    "websockets>=16.0",           # Agent WebSocket client
+    "httpx>=0.28.0",
+    "websockets>=13.0",
+    "httpx-ws>=0.8.2",
+    # NEW for v1.3
+    "slowapi>=0.1.9",          # Per-IP rate limiting — no Redis needed
+    "aiosqlite>=0.22.0",       # Async SQLite for persistent mount registry
+    "structlog>=25.0.0",       # JSON structured logging for Cloud Run/Cloud Logging
+    "pydantic-settings>=2.13.0",  # Typed env-var config for Cloud Run deployment
 ]
 ```
 
-## Sources
+---
 
-- [websockets 16.0 documentation](https://websockets.readthedocs.io/en/stable/) -- verified version 16.0, Python >=3.10, asyncio-native client API
-- [websockets PyPI](https://pypi.org/project/websockets/) -- version 16.0 released 2026-01-10
-- [FastAPI WebSocket reference](https://fastapi.tiangolo.com/reference/websockets/) -- send_bytes/receive_bytes API, connection lifecycle
-- [FastAPI WebSocket advanced docs](https://fastapi.tiangolo.com/advanced/websockets/) -- server-side WebSocket patterns
-- [wsrtunnel GitHub](https://github.com/defreng/wsrtunnel) -- reference implementation for HTTP-over-WebSocket reverse tunnel pattern
-- [fastapi-websocket-rpc PyPI](https://pypi.org/project/fastapi-websocket-rpc/) -- considered and rejected (too much abstraction)
-- [fastapi-proxy-lib GitHub](https://github.com/WSH032/fastapi-proxy-lib) -- considered and rejected (HTTP-to-HTTP only)
-- [msgpack PyPI](https://pypi.org/project/msgpack/) -- v1.1.2, considered and rejected
-- [httpx PyPI](https://pypi.org/project/httpx/) -- v0.28.1, already in dev deps
+## Alternatives Considered
+
+| Category | Recommended | Alternative | Why Not |
+|----------|-------------|-------------|---------|
+| Rate limiting | `slowapi` | `fastapi-limiter` | Requires Redis — no Redis in this deployment |
+| Rate limiting | `slowapi` | Custom asyncio middleware | Untestable, reinvents a solved problem |
+| Async DB access | `aiosqlite` | SQLAlchemy + asyncpg | Over-engineered for a single-table registry |
+| Async DB access | `aiosqlite` | Cloud SQL | $50/month minimum for two-column table |
+| Persistent DB on Cloud Run | SQLite in `/tmp/` + min-instances=1 | Cloud Storage FUSE | No file locking, high latency, GCP docs say "don't use for databases" |
+| Structured logging | `structlog` | `python-json-logger` | Less maintained, less ergonomic processor pipeline |
+| Structured logging | `structlog` | `google-cloud-logging` SDK | 15MB of GCP client library for a stdout formatter |
+| Config management | `pydantic-settings` | `python-dotenv` + `os.environ` | No type validation, no fail-fast on missing vars |
+| File TTL | asyncio.create_task + sleep | `APScheduler` 3.x | Heavyweight for fire-and-forget one-shot tasks |
+| File TTL | asyncio.create_task + sleep | `APScheduler` 4.x | Still alpha/pre-release, not production-safe |
+| CORS lockdown | Config change to existing `CORSMiddleware` | `fastapi-cors` library | Existing middleware already supports `allow_origins` list |
+| Drop box mount | Internal ASGI sub-app via `httpx.ASGITransport` | Separate process/agent | Unnecessary process management complexity |
 
 ---
-*Stack research for: v1.2 Remote Mounts relay server and agent CLI*
-*Researched: 2026-03-11*
+
+## What NOT to Add
+
+| Avoid | Why | Use Instead |
+|-------|-----|-------------|
+| Redis | No horizontal scaling needed; min-instances=1 keeps one warm instance | in-memory storage (slowapi default) |
+| Cloud SQL / PostgreSQL | $50+/month minimum; mount registry is a 2-column table | SQLite in `/tmp/` |
+| `celery` / task queues | File TTL is a one-shot asyncio sleep, not a distributed job | `asyncio.create_task` |
+| `APScheduler` | Still alpha in v4; v3.x adds lifecycle complexity for one-shot tasks | `asyncio.create_task` |
+| `google-cloud-logging` SDK | Adds 15MB of client libs; Cloud Run reads stdout natively | `structlog` to stdout |
+| `alembic` | No migration history needed; schema is a single CREATE TABLE IF NOT EXISTS | Raw `aiosqlite` DDL at startup |
+| ORM (SQLAlchemy) | Single-table registry doesn't benefit from ORM abstraction | Raw SQL with `aiosqlite` |
+| `fastapi-limiter` | Requires Redis | `slowapi` with in-memory backend |
+| Multiple Cloud Run instances | SQLite requires single-writer; rate limiting state is per-instance | `--min-instances=1 --max-instances=1` |
+
+---
+
+## Integration Points
+
+### slowapi Integration
+
+`slowapi` attaches to the FastAPI app as a state attribute and middleware. Key integration:
+
+```python
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+```
+
+Routes with limits use `@limiter.limit("5/minute")` with `request: Request` as first param. The relay's agent registration endpoint and mount proxy landing should be rate-limited to prevent abuse.
+
+**Behind Cloud Run's load balancer:** `get_remote_address` reads `X-Forwarded-For` — correct for Cloud Run (GCP sets this header). No additional proxy-header middleware needed.
+
+### aiosqlite Integration
+
+`MountRegistry` gains an `AsyncSQLiteRegistry` implementation. Schema:
+
+```sql
+CREATE TABLE IF NOT EXISTS mounts (
+    code TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+```
+
+The in-memory `TunnelConnection` reference cannot be stored in SQLite (it's a live WebSocket). The registry stores metadata in SQLite and live connections in a separate in-memory `dict`. On relay startup, SQLite is read to restore `OFFLINE` status for any codes registered before the restart — agents reconnecting with a known code can reclaim their slot.
+
+### structlog Integration
+
+Configure at relay app startup (before any log calls):
+
+```python
+import structlog
+structlog.configure(
+    processors=[
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.stdlib.add_log_level,
+        structlog.processors.JSONRenderer(),  # production
+    ],
+    wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
+)
+```
+
+In development (detected via `RELAY_ENV != "production"`), swap `JSONRenderer` for `ConsoleRenderer` for human-readable output.
+
+### pydantic-settings Integration
+
+```python
+from pydantic_settings import BaseSettings
+
+class RelaySettings(BaseSettings):
+    relay_env: str = "development"
+    relay_db_path: str = "/tmp/mounts.db"
+    relay_allowed_origins: list[str] = ["*"]
+    relay_max_mounts_per_ip: int = 5
+    relay_default_mount_ttl_s: int = 86400  # 24h
+
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+```
+
+Constructed once at module level with `@lru_cache`. Passed into `create_relay_app()` for middleware and router configuration.
+
+---
+
+## Sources
+
+- [slowapi PyPI](https://pypi.org/project/slowapi/) — v0.1.9, in-memory backend confirmed, no Redis required
+- [slowapi GitHub](https://github.com/laurentS/slowapi) — FastAPI/Starlette integration, `get_remote_address` for X-Forwarded-For
+- [aiosqlite PyPI](https://pypi.org/project/aiosqlite/) — v0.22.1 released December 23, 2025
+- [aiosqlite documentation](https://aiosqlite.omnilib.dev/en/latest/) — async context manager API, Python >=3.8 compatible
+- [structlog PyPI / docs](https://www.structlog.org/) — v25.5.0 released October 2025, JSONRenderer for production
+- [pydantic-settings PyPI](https://pypi.org/project/pydantic-settings/) — v2.13.1 released February 19, 2026
+- [FastAPI settings docs](https://fastapi.tiangolo.com/advanced/settings/) — official recommendation for pydantic-settings
+- [Cloud Run min-instances docs](https://docs.cloud.google.com/run/docs/configuring/min-instances) — keeps warm instance, avoids cold-start / SQLite loss
+- [Cloud Run Cloud Storage FUSE limitations](https://docs.cloud.google.com/run/docs/configuring/services/cloud-storage-volume-mounts) — no file locking, high latency — confirms SQLite on FUSE is wrong approach
+- [Cloud Run FastAPI quickstart](https://docs.cloud.google.com/run/docs/quickstarts/build-and-deploy/deploy-python-fastapi-service) — updated 2026-03-12, Dockerfile patterns
+- [APScheduler versions](https://pypi.org/project/APScheduler/) — v4.0a6 confirmed pre-release/alpha, v3.11.2 stable but heavyweight for one-shot tasks
+
+---
+*Stack research for: v1.3 Productionize Friend Tier*
+*Researched: 2026-03-16*
