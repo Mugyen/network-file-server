@@ -2,7 +2,9 @@
 
 import asyncio
 import json
+import logging
 import re
+import time
 import uuid
 from typing import AsyncGenerator
 
@@ -14,6 +16,8 @@ from relay.app.routers.landing import templates
 from relay.app.services.mount_registry import get_registry
 from tunnel.constants import FIRST_BYTE_TIMEOUT_S, MAX_PAYLOAD_BYTES
 from tunnel.exceptions import FirstByteTimeoutError
+
+logger = logging.getLogger("relay.proxy")
 
 router = APIRouter()
 
@@ -75,6 +79,14 @@ async def proxy_request(request: Request, code: str, path: str) -> Response:
         StreamingResponse on success, TemplateResponse on error states,
         or plain Response on timeout.
     """
+    start: float = time.monotonic()
+
+    # Extract client IP from X-Forwarded-For (Cloud Run) or direct connection
+    client_ip: str = request.headers.get(
+        "x-forwarded-for",
+        request.client.host if request.client else "unknown",
+    )
+
     try:
         conn = get_registry().get_connection(code)
     except MountNotFoundError:
@@ -124,6 +136,11 @@ async def proxy_request(request: Request, code: str, path: str) -> Response:
     try:
         first_chunk = await conn.read_stream(request_id, FIRST_BYTE_TIMEOUT_S)
     except FirstByteTimeoutError:
+        duration_ms: int = round((time.monotonic() - start) * 1000)
+        logger.info(
+            "%s /%s -> 504 %dms client=%s",
+            request.method, path, duration_ms, client_ip,
+        )
         return Response("Gateway Timeout", status_code=504)
 
     response_meta: dict = json.loads(first_chunk)
@@ -151,6 +168,11 @@ async def proxy_request(request: Request, code: str, path: str) -> Response:
             body_parts.append(chunk)
         html_body = b"".join(body_parts).decode("utf-8")
         rewritten = rewrite_html_asset_paths(html_body, f"/m/{code}")
+        duration_ms = round((time.monotonic() - start) * 1000)
+        logger.info(
+            "%s /%s -> %d %dms client=%s",
+            request.method, path, resp_status, duration_ms, client_ip,
+        )
         return Response(
             content=rewritten,
             status_code=resp_status,
@@ -166,6 +188,11 @@ async def proxy_request(request: Request, code: str, path: str) -> Response:
                 return
             yield chunk
 
+    duration_ms = round((time.monotonic() - start) * 1000)
+    logger.info(
+        "%s /%s -> %d %dms client=%s",
+        request.method, path, resp_status, duration_ms, client_ip,
+    )
     return StreamingResponse(
         stream_generator(),
         status_code=resp_status,

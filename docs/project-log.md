@@ -1,5 +1,13 @@
 # Project Log
 
+## 2026-03-16: Dockerize relay with health endpoint and structured logging (12-01)
+
+Multi-stage Dockerfile (Node + Python + slim runtime), `/health` endpoint with mount count, `CloudJsonFormatter` for Cloud Logging JSON output, `RelayEnv` enum for dev/production mode switching, `deploy_relay.sh` Cloud Run deploy script, and structured request/agent logging.
+
+## 2026-03-16: Rename project from network-file-server to network-file-server
+
+Renamed project, CLI commands (`network-file-server`, `network-relay`), display names, templates, shell scripts, tests, planning docs, and `network_file_server.py` → `network_file_server.py`.
+
 ## 2026-03-16: LAN IP resolution for mount QR codes
 
 When relay URL is localhost/127.0.0.1, the QR code and mount URL now show the LAN IP so phones on the same network can scan and connect. Also changed `run_mount_server.sh` to use `--relay` flag (translates to `--server` internally).
@@ -10,7 +18,7 @@ Added `run_relay.sh` and `run_mount_server.sh` — auto-rebuild client when sour
 
 ## 2026-03-16: Snippet copy button and relay CLI entry point (11-05)
 
-Added copy-to-clipboard button to each SnippetCard (navigator.clipboard.writeText with 1.5s Check icon feedback). Created `relay/cli.py` with `wifi-relay` console script — binds to 0.0.0.0:8001 by default, supports `--host` and `--port` flags.
+Added copy-to-clipboard button to each SnippetCard (navigator.clipboard.writeText with 1.5s Check icon feedback). Created `relay/cli.py` with `network-relay` console script — binds to 0.0.0.0:8001 by default, supports `--host` and `--port` flags.
 
 ## 2026-03-13: Fix hardcoded /api/ paths broken in remote mount mode
 
@@ -110,7 +118,7 @@ Added real-time shared clipboard with slide-out scratchpad panel. Named snippets
 
 ## 2026-03-09: FastAPI backend foundation (01-01)
 
-Scaffolded FastAPI backend with config validation, path traversal guard (resolve_safe_path), file listing API (GET /api/files), CORS middleware, and CLI entry point (wifi-file-server command). 43 tests covering all modules.
+Scaffolded FastAPI backend with config validation, path traversal guard (resolve_safe_path), file listing API (GET /api/files), CORS middleware, and CLI entry point (network-file-server command). 43 tests covering all modules.
 
 ## 2026-03-09: QR code and discovery services (01-02)
 

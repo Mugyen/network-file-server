@@ -1,6 +1,6 @@
-# WiFi File Server
+# Network File Server
 
-Share files over your local WiFi network. Any device on the same network can browse and download files via a web browser.
+Share files over your local network. Any device on the same network can browse and download files via a web browser.
 
 ## Setup
 
@@ -11,9 +11,9 @@ uv sync
 ## Run
 
 ```bash
-uv run wifi-file-server /path/to/folder
-uv run wifi-file-server /path/to/folder --port 9000
-uv run wifi-file-server /path/to/folder --host 127.0.0.1 --port 9000
+uv run network-file-server /path/to/folder
+uv run network-file-server /path/to/folder --port 9000
+uv run network-file-server /path/to/folder --host 127.0.0.1 --port 9000
 ```
 
 Scan the QR code printed in the terminal from any device on the same network.
@@ -23,16 +23,33 @@ Scan the QR code printed in the terminal from any device on the same network.
 Start the relay server to expose mounts outside your LAN:
 
 ```bash
-uv run wifi-relay              # binds 0.0.0.0:8001
-uv run wifi-relay --port 9001  # custom port
-uv run wifi-relay --host 127.0.0.1  # localhost only
+uv run network-relay              # binds 0.0.0.0:8001
+uv run network-relay --port 9001  # custom port
+uv run network-relay --host 127.0.0.1  # localhost only
 ```
 
 Mount a local folder through the relay from any machine:
 
 ```bash
-uv run wifi-file-server /path/to/folder mount --relay http://relay-host:8001
+uv run network-file-server /path/to/folder mount --relay http://relay-host:8001
 ```
+
+## Docker (Cloud Run)
+
+```bash
+docker build -t network-relay .
+docker run -e PORT=8080 -p 8080:8080 network-relay
+```
+
+Deploy to Cloud Run:
+
+```bash
+GCP_PROJECT_ID=my-project RELAY_ALLOWED_ORIGINS=https://example.com ./deploy_relay.sh
+```
+
+Health check: `GET /health` returns `{"status": "ok", "mounts": 0}`.
+
+Set `RELAY_ENV=production` for JSON logging (Cloud Logging compatible).
 
 ## API
 

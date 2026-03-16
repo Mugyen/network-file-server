@@ -1,11 +1,15 @@
 """Agent WebSocket endpoint — accepts tunnel connections and registers mounts."""
 
+import logging
+
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
 from relay.app.exceptions import MountNotFoundError
 from relay.app.services.mount_registry import generate_mount_code, get_registry
 from tunnel.connection import TunnelConnection
 from tunnel.constants import HEARTBEAT_INTERVAL_S, HEARTBEAT_MISSED_LIMIT
+
+logger = logging.getLogger("relay.agent")
 
 router = APIRouter()
 
@@ -40,6 +44,12 @@ async def agent_websocket(
 
     conn = TunnelConnection(websocket)
     registry.register(assigned_code, conn)
+    reused_code: bool = code is not None and assigned_code == code
+    logger.info(
+        "Agent connected: code=%s preferred_reuse=%s",
+        assigned_code,
+        reused_code,
+    )
     await conn.send_control({"type": "mount_registered", "code": assigned_code})
     conn.start_heartbeat(HEARTBEAT_INTERVAL_S, HEARTBEAT_MISSED_LIMIT)
     try:
@@ -47,6 +57,7 @@ async def agent_websocket(
     except WebSocketDisconnect:
         pass
     finally:
+        logger.info("Agent disconnected: code=%s", assigned_code)
         await conn.close()
         try:
             registry.deregister(assigned_code)
