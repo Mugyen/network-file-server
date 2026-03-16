@@ -1,4 +1,4 @@
-# WiFi File Server
+# Network File Server
 
 ## What This Is
 
@@ -44,7 +44,17 @@ Any device can instantly share files with zero setup — scan QR, drop files, do
 
 ### Active
 
-(None — ready for next milestone planning)
+<!-- v1.3 Productionize Friend Tier -->
+
+- [ ] Dockerized Cloud Run deployment with health check and structured logging
+- [ ] HTTPS cookie handling (Secure flag, SameSite for production)
+- [ ] Relay landing page with mount code entry, branding, and OG meta tags
+- [ ] SQLite persistent mount registry surviving restarts and deploys
+- [ ] Rate limiting and abuse prevention (per-IP mount caps, request limits, mandatory TTL)
+- [ ] CORS lockdown on relay (no wildcard origins)
+- [ ] Connection status indicator in web UI (online/offline/expired)
+- [ ] Default always-on public drop box mount on Cloud Run
+- [ ] Per-file upload TTL with auto-deletion and restart prompt
 
 ### Out of Scope
 
@@ -68,6 +78,7 @@ Any device can instantly share files with zero setup — scan QR, drop files, do
 
 - Shipped v1.2 with ~19,500 LOC (13,098 Python + 6,400 TypeScript)
 - Three milestones shipped: v1.0 MVP, v1.1 Share & Access Control, v1.2 Remote Mounts
+- v1.3 targets Google Cloud Run deployment — relay as a public service for friends
 - 11 phases, 31 plans total across all milestones
 - Tech stack: React + Tailwind CSS v4 (frontend), FastAPI + uvicorn (backend), WebSocket (real-time)
 - WebSocket infrastructure shared between clipboard sync, notifications, file requests, device discovery, and relay tunneling
@@ -104,4 +115,19 @@ Any device can instantly share files with zero setup — scan QR, drop files, do
 | LAN IP resolution in QR codes | localhost in QR code doesn't work from phones; detect and substitute LAN IP | ✓ Good — phones can now scan and connect |
 
 ---
-*Last updated: 2026-03-16 after v1.2 milestone completion*
+## Current Milestone: v1.3 Productionize Friend Tier
+
+**Goal:** Deploy the relay to Google Cloud Run and harden it for real-world use — Dockerized, secured, with persistent state, a default public drop box, and auto-expiring file uploads.
+
+**Target features:**
+- Dockerized Cloud Run deployment (health check, structured logging, HTTPS cookies)
+- Relay landing page with mount code entry and social meta tags
+- SQLite persistent mount registry
+- Rate limiting and abuse prevention
+- CORS lockdown on relay
+- Connection status indicator in web UI
+- Default always-on public drop box mount
+- Per-file upload TTL with auto-deletion
+
+---
+*Last updated: 2026-03-16 after v1.3 milestone start*

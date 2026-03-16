@@ -1,11 +1,11 @@
 ---
 gsd_state_version: 1.0
-milestone: null
-milestone_name: null
-status: milestone_complete
-stopped_at: v1.2 Remote Mounts shipped
+milestone: v1.3
+milestone_name: Productionize Friend Tier
+status: defining_requirements
+stopped_at: null
 last_updated: "2026-03-16"
-last_activity: 2026-03-16 -- v1.2 Remote Mounts milestone completed
+last_activity: 2026-03-16 -- Milestone v1.3 started
 progress:
   total_phases: 0
   completed_phases: 0
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-16)
 
 **Core value:** Any device can instantly share files with zero setup — scan QR, drop files, done. Works on LAN or over the internet.
-**Current focus:** Planning next milestone
+**Current focus:** v1.3 Productionize Friend Tier — defining requirements
 
 ## Current Position
 
-Phase: --
-Plan: --
-Status: Between milestones — v1.2 shipped, ready for `/gsd:new-milestone`
-Last activity: 2026-03-16 — v1.2 Remote Mounts milestone completed
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-03-16 — Milestone v1.3 started
 
 ## Milestones Shipped
 
