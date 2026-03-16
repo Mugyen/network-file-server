@@ -3,14 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.3
 milestone_name: Productionize Friend Tier
 status: executing
-stopped_at: "Completed 12-01-PLAN.md"
-last_updated: "2026-03-16"
-last_activity: 2026-03-16 -- Completed 12-01 Dockerfile, health endpoint, structured logging
+last_updated: "2026-03-16T17:51:00Z"
+last_activity: 2026-03-16 — Completed 12-02 (SecureCookieMiddleware, CORS lockdown, proxy headers)
 progress:
-  total_phases: 4
-  completed_phases: 0
-  total_plans: 8
-  completed_plans: 1
+  total_phases: 3
+  completed_phases: 3
+  total_plans: 7
+  completed_plans: 7
   percent: 12
 ---
 
@@ -25,25 +24,25 @@ See: .planning/PROJECT.md (updated 2026-03-16)
 
 ## Current Position
 
-Phase: 12 of 15 (Cloud Run Foundation)
-Plan: 2 of 2
+Phase: 13 of 15 (Abuse Prevention)
+Plan: 1 of 2
 Status: Executing
-Last activity: 2026-03-16 — Completed 12-01 (Dockerfile, health endpoint, structured logging)
+Last activity: 2026-03-16 — Completed 12-02 (SecureCookieMiddleware, CORS lockdown, proxy headers)
 
-Progress: [█░░░░░░░░░] 12%
+Progress: [██░░░░░░░░] 25%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 1 (this milestone)
-- Average duration: 7min
-- Total execution time: 7min
+- Total plans completed: 2 (this milestone)
+- Average duration: 6min
+- Total execution time: 12min
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 12 | 1 | 7min | 7min |
+| 12 | 2 | 12min | 6min |
 
 ## Milestones Shipped
 
@@ -66,6 +65,8 @@ Key decisions for v1.3:
 - Connection status via REST polling (`GET /m/{code}/status` every 30s) — status changes are rare; second WebSocket channel is disproportionate
 - [12-01] Used --legacy-peer-deps for npm ci in Dockerfile (pre-existing vitest peer dep conflict, dev-only)
 - [12-01] README.md included in Docker context via .dockerignore exception (hatchling requires it for wheel build)
+- [Phase 12]: SecureCookieMiddleware uses raw ASGI for streaming correctness; CORSMiddleware outer, SecureCookieMiddleware inner (Starlette LIFO)
+- [Phase 12]: Dev CORS: wildcard without credentials (per CORS spec); Prod CORS: explicit origins with credentials
 
 ### Pending Todos
 
