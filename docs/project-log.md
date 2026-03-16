@@ -1,5 +1,9 @@
 # Project Log
 
+## 2026-03-16: SecureCookieMiddleware and conditional CORS lockdown (12-02)
+
+SecureCookieMiddleware stamps Secure flag on Set-Cookie behind HTTPS (X-Forwarded-Proto). CORS locked down in production (explicit origins with credentials) while dev retains wildcard. Missing RELAY_ALLOWED_ORIGINS in production raises ValueError.
+
 ## 2026-03-16: Dockerize relay with health endpoint and structured logging (12-01)
 
 Multi-stage Dockerfile (Node + Python + slim runtime), `/health` endpoint with mount count, `CloudJsonFormatter` for Cloud Logging JSON output, `RelayEnv` enum for dev/production mode switching, `deploy_relay.sh` Cloud Run deploy script, and structured request/agent logging.
