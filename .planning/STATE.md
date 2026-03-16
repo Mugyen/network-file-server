@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.3
 milestone_name: Productionize Friend Tier
-status: roadmap_created
-stopped_at: null
+status: executing
+stopped_at: "Completed 12-01-PLAN.md"
 last_updated: "2026-03-16"
-last_activity: 2026-03-16 -- Roadmap created, 4 phases (12-15), 32 requirements mapped
+last_activity: 2026-03-16 -- Completed 12-01 Dockerfile, health endpoint, structured logging
 progress:
   total_phases: 4
   completed_phases: 0
   total_plans: 8
-  completed_plans: 0
-  percent: 0
+  completed_plans: 1
+  percent: 12
 ---
 
 # Project State
@@ -21,29 +21,29 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-16)
 
 **Core value:** Any device can instantly share files with zero setup — scan QR, drop files, done. Works on LAN or over the internet.
-**Current focus:** v1.3 Productionize Friend Tier — ready to plan Phase 12
+**Current focus:** v1.3 Productionize Friend Tier — executing Phase 12
 
 ## Current Position
 
 Phase: 12 of 15 (Cloud Run Foundation)
-Plan: —
-Status: Ready to plan
-Last activity: 2026-03-16 — Roadmap created (4 phases, 32 requirements mapped)
+Plan: 2 of 2
+Status: Executing
+Last activity: 2026-03-16 — Completed 12-01 (Dockerfile, health endpoint, structured logging)
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [█░░░░░░░░░] 12%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 0 (this milestone)
-- Average duration: —
-- Total execution time: —
+- Total plans completed: 1 (this milestone)
+- Average duration: 7min
+- Total execution time: 7min
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| - | - | - | - |
+| 12 | 1 | 7min | 7min |
 
 ## Milestones Shipped
 
@@ -64,6 +64,8 @@ Key decisions for v1.3:
 - SQLite at `/tmp/mounts.db` with `journal_mode=DELETE` — avoids WAL corruption on GCS FUSE; accept mount code loss on redeploy
 - Drop box as in-relay subprocess — avoids separate container; `asyncio.create_subprocess_exec` isolates event loop
 - Connection status via REST polling (`GET /m/{code}/status` every 30s) — status changes are rare; second WebSocket channel is disproportionate
+- [12-01] Used --legacy-peer-deps for npm ci in Dockerfile (pre-existing vitest peer dep conflict, dev-only)
+- [12-01] README.md included in Docker context via .dockerignore exception (hatchling requires it for wheel build)
 
 ### Pending Todos
 
