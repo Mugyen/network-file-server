@@ -1,10 +1,11 @@
-# Roadmap: WiFi File Server
+# Roadmap: Network File Server
 
 ## Milestones
 
 - ✅ **v1.0 MVP** — Phases 1-4 (shipped 2026-03-09)
 - ✅ **v1.1 Share & Access Control** — Phases 5-7 (shipped 2026-03-11)
 - ✅ **v1.2 Remote Mounts** — Phases 8-11 (shipped 2026-03-16)
+- 🚧 **v1.3 Productionize Friend Tier** — Phases 12-15 (in progress)
 
 ## Phases
 
@@ -43,6 +44,17 @@ Full details: `.planning/milestones/v1.2-ROADMAP.md`
 
 </details>
 
+### 🚧 v1.3 Productionize Friend Tier (In Progress)
+
+**Milestone Goal:** Deploy the relay to Google Cloud Run and harden it for real-world use — Dockerized, secured, with persistent state, a default public drop box, and auto-expiring file uploads.
+
+- [ ] **Phase 12: Cloud Run Foundation** - Dockerize the relay, add health check and structured logging, fix HTTPS cookie/CORS/proxy-header security bugs
+- [ ] **Phase 13: Abuse Prevention** - Rate-limit mount registration and proxy requests, enforce max TTL and per-IP mount cap
+- [ ] **Phase 14: Persistent Mount Registry** - SQLite mount metadata store survives relay restarts; agents reclaim codes on reconnect
+- [ ] **Phase 15: UX Polish and Drop Box** - Landing page with OG tags, connection status overlays, always-on drop box, per-file upload TTL
+
+Full details: `.planning/milestones/v1.3-ROADMAP.md`
+
 ## Progress
 
 | Phase | Milestone | Plans Complete | Status | Completed |
@@ -58,3 +70,7 @@ Full details: `.planning/milestones/v1.2-ROADMAP.md`
 | 9. Relay Server | v1.2 | 2/2 | Complete | 2026-03-11 |
 | 10. Agent CLI | v1.2 | 2/2 | Complete | 2026-03-11 |
 | 11. Remote Access and Hardening | v1.2 | 5/5 | Complete | 2026-03-16 |
+| 12. Cloud Run Foundation | v1.3 | 0/2 | Not started | - |
+| 13. Abuse Prevention | v1.3 | 0/1 | Not started | - |
+| 14. Persistent Mount Registry | v1.3 | 0/1 | Not started | - |
+| 15. UX Polish and Drop Box | v1.3 | 0/4 | Not started | - |
