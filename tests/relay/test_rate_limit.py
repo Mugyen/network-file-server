@@ -1,5 +1,6 @@
-"""Tests for SlowAPI rate limiting on proxy requests and 429 error handling."""
+"""Tests for SlowAPI rate limiting on proxy requests, mount registration rate limiting, and 429 error handling."""
 
+import json
 import os
 import time
 from unittest.mock import patch
@@ -7,6 +8,8 @@ from unittest.mock import patch
 import httpx
 import pytest
 from httpx import AsyncClient
+from httpx_ws import aconnect_ws
+from httpx_ws.transport import ASGIWebSocketTransport
 from starlette.testclient import TestClient
 
 from relay.app.config import set_config
@@ -173,3 +176,60 @@ async def test_429_api_gets_json() -> None:
     assert body["error"] == "Rate limit exceeded"
     assert "retry_after" in body
     assert "retry-after" in resp.headers
+
+
+# ---------------------------------------------------------------------------
+# Mount registration rate limit tests (uses limits library directly)
+# ---------------------------------------------------------------------------
+
+
+def _make_mount_reg_rate_app(mount_reg_rate: str):
+    """Create a relay app with a specific mount registration rate limit.
+
+    Also resets the module-level rate limiter to avoid cross-test pollution.
+    """
+    with patch.dict(os.environ, {"RELAY_MOUNT_REG_RATE": mount_reg_rate}):
+        app = create_relay_app()
+    set_registry(MountRegistry())
+    # Reset the module-level mount reg limiter storage
+    from relay.app.routers.agent_ws import reset_mount_reg_limiter
+    reset_mount_reg_limiter()
+    return app
+
+
+async def _ws_recv_first_message(app, path: str) -> dict:
+    """Connect to agent WS, receive first message, return parsed JSON."""
+    transport = ASGIWebSocketTransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        async with aconnect_ws(
+            f"http://testserver{path}",
+            client,
+            keepalive_ping_interval_seconds=None,
+            keepalive_ping_timeout_seconds=None,
+        ) as ws:
+            raw = await ws.receive_text()
+            return json.loads(raw)
+
+
+async def test_mount_reg_under_rate_limit_succeeds() -> None:
+    """Mount registrations under the rate limit all succeed."""
+    app = _make_mount_reg_rate_app("2/minute")
+    msg1 = await _ws_recv_first_message(app, "/agent/ws")
+    assert msg1["type"] == "mount_registered"
+    msg2 = await _ws_recv_first_message(app, "/agent/ws")
+    assert msg2["type"] == "mount_registered"
+
+
+async def test_mount_reg_over_rate_limit_rejected() -> None:
+    """Mount registration exceeding the rate limit returns error with retry_after."""
+    app = _make_mount_reg_rate_app("2/minute")
+    # Two successful
+    await _ws_recv_first_message(app, "/agent/ws")
+    await _ws_recv_first_message(app, "/agent/ws")
+    # Third should be rate limited
+    msg = await _ws_recv_first_message(app, "/agent/ws")
+    assert msg["type"] == "error"
+    assert "Rate limit exceeded" in msg["error"]
+    assert "retry_after" in msg

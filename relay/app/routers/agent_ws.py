@@ -1,9 +1,17 @@
-"""Agent WebSocket endpoint — accepts tunnel connections and registers mounts."""
+"""Agent WebSocket endpoint — accepts tunnel connections and registers mounts.
+
+Includes mount registration rate limiting via the `limits` library directly
+(SlowAPI decorators do not work on WebSocket endpoints), and per-IP mount
+cap enforcement.
+"""
 
 import logging
 import time
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
+from limits import parse as parse_limit
+from limits.storage import MemoryStorage
+from limits.strategies import MovingWindowRateLimiter
 
 from relay.app.config import get_config
 from relay.app.exceptions import MountNotFoundError
@@ -15,6 +23,22 @@ logger = logging.getLogger("relay.agent")
 
 router = APIRouter()
 
+# Module-level rate limiter for mount registration.
+# Uses the `limits` library directly because SlowAPI decorators
+# do not work on WebSocket endpoints.
+_mount_reg_storage = MemoryStorage()
+_mount_reg_limiter = MovingWindowRateLimiter(_mount_reg_storage)
+
+
+def reset_mount_reg_limiter() -> None:
+    """Reinitialize the mount registration rate limiter storage.
+
+    Called by tests to avoid cross-test state pollution.
+    """
+    global _mount_reg_storage, _mount_reg_limiter
+    _mount_reg_storage = MemoryStorage()
+    _mount_reg_limiter = MovingWindowRateLimiter(_mount_reg_storage)
+
 
 @router.websocket("/agent/ws")
 async def agent_websocket(
@@ -24,15 +48,16 @@ async def agent_websocket(
 ) -> None:
     """Accept an agent WebSocket connection and manage its tunnel lifecycle.
 
-    - Extracts agent IP from headers.
-    - Accepts the WebSocket upgrade.
-    - Determines the mount code: uses the preferred code if provided and not
-      already occupied, otherwise generates a new one.
-    - Computes effective TTL (capped to config maximum).
-    - Wraps the socket in a TunnelConnection and registers it in the registry.
-    - Sends a 'mount_registered' control message with the assigned code and TTL.
-    - Starts the heartbeat and runs the receive loop until disconnect.
-    - On any disconnect, deregisters the mount and closes the connection.
+    Order of checks (all before the main accept/register flow):
+    1. Extract agent IP from headers (available before accept).
+    2. Get config.
+    3. Check mount registration rate limit (limits library).
+    4. If rate limited: accept, send error, close, return.
+    5. Hit rate limit counter (consume token).
+    6. Check per-IP mount cap (registry query).
+    7. If at cap: accept, send error, close, return.
+    8. Accept WebSocket.
+    9. Determine code, compute TTL, register, send mount_registered, run loop.
 
     Args:
         websocket: The FastAPI WebSocket connection from the agent.
@@ -49,10 +74,45 @@ async def agent_websocket(
         client_ip = websocket.client.host if websocket.client else "unknown"
 
     config = get_config()
+    registry = get_registry()
 
+    # --- Rate limit check (before accepting WebSocket) ---
+    mount_limit = parse_limit(config.mount_reg_rate)
+    if not _mount_reg_limiter.test(mount_limit, "mount_reg", client_ip):
+        logger.warning(
+            "Mount registration rate limited: client=%s", client_ip
+        )
+        await websocket.accept()
+        await websocket.send_json({
+            "type": "error",
+            "error": "Rate limit exceeded",
+            "retry_after": 3600,
+        })
+        await websocket.close(code=1008)
+        return
+
+    # Consume a rate limit token
+    _mount_reg_limiter.hit(mount_limit, "mount_reg", client_ip)
+
+    # --- Per-IP mount cap check ---
+    if registry.count_mounts_by_ip(client_ip) >= config.max_mounts_per_ip:
+        logger.warning(
+            "Mount cap exceeded: client=%s count=%d",
+            client_ip,
+            registry.count_mounts_by_ip(client_ip),
+        )
+        await websocket.accept()
+        await websocket.send_json({
+            "type": "error",
+            "error": "Too many active mounts",
+            "max": config.max_mounts_per_ip,
+        })
+        await websocket.close(code=1008)
+        return
+
+    # --- Normal mount registration flow ---
     await websocket.accept()
 
-    registry = get_registry()
     if code is not None and not registry.has_mount(code):
         assigned_code = code
     else:

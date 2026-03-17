@@ -1,5 +1,9 @@
 # Project Log
 
+## 2026-03-18: TTL enforcement, mount cap, and mount reg rate limiting (13-02)
+
+Added mount TTL enforcement with background sweep (ttl_sweep.py), per-IP mount cap (default 5), and mount registration rate limiting via `limits` library directly on WebSocket endpoint. TTL query param on /agent/ws capped to config max (24h). Sweep sends ttl_warning before expiry and marks mounts EXPIRED.
+
 ## 2026-03-18: Config module, MountRecord extensions, and proxy rate limiting (13-01)
 
 Centralized relay config into YAML+env-var config module (relay/config.yaml, relay/app/config.py). Extended MountRecord with agent_ip, created_at, expires_at fields for abuse tracking. Added SlowAPI rate limiting on proxy requests with configurable rate, styled HTML 429 page for browsers, and JSON 429 for API clients.
