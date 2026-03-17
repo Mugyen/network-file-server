@@ -1,5 +1,9 @@
 # Project Log
 
+## 2026-03-18: Config module, MountRecord extensions, and proxy rate limiting (13-01)
+
+Centralized relay config into YAML+env-var config module (relay/config.yaml, relay/app/config.py). Extended MountRecord with agent_ip, created_at, expires_at fields for abuse tracking. Added SlowAPI rate limiting on proxy requests with configurable rate, styled HTML 429 page for browsers, and JSON 429 for API clients.
+
 ## 2026-03-16: SecureCookieMiddleware and conditional CORS lockdown (12-02)
 
 SecureCookieMiddleware stamps Secure flag on Set-Cookie behind HTTPS (X-Forwarded-Proto). CORS locked down in production (explicit origins with credentials) while dev retains wildcard. Missing RELAY_ALLOWED_ORIGINS in production raises ValueError.
