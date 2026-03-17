@@ -30,6 +30,7 @@ class MountRecord:
     agent_ip: str
     created_at: float
     expires_at: float | None
+    ttl_warned: bool
 
 
 class MountRegistry:
@@ -71,6 +72,7 @@ class MountRegistry:
             agent_ip=agent_ip,
             created_at=created_at,
             expires_at=expires_at,
+            ttl_warned=False,
         )
 
     def deregister(self, code: str) -> None:

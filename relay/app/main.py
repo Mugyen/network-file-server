@@ -5,18 +5,36 @@ router mounting. CORS is locked down in production (explicit origins with
 credentials) and permissive in development (wildcard, no credentials).
 """
 
+import asyncio
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import AsyncIterator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from slowapi.errors import RateLimitExceeded
 
-from relay.app.config import load_config, set_config
+from relay.app.config import get_config, load_config, set_config
 from relay.app.logging import RelayEnv
 from relay.app.middleware.secure_cookies import SecureCookieMiddleware
 from relay.app.rate_limit import limiter, rate_limit_exceeded_handler
-from relay.app.services.mount_registry import MountRegistry, set_registry
+from relay.app.services.mount_registry import MountRegistry, get_registry, set_registry
+from relay.app.services.ttl_sweep import run_ttl_sweep
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Manage application lifecycle — starts TTL sweep on startup, cancels on shutdown."""
+    sweep_task = asyncio.create_task(
+        run_ttl_sweep(get_registry(), get_config())
+    )
+    yield
+    sweep_task.cancel()
+    try:
+        await sweep_task
+    except asyncio.CancelledError:
+        pass
 
 
 def create_relay_app(config_path: Path | None = None) -> FastAPI:
@@ -24,7 +42,7 @@ def create_relay_app(config_path: Path | None = None) -> FastAPI:
 
     Loads config from YAML + env vars, sets up CORS based on environment,
     adds SecureCookieMiddleware, includes all routers, and initializes
-    the mount registry.
+    the mount registry. Starts a background TTL sweep task via lifespan.
 
     Args:
         config_path: Path to config.yaml. If None, uses the default
@@ -39,7 +57,7 @@ def create_relay_app(config_path: Path | None = None) -> FastAPI:
     config = load_config(config_path)
     set_config(config)
 
-    application = FastAPI(title="Network File Server Relay")
+    application = FastAPI(title="Network File Server Relay", lifespan=lifespan)
 
     # SecureCookieMiddleware added first -- becomes inner middleware.
     # It stamps Secure on Set-Cookie headers when behind HTTPS proxy.
