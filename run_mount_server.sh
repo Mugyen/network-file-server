@@ -12,7 +12,7 @@ fi
 # Rebuild client if dist is stale or missing
 if [ ! -d client/dist ] || [ "$(find client/src -newer client/dist -print -quit 2>/dev/null)" ]; then
   echo "Building client..."
-  (cd client && npm install --silent && npm run build)
+  (cd client && npm install --legacy-peer-deps --silent && npm run build)
 fi
 
 FOLDER="$1"
@@ -32,8 +32,8 @@ done
 
 if [ "$HAS_SERVER" = true ]; then
   echo "Mounting $FOLDER through relay..."
-  exec uv run wifi-file-server mount "$FOLDER" "${ARGS[@]}"
+  exec uv run network-file-server mount "$FOLDER" "${ARGS[@]}"
 else
   echo "Serving $FOLDER on LAN..."
-  exec uv run wifi-file-server "$FOLDER" "${ARGS[@]}"
+  exec uv run network-file-server "$FOLDER" "${ARGS[@]}"
 fi
