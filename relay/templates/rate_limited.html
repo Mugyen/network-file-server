@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+
+{% block title %}Rate Limited{% endblock %}
+
+{% block content %}
+  <h1>Too Many Requests</h1>
+  <p>You've made too many requests. Please try again in {{ retry_after }} seconds.</p>
+  <p><a href="javascript:history.back()">Go Back</a></p>
+{% endblock %}

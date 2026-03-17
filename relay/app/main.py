@@ -10,9 +10,12 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from slowapi.errors import RateLimitExceeded
+
 from relay.app.config import load_config, set_config
 from relay.app.logging import RelayEnv
 from relay.app.middleware.secure_cookies import SecureCookieMiddleware
+from relay.app.rate_limit import limiter, rate_limit_exceeded_handler
 from relay.app.services.mount_registry import MountRegistry, set_registry
 
 
@@ -59,6 +62,11 @@ def create_relay_app(config_path: Path | None = None) -> FastAPI:
             allow_methods=["*"],
             allow_headers=["*"],
         )
+
+    # SlowAPI rate limiter — attach to app state and register 429 handler.
+    # Placed after middleware setup but before router inclusion.
+    application.state.limiter = limiter
+    application.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 
     from relay.app.routers.agent_ws import router as agent_ws_router
     from relay.app.routers.health import router as health_router

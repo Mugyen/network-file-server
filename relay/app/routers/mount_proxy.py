@@ -11,7 +11,9 @@ from typing import AsyncGenerator
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response, StreamingResponse
 
+from relay.app.config import get_config
 from relay.app.exceptions import MountExpiredError, MountNotFoundError, MountOfflineError
+from relay.app.rate_limit import get_client_ip, limiter
 from relay.app.routers.landing import templates
 from relay.app.services.mount_registry import get_registry
 from tunnel.constants import FIRST_BYTE_TIMEOUT_S, MAX_PAYLOAD_BYTES
@@ -62,6 +64,7 @@ def rewrite_html_asset_paths(html: str, mount_prefix: str) -> str:
     "/m/{code}/{path:path}",
     methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
 )
+@limiter.limit(lambda: get_config().proxy_request_rate)
 async def proxy_request(request: Request, code: str, path: str) -> Response:
     """Proxy a browser HTTP request through the tunnel to the registered agent.
 
@@ -81,11 +84,11 @@ async def proxy_request(request: Request, code: str, path: str) -> Response:
     """
     start: float = time.monotonic()
 
-    # Extract client IP from X-Forwarded-For (Cloud Run) or direct connection
-    client_ip: str = request.headers.get(
-        "x-forwarded-for",
-        request.client.host if request.client else "unknown",
-    )
+    # Extract client IP — reuses shared get_client_ip for consistency with rate limiter
+    try:
+        client_ip: str = get_client_ip(request)
+    except ValueError:
+        client_ip = "unknown"
 
     try:
         conn = get_registry().get_connection(code)
