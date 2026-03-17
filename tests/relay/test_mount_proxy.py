@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 import uuid
 
 import httpx
@@ -123,7 +124,7 @@ async def test_proxy_large_upload_streams_body(relay_app):
 
     conn = MockTunnelConnection()
     registry = get_registry()
-    registry.register("largecode", conn)
+    registry.register("largecode", conn, agent_ip="127.0.0.1", created_at=time.monotonic(), expires_at=None)
 
     # Build a body larger than one frame (65536 bytes)
     large_body = b"X" * (MAX_PAYLOAD_BYTES + 1024)
@@ -202,7 +203,7 @@ async def test_proxy_expired_page(relay_app):
 
     conn = MockTunnelConnection()
     registry = get_registry()
-    registry.register("expiredcode", conn)
+    registry.register("expiredcode", conn, agent_ip="127.0.0.1", created_at=time.monotonic(), expires_at=None)
     # Force EXPIRED status directly on the record
     registry._mounts["expiredcode"].status = MountStatus.EXPIRED
 
@@ -234,7 +235,7 @@ async def test_proxy_rewrites_html_asset_paths(relay_app):
     conn.body_chunks = [html_body.encode("utf-8")]
 
     registry = get_registry()
-    registry.register("htmlcode", conn)
+    registry.register("htmlcode", conn, agent_ip="127.0.0.1", created_at=time.monotonic(), expires_at=None)
 
     transport = httpx.ASGITransport(app=relay_app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -295,7 +296,7 @@ async def test_proxy_first_byte_timeout(relay_app):
 
     conn = TimeoutMockConnection()
     registry = get_registry()
-    registry.register("timeoutcode", conn)
+    registry.register("timeoutcode", conn, agent_ip="127.0.0.1", created_at=time.monotonic(), expires_at=None)
 
     import httpx
     transport = httpx.ASGITransport(app=relay_app)
@@ -358,7 +359,7 @@ async def test_proxy_websocket_accepts_upgrade(relay_app):
 
     conn = MockWSConnection()
     registry = get_registry()
-    registry.register("wscode", conn)
+    registry.register("wscode", conn, agent_ip="127.0.0.1", created_at=time.monotonic(), expires_at=None)
 
     async with ASGIWebSocketTransport(app=relay_app) as transport:
         async with aconnect_ws("ws://test/m/wscode/ws", httpx.AsyncClient(transport=transport)) as ws:
@@ -373,7 +374,7 @@ async def test_proxy_websocket_sends_ws_open_frame(relay_app):
 
     conn = MockWSConnection()
     registry = get_registry()
-    registry.register("wscode2", conn)
+    registry.register("wscode2", conn, agent_ip="127.0.0.1", created_at=time.monotonic(), expires_at=None)
 
     async with ASGIWebSocketTransport(app=relay_app) as transport:
         async with aconnect_ws("ws://test/m/wscode2/ws?foo=bar", httpx.AsyncClient(transport=transport)) as ws:
@@ -392,7 +393,7 @@ async def test_proxy_websocket_sends_ws_close_on_disconnect(relay_app):
 
     conn = MockWSConnection()
     registry = get_registry()
-    registry.register("wscode3", conn)
+    registry.register("wscode3", conn, agent_ip="127.0.0.1", created_at=time.monotonic(), expires_at=None)
 
     async with ASGIWebSocketTransport(app=relay_app) as transport:
         async with aconnect_ws("ws://test/m/wscode3/ws", httpx.AsyncClient(transport=transport)) as ws:
@@ -408,7 +409,7 @@ async def test_proxy_websocket_forwards_browser_text_to_agent(relay_app):
 
     conn = MockWSConnection()
     registry = get_registry()
-    registry.register("wscode4", conn)
+    registry.register("wscode4", conn, agent_ip="127.0.0.1", created_at=time.monotonic(), expires_at=None)
 
     async with ASGIWebSocketTransport(app=relay_app) as transport:
         async with aconnect_ws("ws://test/m/wscode4/ws", httpx.AsyncClient(transport=transport)) as ws:

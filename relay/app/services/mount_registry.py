@@ -27,6 +27,9 @@ class MountRecord:
     code: str
     connection: "TunnelConnection"
     status: MountStatus
+    agent_ip: str
+    created_at: float
+    expires_at: float | None
 
 
 class MountRegistry:
@@ -39,11 +42,25 @@ class MountRegistry:
     def __init__(self) -> None:
         self._mounts: dict[str, MountRecord] = {}
 
-    def register(self, code: str, connection: "TunnelConnection") -> None:
+    def register(
+        self,
+        code: str,
+        connection: "TunnelConnection",
+        agent_ip: str,
+        created_at: float,
+        expires_at: float | None,
+    ) -> None:
         """Register a tunnel connection under the given mount code.
 
-        Raises ValueError if code is empty. Overwrites any existing record
-        for the same code.
+        Args:
+            code: URL-safe mount code.
+            connection: Live tunnel connection to the agent.
+            agent_ip: IP address of the agent that created this mount.
+            created_at: Monotonic timestamp of mount creation.
+            expires_at: Monotonic timestamp when the mount expires, or None for no TTL.
+
+        Raises:
+            ValueError: If code is empty.
         """
         if not code:
             raise ValueError("Mount code must not be empty")
@@ -51,6 +68,9 @@ class MountRegistry:
             code=code,
             connection=connection,
             status=MountStatus.ONLINE,
+            agent_ip=agent_ip,
+            created_at=created_at,
+            expires_at=expires_at,
         )
 
     def deregister(self, code: str) -> None:
@@ -91,6 +111,29 @@ class MountRegistry:
     def has_mount(self, code: str) -> bool:
         """Return True if a record exists for the given code, regardless of status."""
         return code in self._mounts
+
+    def count_mounts_by_ip(self, agent_ip: str) -> int:
+        """Count active (non-expired) mounts registered by this IP.
+
+        Args:
+            agent_ip: The IP address to count mounts for.
+
+        Returns:
+            Number of non-EXPIRED mounts held by the given IP.
+        """
+        return sum(
+            1
+            for m in self._mounts.values()
+            if m.agent_ip == agent_ip and m.status != MountStatus.EXPIRED
+        )
+
+    def active_mounts(self) -> list[MountRecord]:
+        """Return a snapshot of all non-EXPIRED mount records.
+
+        Returns a list copy, not a view into the internal dict, so callers
+        can iterate safely while the registry is mutated.
+        """
+        return [m for m in self._mounts.values() if m.status != MountStatus.EXPIRED]
 
 
 _registry: MountRegistry | None = None

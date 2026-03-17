@@ -1,0 +1,16 @@
+# Relay server configuration — development defaults.
+# Env vars override each field (12-factor app style for Cloud Run).
+# See relay/app/config.py for the env var names.
+
+env: development
+allowed_origins: []  # Empty means wildcard in dev; must be set in production
+
+rate_limits:
+  mount_registration: "5/hour"
+  proxy_requests: "300/minute"
+  max_mounts_per_ip: 5
+
+ttl:
+  max_seconds: 86400           # 24 hours
+  sweep_interval_seconds: 45
+  warning_before_seconds: 300  # 5 minutes before expiry

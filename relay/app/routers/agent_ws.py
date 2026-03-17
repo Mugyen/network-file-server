@@ -1,6 +1,7 @@
 """Agent WebSocket endpoint — accepts tunnel connections and registers mounts."""
 
 import logging
+import time
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
@@ -42,13 +43,27 @@ async def agent_websocket(
     else:
         assigned_code = generate_mount_code()
 
+    # Extract agent IP from X-Forwarded-For (Cloud Run) or direct connection
+    client_ip: str = websocket.headers.get(
+        "x-forwarded-for",
+        websocket.client.host if websocket.client else "unknown",
+    )
+
     conn = TunnelConnection(websocket)
-    registry.register(assigned_code, conn)
+    now: float = time.monotonic()
+    registry.register(
+        assigned_code,
+        conn,
+        agent_ip=client_ip,
+        created_at=now,
+        expires_at=None,
+    )
     reused_code: bool = code is not None and assigned_code == code
     logger.info(
-        "Agent connected: code=%s preferred_reuse=%s",
+        "Agent connected: code=%s preferred_reuse=%s client=%s",
         assigned_code,
         reused_code,
+        client_ip,
     )
     await conn.send_control({"type": "mount_registered", "code": assigned_code})
     conn.start_heartbeat(HEARTBEAT_INTERVAL_S, HEARTBEAT_MISSED_LIMIT)

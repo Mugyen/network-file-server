@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 
 import httpx
 import pytest
@@ -78,7 +79,13 @@ async def test_agent_connects_with_occupied_code_generates_new_code(agent_ws_app
     """Agent connects with ?code=occupied (already taken) — relay generates a different code."""
     from tests.relay.conftest import MockTunnelConnection
     occupied_conn = MockTunnelConnection()
-    get_registry().register("occupied", occupied_conn)
+    get_registry().register(
+        "occupied",
+        occupied_conn,
+        agent_ip="127.0.0.1",
+        created_at=time.monotonic(),
+        expires_at=None,
+    )
 
     msg = await _recv_mount_registered(agent_ws_app, "/agent/ws?code=occupied")
     assert msg["type"] == "mount_registered"

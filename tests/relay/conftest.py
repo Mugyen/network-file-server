@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 
 import httpx
 import pytest
@@ -101,6 +102,12 @@ def registered_relay_client(relay_app, mock_connection):
     """
     from relay.app.services.mount_registry import get_registry
     registry = get_registry()
-    registry.register("testcode", mock_connection)
+    registry.register(
+        "testcode",
+        mock_connection,
+        agent_ip="127.0.0.1",
+        created_at=time.monotonic(),
+        expires_at=None,
+    )
     transport = httpx.ASGITransport(app=relay_app)
     return AsyncClient(transport=transport, base_url="http://test"), registry
