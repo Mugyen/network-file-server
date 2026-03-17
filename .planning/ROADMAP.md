@@ -49,7 +49,7 @@ Full details: `.planning/milestones/v1.2-ROADMAP.md`
 **Milestone Goal:** Deploy the relay to Google Cloud Run and harden it for real-world use — Dockerized, secured, with persistent state, a default public drop box, and auto-expiring file uploads.
 
 - [x] **Phase 12: Cloud Run Foundation** - Dockerize the relay, add health check and structured logging, fix HTTPS cookie/CORS/proxy-header security bugs (completed 2026-03-16)
-- [ ] **Phase 13: Abuse Prevention** - Rate-limit mount registration and proxy requests, enforce max TTL and per-IP mount cap
+- [x] **Phase 13: Abuse Prevention** - Rate-limit mount registration and proxy requests, enforce max TTL and per-IP mount cap (completed 2026-03-17)
 - [ ] **Phase 14: Persistent Mount Registry** - SQLite mount metadata store survives relay restarts; agents reclaim codes on reconnect
 - [ ] **Phase 15: UX Polish and Drop Box** - Landing page with OG tags, connection status overlays, always-on drop box, per-file upload TTL
 
@@ -71,6 +71,6 @@ Full details: `.planning/milestones/v1.3-ROADMAP.md`
 | 10. Agent CLI | v1.2 | 2/2 | Complete | 2026-03-11 |
 | 11. Remote Access and Hardening | v1.2 | 5/5 | Complete | 2026-03-16 |
 | 12. Cloud Run Foundation | 2/2 | Complete    | 2026-03-16 | - |
-| 13. Abuse Prevention | v1.3 | 0/1 | Not started | - |
+| 13. Abuse Prevention | 2/2 | Complete    | 2026-03-17 | - |
 | 14. Persistent Mount Registry | v1.3 | 0/1 | Not started | - |
 | 15. UX Polish and Drop Box | v1.3 | 0/4 | Not started | - |
