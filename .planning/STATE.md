@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.3
 milestone_name: Productionize Friend Tier
 status: executing
-last_updated: "2026-03-18T18:38:04Z"
-last_activity: 2026-03-18 — Completed 13-01 (config module, MountRecord extensions, proxy rate limiting)
+last_updated: "2026-03-18T18:49:48Z"
+last_activity: 2026-03-18 — Completed 13-02 (TTL enforcement, mount cap, mount reg rate limiting)
 progress:
   total_phases: 4
   completed_phases: 3
   total_plans: 9
-  completed_plans: 3
-  percent: 33
+  completed_plans: 4
+  percent: 44
 ---
 
 # Project State
@@ -20,30 +20,30 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-16)
 
 **Core value:** Any device can instantly share files with zero setup — scan QR, drop files, done. Works on LAN or over the internet.
-**Current focus:** v1.3 Productionize Friend Tier — executing Phase 13
+**Current focus:** v1.3 Productionize Friend Tier — ready for Phase 14
 
 ## Current Position
 
-Phase: 13 of 15 (Abuse Prevention)
-Plan: 2 of 2
-Status: Executing
-Last activity: 2026-03-18 — Completed 13-01 (config module, MountRecord extensions, proxy rate limiting)
+Phase: 14 of 15 (Persistent Mount Registry)
+Plan: 1 of 1
+Status: Ready
+Last activity: 2026-03-18 — Completed 13-02 (TTL enforcement, mount cap, mount reg rate limiting)
 
-Progress: [███░░░░░░░] 33%
+Progress: [████░░░░░░] 44%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 3 (this milestone)
+- Total plans completed: 4 (this milestone)
 - Average duration: 7min
-- Total execution time: 20min
+- Total execution time: 27min
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 12 | 2 | 12min | 6min |
-| 13 | 1 | 8min | 8min |
+| 13 | 2 | 15min | 7min |
 
 ## Milestones Shipped
 
@@ -71,6 +71,9 @@ Key decisions for v1.3:
 - [13-01] Config module: YAML defaults + env var overrides via load_config(); reuses RelayEnv from logging module
 - [13-01] SlowAPI moving-window strategy with in-memory storage; rate limit decorator uses lambda for dynamic config
 - [13-01] 429 handler content-negotiates: HTML for browsers, JSON for API clients
+- [13-02] WebSocket rate limiting uses limits library directly (SlowAPI decorators don't work on WebSocket endpoints)
+- [13-02] TTL sweep split into sweep_once() + run_ttl_sweep() for testability; wired via FastAPI lifespan
+- [13-02] Rate limit and cap checks before WebSocket accept; errors sent after accept (protocol requirement)
 
 ### Pending Todos
 
