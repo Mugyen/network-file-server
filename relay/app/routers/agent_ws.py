@@ -95,11 +95,12 @@ async def agent_websocket(
     _mount_reg_limiter.hit(mount_limit, "mount_reg", client_ip)
 
     # --- Per-IP mount cap check ---
-    if registry.count_mounts_by_ip(client_ip) >= config.max_mounts_per_ip:
+    current_count: int = await registry.count_mounts_by_ip(client_ip)
+    if current_count >= config.max_mounts_per_ip:
         logger.warning(
             "Mount cap exceeded: client=%s count=%d",
             client_ip,
-            registry.count_mounts_by_ip(client_ip),
+            current_count,
         )
         await websocket.accept()
         await websocket.send_json({
@@ -113,29 +114,48 @@ async def agent_websocket(
     # --- Normal mount registration flow ---
     await websocket.accept()
 
-    if code is not None and not registry.has_mount(code):
-        assigned_code = code
+    # Determine assigned code with reclaim-aware logic
+    reclaimed: bool = False
+    remaining_ttl: int | None = None
+    conn = TunnelConnection(websocket)
+
+    if code is not None:
+        reclaim_result = await registry.try_reclaim(code, conn, client_ip)
+        if reclaim_result is not None:
+            assigned_code = code
+            reclaimed = True
+            remaining_ttl = reclaim_result.remaining_ttl
+        elif not await registry.has_mount(code):
+            assigned_code = code
+        else:
+            assigned_code = generate_mount_code()
     else:
         assigned_code = generate_mount_code()
 
-    # Compute effective TTL -- cap to config maximum
-    effective_ttl: int = min(ttl, config.max_ttl_seconds) if ttl is not None else config.max_ttl_seconds
-    now: float = time.monotonic()
-    expires_at: float = now + effective_ttl
+    # For non-reclaimed mounts: compute TTL and register
+    if not reclaimed:
+        effective_ttl: int = min(ttl, config.max_ttl_seconds) if ttl is not None else config.max_ttl_seconds
+        now: float = time.time()
+        expires_at: float = now + effective_ttl
 
-    conn = TunnelConnection(websocket)
-    registry.register(
-        assigned_code,
-        conn,
-        agent_ip=client_ip,
-        created_at=now,
-        expires_at=expires_at,
-    )
+        await registry.register(
+            assigned_code,
+            conn,
+            agent_ip=client_ip,
+            created_at=now,
+            expires_at=expires_at,
+        )
+        expires_in: int = effective_ttl
+    else:
+        effective_ttl = remaining_ttl if remaining_ttl is not None else 0
+        expires_in = effective_ttl
+
     reused_code: bool = code is not None and assigned_code == code
     logger.info(
-        "Agent connected: code=%s preferred_reuse=%s client=%s ttl=%d",
+        "Agent connected: code=%s preferred_reuse=%s reclaimed=%s client=%s ttl=%d",
         assigned_code,
         reused_code,
+        reclaimed,
         client_ip,
         effective_ttl,
     )
@@ -143,7 +163,9 @@ async def agent_websocket(
         "type": "mount_registered",
         "code": assigned_code,
         "ttl": effective_ttl,
-        "expires_in": effective_ttl,
+        "expires_in": expires_in,
+        "reclaimed": reclaimed,
+        "remaining_ttl": remaining_ttl,
     })
     conn.start_heartbeat(HEARTBEAT_INTERVAL_S, HEARTBEAT_MISSED_LIMIT)
     try:
@@ -154,6 +176,6 @@ async def agent_websocket(
         logger.info("Agent disconnected: code=%s", assigned_code)
         await conn.close()
         try:
-            registry.deregister(assigned_code)
+            await registry.mark_offline(assigned_code)
         except MountNotFoundError:
             pass

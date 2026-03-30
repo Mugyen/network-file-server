@@ -12,7 +12,8 @@ async def health() -> dict[str, object]:
     """Return relay health status with active mount count.
 
     Returns:
-        A dict with 'status' ('ok') and 'mounts' (active mount count).
+        A dict with 'status' ('ok') and 'mounts' (total mount count).
     """
     registry = get_registry()
-    return {"status": "ok", "mounts": len(registry._mounts)}
+    count: int = await registry.mount_count()
+    return {"status": "ok", "mounts": count}

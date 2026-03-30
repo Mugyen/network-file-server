@@ -19,15 +19,20 @@ from relay.app.config import get_config, load_config, set_config
 from relay.app.logging import RelayEnv
 from relay.app.middleware.secure_cookies import SecureCookieMiddleware
 from relay.app.rate_limit import limiter, rate_limit_exceeded_handler
-from relay.app.services.mount_registry import MountRegistry, get_registry, set_registry
+from relay.app.services.mount_registry import get_registry, set_registry
+from relay.app.services.sqlite_registry import SqliteMountRegistry
 from relay.app.services.ttl_sweep import run_ttl_sweep
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Manage application lifecycle — starts TTL sweep on startup, cancels on shutdown."""
+    """Manage application lifecycle — creates SqliteMountRegistry, starts TTL sweep, cleans up on shutdown."""
+    config = get_config()
+    registry = await SqliteMountRegistry.create(config.db_path)
+    set_registry(registry)
+
     sweep_task = asyncio.create_task(
-        run_ttl_sweep(get_registry(), get_config())
+        run_ttl_sweep(registry, config)
     )
     yield
     sweep_task.cancel()
@@ -35,6 +40,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await sweep_task
     except asyncio.CancelledError:
         pass
+    await registry.close()
 
 
 def create_relay_app(config_path: Path | None = None) -> FastAPI:
@@ -95,8 +101,6 @@ def create_relay_app(config_path: Path | None = None) -> FastAPI:
     application.include_router(landing_router)
     application.include_router(agent_ws_router)
     application.include_router(mount_proxy_router)
-
-    set_registry(MountRegistry())
 
     return application
 

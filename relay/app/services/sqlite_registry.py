@@ -227,6 +227,12 @@ class SqliteMountRegistry:
             row = await cursor.fetchone()
         return row[0]
 
+    async def mount_count(self) -> int:
+        """Return the total number of mount records in the database, regardless of status."""
+        async with self._db.execute("SELECT COUNT(*) FROM mounts") as cursor:
+            row = await cursor.fetchone()
+        return row[0]
+
     async def active_mounts(self) -> list[MountRecord]:
         """Return a snapshot of all non-EXPIRED mount records.
 
