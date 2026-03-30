@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.3
 milestone_name: Productionize Friend Tier
-status: Ready
-last_updated: "2026-03-17T18:56:22.927Z"
-last_activity: 2026-03-18 — Completed 13-02 (TTL enforcement, mount cap, mount reg rate limiting)
+status: In Progress
+last_updated: "2026-03-30T12:07:48Z"
+last_activity: 2026-03-30 — Completed 14-01 (SqliteMountRegistry with async API and aiosqlite)
 progress:
-  total_phases: 3
+  total_phases: 4
   completed_phases: 3
-  total_plans: 7
-  completed_plans: 7
-  percent: 44
+  total_plans: 8
+  completed_plans: 8
+  percent: 50
 ---
 
 # Project State
@@ -20,23 +20,23 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-16)
 
 **Core value:** Any device can instantly share files with zero setup — scan QR, drop files, done. Works on LAN or over the internet.
-**Current focus:** v1.3 Productionize Friend Tier — ready for Phase 14
+**Current focus:** v1.3 Productionize Friend Tier — Phase 14 in progress
 
 ## Current Position
 
 Phase: 14 of 15 (Persistent Mount Registry)
-Plan: 1 of 1
-Status: Ready
-Last activity: 2026-03-18 — Completed 13-02 (TTL enforcement, mount cap, mount reg rate limiting)
+Plan: 2 of 2
+Status: In Progress
+Last activity: 2026-03-30 — Completed 14-01 (SqliteMountRegistry with async API and aiosqlite)
 
-Progress: [████░░░░░░] 44%
+Progress: [█████░░░░░] 50%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 4 (this milestone)
-- Average duration: 7min
-- Total execution time: 27min
+- Total plans completed: 5 (this milestone)
+- Average duration: 6min
+- Total execution time: 32min
 
 **By Phase:**
 
@@ -44,6 +44,7 @@ Progress: [████░░░░░░] 44%
 |-------|-------|-------|----------|
 | 12 | 2 | 12min | 6min |
 | 13 | 2 | 15min | 7min |
+| 14 | 1 | 5min | 5min |
 
 ## Milestones Shipped
 
@@ -74,6 +75,10 @@ Key decisions for v1.3:
 - [13-02] WebSocket rate limiting uses limits library directly (SlowAPI decorators don't work on WebSocket endpoints)
 - [13-02] TTL sweep split into sweep_once() + run_ttl_sweep() for testability; wired via FastAPI lifespan
 - [13-02] Rate limit and cap checks before WebSocket accept; errors sent after accept (protocol requirement)
+- [14-01] Single aiosqlite connection (no pool) — sufficient for single-instance relay at 300 req/min
+- [14-01] mark_offline() is a no-op for non-ONLINE mounts — race guard prevents late disconnect from undoing reclaim
+- [14-01] expire() retains SQLite record for 6h retention window; deregister() deletes immediately
+- [14-01] TYPE_CHECKING guard on circular import between mount_registry.py and sqlite_registry.py
 
 ### Pending Todos
 
@@ -81,6 +86,6 @@ None.
 
 ### Blockers/Concerns
 
-- [Phase 14]: GCS FUSE vs `/tmp` SQLite storage strategy — product decision needed before implementation (accept mount code loss on redeploy vs pay for `--min-instances=1`)
+- [Phase 14]: RESOLVED — SQLite at /tmp/mounts.db with journal_mode=DELETE; accept mount code loss on redeploy
 - [Phase 15]: Vite SPA asset paths vs mount proxy catch-all route conflict — verify with local `docker run` immediately after Phase 12 Dockerfile
 - [Phase 15]: Drop box embedded agent implementation path (in-process task vs subprocess) — SIGTERM handling on Cloud Run needs validation

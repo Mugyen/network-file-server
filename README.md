@@ -51,6 +51,8 @@ Health check: `GET /health` returns `{"status": "ok", "mounts": 0}`.
 
 Set `RELAY_ENV=production` for JSON logging (Cloud Logging compatible).
 
+Set `RELAY_DB_PATH=/path/to/mounts.db` to override SQLite mount registry location (default: `/tmp/mounts.db`).
+
 ## API
 
 - `GET /api/files?path=` -- list directory contents

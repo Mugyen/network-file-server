@@ -1,5 +1,13 @@
 # Project Log
 
+## 2026-03-30: SqliteMountRegistry with persistence and reclaim (14-01)
+
+Added SqliteMountRegistry class (relay/app/services/sqlite_registry.py) as async SQLite-backed drop-in for MountRegistry. Persists mount metadata across relay restarts via aiosqlite. Includes startup cleanup, expire(), try_reclaim() with IP match, delete_expired_before() for retention, and RelayConfig.db_path extension.
+
+## 2026-03-30: Fix large file uploads through relay (FrameTooLargeError)
+
+Relay proxy stuffed entire HTTP request body into OPEN frame metadata, exceeding 64KB frame limit. Fixed by streaming request body as chunked DATA frames (using request.stream() for memory efficiency) with zero-length sentinel for end-of-body. Agent side reconstructs body from DATA frames before forwarding to ASGI app. 3 new agent tests for body reconstruction.
+
 ## 2026-03-18: TTL enforcement, mount cap, and mount reg rate limiting (13-02)
 
 Added mount TTL enforcement with background sweep (ttl_sweep.py), per-IP mount cap (default 5), and mount registration rate limiting via `limits` library directly on WebSocket endpoint. TTL query param on /agent/ws capped to config max (24h). Sweep sends ttl_warning before expiry and marks mounts EXPIRED.
