@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.3
 milestone_name: Productionize Friend Tier
 status: In Progress
-last_updated: "2026-03-30T12:07:48Z"
-last_activity: 2026-03-30 — Completed 14-01 (SqliteMountRegistry with async API and aiosqlite)
+last_updated: "2026-03-30T12:26:16Z"
+last_activity: 2026-03-30 — Completed Phase 14 (Persistent Mount Registry) — all PERS requirements satisfied
 progress:
   total_phases: 4
   completed_phases: 3
-  total_plans: 8
-  completed_plans: 8
-  percent: 50
+  total_plans: 10
+  completed_plans: 7
+  percent: 60
 ---
 
 # Project State
@@ -20,23 +20,23 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-16)
 
 **Core value:** Any device can instantly share files with zero setup — scan QR, drop files, done. Works on LAN or over the internet.
-**Current focus:** v1.3 Productionize Friend Tier — Phase 14 in progress
+**Current focus:** v1.3 Productionize Friend Tier — Phase 15 next
 
 ## Current Position
 
-Phase: 14 of 15 (Persistent Mount Registry)
-Plan: 2 of 2
+Phase: 15 of 15 (UX Polish and Drop Box)
+Plan: 1 of 4
 Status: In Progress
-Last activity: 2026-03-30 — Completed 14-01 (SqliteMountRegistry with async API and aiosqlite)
+Last activity: 2026-03-30 — Completed Phase 14 (Persistent Mount Registry) — all PERS requirements satisfied
 
-Progress: [█████░░░░░] 50%
+Progress: [██████░░░░] 60%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 5 (this milestone)
-- Average duration: 6min
-- Total execution time: 32min
+- Total plans completed: 6 (this milestone)
+- Average duration: 8min
+- Total execution time: 46min
 
 **By Phase:**
 
@@ -44,7 +44,7 @@ Progress: [█████░░░░░] 50%
 |-------|-------|-------|----------|
 | 12 | 2 | 12min | 6min |
 | 13 | 2 | 15min | 7min |
-| 14 | 1 | 5min | 5min |
+| 14 | 2 | 19min | 10min |
 
 ## Milestones Shipped
 
@@ -79,6 +79,8 @@ Key decisions for v1.3:
 - [14-01] mark_offline() is a no-op for non-ONLINE mounts — race guard prevents late disconnect from undoing reclaim
 - [14-01] expire() retains SQLite record for 6h retention window; deregister() deletes immediately
 - [14-01] TYPE_CHECKING guard on circular import between mount_registry.py and sqlite_registry.py
+- [14-02] httpx.ASGITransport does not trigger FastAPI lifespan -- test fixtures pre-create SqliteMountRegistry manually
+- [14-02] mount_count() method on SqliteMountRegistry for health endpoint (replaces private _mounts dict access)
 
 ### Pending Todos
 
