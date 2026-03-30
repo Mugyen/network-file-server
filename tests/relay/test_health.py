@@ -24,8 +24,8 @@ async def test_health_reports_mount_count(relay_client) -> None:
     registry = get_registry()
     conn1 = MockTunnelConnection()
     conn2 = MockTunnelConnection()
-    registry.register("mount-a", conn1, agent_ip="127.0.0.1", created_at=time.monotonic(), expires_at=None)
-    registry.register("mount-b", conn2, agent_ip="127.0.0.1", created_at=time.monotonic(), expires_at=None)
+    await registry.register("mount-a", conn1, agent_ip="127.0.0.1", created_at=time.time(), expires_at=None)
+    await registry.register("mount-b", conn2, agent_ip="127.0.0.1", created_at=time.time(), expires_at=None)
 
     response = await relay_client.get("/health")
     assert response.status_code == 200

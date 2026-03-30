@@ -91,7 +91,7 @@ async def proxy_request(request: Request, code: str, path: str) -> Response:
         client_ip = "unknown"
 
     try:
-        conn = get_registry().get_connection(code)
+        conn = await get_registry().get_connection(code)
     except MountNotFoundError:
         return templates.TemplateResponse(
             request, "not_found.html", status_code=404
@@ -222,7 +222,7 @@ async def proxy_websocket(websocket: WebSocket, code: str, path: str) -> None:
         path:      Remaining path after the mount code.
     """
     try:
-        conn = get_registry().get_connection(code)
+        conn = await get_registry().get_connection(code)
     except (MountNotFoundError, MountOfflineError, MountExpiredError):
         await websocket.accept()
         await websocket.close(code=1011)

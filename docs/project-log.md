@@ -1,5 +1,9 @@
 # Project Log
 
+## 2026-03-30: Phase 14 complete: Persistent mount registry (14-02)
+
+Wired SqliteMountRegistry into relay lifespan, agent_ws reclaim logic, and TTL sweep retention cleanup. Agents now mark_offline on disconnect instead of deregistering, can reclaim OFFLINE mounts by code+IP match, and mount_registered message includes reclaimed/remaining_ttl fields. All relay tests migrated from sync MountRegistry to async SqliteMountRegistry with in-memory SQLite.
+
 ## 2026-03-30: SqliteMountRegistry with persistence and reclaim (14-01)
 
 Added SqliteMountRegistry class (relay/app/services/sqlite_registry.py) as async SQLite-backed drop-in for MountRegistry. Persists mount metadata across relay restarts via aiosqlite. Includes startup cleanup, expire(), try_reclaim() with IP match, delete_expired_before() for retention, and RelayConfig.db_path extension.

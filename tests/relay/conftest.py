@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import time
 
 import httpx
@@ -9,7 +10,8 @@ import pytest
 from httpx import AsyncClient
 
 from relay.app.main import create_relay_app
-from relay.app.services.mount_registry import MountRegistry, set_registry
+from relay.app.services.mount_registry import set_registry
+from relay.app.services.sqlite_registry import SqliteMountRegistry
 
 
 class MockTunnelConnection:
@@ -71,12 +73,29 @@ class MockTunnelConnection:
         self.closed = True
 
 
+async def _setup_in_memory_registry() -> SqliteMountRegistry:
+    """Create an in-memory SqliteMountRegistry and install it as the global singleton.
+
+    Used by test fixtures and test helpers when the ASGI transport does not
+    trigger FastAPI lifespan events (e.g. httpx.ASGITransport, ASGIWebSocketTransport).
+    """
+    registry = await SqliteMountRegistry.create(":memory:")
+    set_registry(registry)
+    return registry
+
+
 @pytest.fixture
-def relay_app():
-    """Create a fresh relay app with a new MountRegistry for each test."""
+async def relay_app(monkeypatch):
+    """Create a fresh relay app with in-memory SQLite registry for each test.
+
+    Creates the SqliteMountRegistry manually since httpx.ASGITransport does
+    not trigger FastAPI lifespan events.
+    """
+    monkeypatch.setenv("RELAY_DB_PATH", ":memory:")
     app = create_relay_app()
-    set_registry(MountRegistry())
-    return app
+    registry = await _setup_in_memory_registry()
+    yield app
+    await registry.close()
 
 
 @pytest.fixture
@@ -94,20 +113,22 @@ def mock_connection() -> MockTunnelConnection:
 
 
 @pytest.fixture
-def registered_relay_client(relay_app, mock_connection):
+async def registered_relay_client(relay_app, mock_connection):
     """AsyncClient with a MockTunnelConnection pre-registered under 'testcode'.
 
-    Returns a tuple of (client_context_manager, registry) so tests can
+    Returns a tuple of (client, registry) so tests can
     access the registry for state manipulation (e.g. mark_offline).
     """
     from relay.app.services.mount_registry import get_registry
+
     registry = get_registry()
-    registry.register(
+    await registry.register(
         "testcode",
         mock_connection,
         agent_ip="127.0.0.1",
-        created_at=time.monotonic(),
+        created_at=time.time(),
         expires_at=None,
     )
     transport = httpx.ASGITransport(app=relay_app)
-    return AsyncClient(transport=transport, base_url="http://test"), registry
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client, registry
