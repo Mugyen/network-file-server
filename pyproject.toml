@@ -20,6 +20,7 @@ dependencies = [
     "websockets>=13.0",
     "httpx-ws>=0.8.2",
     "slowapi>=0.1.9",
+    "aiosqlite>=0.22.1",
 ]
 
 [project.scripts]

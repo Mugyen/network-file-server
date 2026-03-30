@@ -36,6 +36,7 @@ def _make_test_config(
         max_mounts_per_ip=10,
         ttl_sweep_interval_seconds=ttl_sweep_interval_seconds,
         warning_before_seconds=warning_before_seconds,
+        db_path="/tmp/test_mounts.db",
     )
 
 

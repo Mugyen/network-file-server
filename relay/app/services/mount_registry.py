@@ -138,10 +138,13 @@ class MountRegistry:
         return [m for m in self._mounts.values() if m.status != MountStatus.EXPIRED]
 
 
-_registry: MountRegistry | None = None
+if TYPE_CHECKING:
+    from relay.app.services.sqlite_registry import SqliteMountRegistry
+
+_registry: "MountRegistry | SqliteMountRegistry | None" = None
 
 
-def get_registry() -> MountRegistry:
+def get_registry() -> "MountRegistry | SqliteMountRegistry":
     """Return the global MountRegistry instance.
 
     Raises RuntimeError if set_registry() has not been called.
@@ -151,7 +154,7 @@ def get_registry() -> MountRegistry:
     return _registry
 
 
-def set_registry(registry: MountRegistry) -> None:
+def set_registry(registry: "MountRegistry | SqliteMountRegistry") -> None:
     """Install the global MountRegistry instance.
 
     Called by the app factory and by tests to inject a fresh instance.

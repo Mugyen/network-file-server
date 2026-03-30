@@ -4,6 +4,7 @@
 
 env: development
 allowed_origins: []  # Empty means wildcard in dev; must be set in production
+db_path: /tmp/mounts.db  # SQLite mount registry; override via RELAY_DB_PATH env var
 
 rate_limits:
   mount_registration: "5/hour"

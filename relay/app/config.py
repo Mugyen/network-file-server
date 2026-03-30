@@ -26,6 +26,7 @@ class RelayConfig:
     max_mounts_per_ip: int
     ttl_sweep_interval_seconds: int
     warning_before_seconds: int
+    db_path: str
 
 
 def load_config(config_path: Path) -> RelayConfig:
@@ -91,6 +92,10 @@ def load_config(config_path: Path) -> RelayConfig:
         "RELAY_WARNING_BEFORE_SECONDS",
         str(ttl.get("warning_before_seconds", 300)),
     ))
+    db_path: str = os.environ.get(
+        "RELAY_DB_PATH",
+        raw.get("db_path", "/tmp/mounts.db"),
+    )
 
     # Validate: production requires explicit allowed_origins
     if env == RelayEnv.PRODUCTION and not allowed_origins:
@@ -108,6 +113,7 @@ def load_config(config_path: Path) -> RelayConfig:
         max_mounts_per_ip=max_mounts_per_ip,
         ttl_sweep_interval_seconds=ttl_sweep_interval_seconds,
         warning_before_seconds=warning_before_seconds,
+        db_path=db_path,
     )
 
 
