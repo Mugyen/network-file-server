@@ -3,7 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>{% block title %}WiFi File Server{% endblock %}</title>
+  <title>{% block title %}Network File Server{% endblock %}</title>
+  {% block og_tags %}
+  <meta property="og:title" content="{% block og_title %}Network File Server{% endblock %}" />
+  <meta property="og:description" content="{% block og_description %}Share files instantly -- scan QR, drop files, done.{% endblock %}" />
+  <meta property="og:image" content="{{ og_image_url | default('/static/og-image.png') }}" />
+  <meta property="og:type" content="website" />
+  {% endblock %}
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 

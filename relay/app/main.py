@@ -19,6 +19,8 @@ from relay.app.config import get_config, load_config, set_config
 from relay.app.logging import RelayEnv
 from relay.app.middleware.secure_cookies import SecureCookieMiddleware
 from relay.app.rate_limit import limiter, rate_limit_exceeded_handler
+from fastapi.staticfiles import StaticFiles
+
 from relay.app.services.mount_registry import get_registry, set_registry
 from relay.app.services.sqlite_registry import SqliteMountRegistry
 from relay.app.services.ttl_sweep import run_ttl_sweep
@@ -91,6 +93,11 @@ def create_relay_app(config_path: Path | None = None) -> FastAPI:
     # Placed after middleware setup but before router inclusion.
     application.state.limiter = limiter
     application.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
+
+    # Mount static files for OG image and future assets
+    static_dir = Path(__file__).resolve().parent.parent / "static"
+    if static_dir.exists():
+        application.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
     from relay.app.routers.agent_ws import router as agent_ws_router
     from relay.app.routers.health import router as health_router
