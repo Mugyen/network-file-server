@@ -81,6 +81,33 @@ def test_get_config_raises_before_set_config() -> None:
         get_config()
 
 
+# ---------------------------------------------------------------------------
+# data_dir and dropbox_code fields
+# ---------------------------------------------------------------------------
+
+
+def test_load_config_data_dir_default() -> None:
+    config = load_config(_CONFIG_YAML)
+    assert config.data_dir == "/data/"
+
+
+def test_load_config_dropbox_code_default() -> None:
+    config = load_config(_CONFIG_YAML)
+    assert config.dropbox_code == "dropbox"
+
+
+def test_load_config_data_dir_env_override() -> None:
+    with patch.dict(os.environ, {"RELAY_DATA_DIR": "/custom/data"}):
+        config = load_config(_CONFIG_YAML)
+    assert config.data_dir == "/custom/data"
+
+
+def test_load_config_dropbox_code_env_override() -> None:
+    with patch.dict(os.environ, {"RELAY_DROPBOX_CODE": "public-box"}):
+        config = load_config(_CONFIG_YAML)
+    assert config.dropbox_code == "public-box"
+
+
 def test_set_config_get_config_round_trip() -> None:
     config = load_config(_CONFIG_YAML)
     set_config(config)

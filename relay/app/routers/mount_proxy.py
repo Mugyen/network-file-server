@@ -72,6 +72,9 @@ async def mount_status(code: str) -> dict[str, str]:
     try:
         await registry.get_connection(code)
         return {"status": "online"}
+    except RuntimeError:
+        # Local mount (e.g. drop box) — no tunnel connection but still online
+        return {"status": "online"}
     except MountOfflineError:
         return {"status": "offline"}
     except MountExpiredError:

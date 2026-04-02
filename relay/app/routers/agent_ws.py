@@ -76,6 +76,20 @@ async def agent_websocket(
     config = get_config()
     registry = get_registry()
 
+    # --- Reserved code check (before rate limit to avoid wasting tokens) ---
+    if code is not None and code == config.dropbox_code:
+        logger.warning(
+            "Agent tried to register reserved drop box code: client=%s code=%s",
+            client_ip, code,
+        )
+        await websocket.accept()
+        await websocket.send_json({
+            "type": "error",
+            "error": "Reserved mount code",
+        })
+        await websocket.close(code=1008)
+        return
+
     # --- Rate limit check (before accepting WebSocket) ---
     mount_limit = parse_limit(config.mount_reg_rate)
     if not _mount_reg_limiter.test(mount_limit, "mount_reg", client_ip):

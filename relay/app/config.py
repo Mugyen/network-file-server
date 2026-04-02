@@ -27,6 +27,8 @@ class RelayConfig:
     ttl_sweep_interval_seconds: int
     warning_before_seconds: int
     db_path: str
+    data_dir: str
+    dropbox_code: str
 
 
 def load_config(config_path: Path) -> RelayConfig:
@@ -96,6 +98,14 @@ def load_config(config_path: Path) -> RelayConfig:
         "RELAY_DB_PATH",
         raw.get("db_path", "/tmp/mounts.db"),
     )
+    data_dir: str = os.environ.get(
+        "RELAY_DATA_DIR",
+        raw.get("data_dir", "/data/"),
+    )
+    dropbox_code: str = os.environ.get(
+        "RELAY_DROPBOX_CODE",
+        raw.get("dropbox_code", "dropbox"),
+    )
 
     # Validate: production requires explicit allowed_origins
     if env == RelayEnv.PRODUCTION and not allowed_origins:
@@ -114,6 +124,8 @@ def load_config(config_path: Path) -> RelayConfig:
         ttl_sweep_interval_seconds=ttl_sweep_interval_seconds,
         warning_before_seconds=warning_before_seconds,
         db_path=db_path,
+        data_dir=data_dir,
+        dropbox_code=dropbox_code,
     )
 
 

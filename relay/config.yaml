@@ -5,6 +5,8 @@
 env: development
 allowed_origins: []  # Empty means wildcard in dev; must be set in production
 db_path: /tmp/mounts.db  # SQLite mount registry; override via RELAY_DB_PATH env var
+data_dir: /data/  # Persistent data directory; override via RELAY_DATA_DIR env var
+dropbox_code: dropbox  # Reserved mount code for always-on drop box; override via RELAY_DROPBOX_CODE env var
 
 rate_limits:
   mount_registration: "5/hour"

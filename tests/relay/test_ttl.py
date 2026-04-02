@@ -39,6 +39,8 @@ def _make_test_config(
         ttl_sweep_interval_seconds=ttl_sweep_interval_seconds,
         warning_before_seconds=warning_before_seconds,
         db_path=":memory:",
+        data_dir="/tmp/test-data",
+        dropbox_code="dropbox",
     )
 
 

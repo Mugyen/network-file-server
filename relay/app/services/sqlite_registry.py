@@ -101,12 +101,15 @@ class SqliteMountRegistry:
     async def register(
         self,
         code: str,
-        connection: "TunnelConnection",
+        connection: "TunnelConnection | None",
         agent_ip: str,
         created_at: float,
         expires_at: float | None,
     ) -> None:
         """Register a mount. Overwrites if code already exists (INSERT OR REPLACE).
+
+        Pass connection=None for local mounts (e.g. drop box) that don't use
+        a tunnel. get_connection() will raise RuntimeError for these mounts.
 
         Raises:
             ValueError: If code is empty.
@@ -120,7 +123,8 @@ class SqliteMountRegistry:
             (code, MountStatus.ONLINE.value, agent_ip, created_at, expires_at),
         )
         await self._db.commit()
-        self._connections[code] = connection
+        if connection is not None:
+            self._connections[code] = connection
 
     async def deregister(self, code: str) -> None:
         """Remove the mount record entirely from SQLite and memory.
@@ -157,6 +161,9 @@ class SqliteMountRegistry:
             raise MountOfflineError(code)
         if status == MountStatus.EXPIRED.value:
             raise MountExpiredError(code)
+
+        if code not in self._connections:
+            raise RuntimeError(f"Mount '{code}' has no tunnel connection (local mount)")
 
         return self._connections[code]
 
