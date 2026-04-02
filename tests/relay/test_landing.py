@@ -150,6 +150,47 @@ async def test_static_og_image_returns_200(relay_client) -> None:
     assert response.headers["content-type"] == "image/png"
 
 
+# ---------------------------------------------------------------------------
+# Hero section — LAND-01, LAND-04
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_landing_has_how_it_works_section(relay_client) -> None:
+    """Landing page contains how-it-works section with 3 steps."""
+    response = await relay_client.get("/")
+    assert response.status_code == 200
+    assert "how-it-works" in response.text
+    assert "Run the agent" in response.text
+    assert "Share your code" in response.text
+    assert "Browse files" in response.text
+
+
+@pytest.mark.asyncio
+async def test_landing_has_github_link(relay_client) -> None:
+    """Landing page contains a link to GitHub repo."""
+    response = await relay_client.get("/")
+    assert response.status_code == 200
+    assert "github.com" in response.text
+
+
+@pytest.mark.asyncio
+async def test_landing_has_hero_heading(relay_client) -> None:
+    """Landing page heading uses hero-container (wider than card)."""
+    response = await relay_client.get("/")
+    assert response.status_code == 200
+    assert "hero-container" in response.text
+
+
+@pytest.mark.asyncio
+async def test_landing_still_has_code_form(relay_client) -> None:
+    """Landing page still has mount code input form."""
+    response = await relay_client.get("/")
+    assert response.status_code == 200
+    assert 'name="code"' in response.text
+    assert '<form' in response.text
+
+
 def test_error_templates_inherit_og_tags() -> None:
     """All error templates (not_found, offline, expired) inherit OG tags from base.html."""
     for name in ("not_found.html", "offline.html", "expired.html"):

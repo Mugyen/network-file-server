@@ -24,4 +24,5 @@ async def landing_page(request: Request, code: str = Query("")) -> RedirectRespo
     og_image_url = str(request.base_url) + "static/og-image.png"
     return templates.TemplateResponse(request, "landing.html", {
         "og_image_url": og_image_url,
+        "github_url": "https://github.com/RahulDas-dev/network-file-server",
     })

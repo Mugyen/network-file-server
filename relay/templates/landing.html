@@ -1,15 +1,37 @@
 {% extends "base.html" %}
 
-{% block title %}WiFi File Server{% endblock %}
+{% block title %}Network File Server{% endblock %}
+
+{% block container_class %}hero-container{% endblock %}
 
 {% block content %}
-  <h1>WiFi File Server</h1>
-  <p>
-    Enter a mount code to browse a shared WiFi File Server.
-    Mount codes are shown in the WiFi File Server app on the host device.
-  </p>
+  <h1>Network File Server</h1>
+  <p>Share files instantly between devices. Scan QR, drop files, done.</p>
+
+  <div class="how-it-works">
+    <div class="step">
+      <span class="step-icon">&#x1F4BB;</span>
+      <span>1. Run the agent</span>
+    </div>
+    <div class="step">
+      <span class="step-icon">&#x1F517;</span>
+      <span>2. Share your code</span>
+    </div>
+    <div class="step">
+      <span class="step-icon">&#x1F4C2;</span>
+      <span>3. Browse files</span>
+    </div>
+  </div>
+
   <form method="get" action="/">
     <input type="text" name="code" placeholder="Enter mount code" autocomplete="off" autofocus />
     <button type="submit">Connect</button>
   </form>
+
+  <div class="hero-links">
+    {% if dropbox_url %}
+    <a href="{{ dropbox_url }}">Try the Drop Box</a>
+    {% endif %}
+    <a href="{{ github_url }}" target="_blank" rel="noopener">View on GitHub</a>
+  </div>
 {% endblock %}
