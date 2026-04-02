@@ -71,16 +71,42 @@ def _handle_invalid_name(exc: InvalidFileNameError) -> JSONResponse:
 
 
 @router.get("/files", dependencies=[Depends(require_full_access)])
-def get_files(path: str = Query("")) -> dict:
-    """List files in the shared folder.
+async def get_files(path: str = Query("")) -> dict:
+    """List files in the shared folder with optional TTL expiry data.
 
     Query parameter 'path' specifies a relative subdirectory.
     Empty string means root of the shared folder.
+    Enriches each file entry with expires_at (ISO timestamp or null).
     """
     config = get_server_config()
     try:
         listing = list_directory(config.shared_folder, path)
-        return listing.model_dump()
+        result = listing.model_dump()
+
+        # Enrich file entries with TTL expiry timestamps
+        try:
+            from relay.app.services.file_ttl_db import get_file_ttl_db
+
+            if config.mount_code is not None:
+                file_ttl_db = get_file_ttl_db()
+                ttl_records = await file_ttl_db.get_ttl_for_mount(config.mount_code)
+                ttl_map: dict[str, str] = {}
+                for file_path, expires_at in ttl_records:
+                    ttl_map[file_path] = datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat()
+                for entry in result.get("entries", []):
+                    # Build relative path from listing directory + filename
+                    name = entry.get("name", "")
+                    file_path_key = f"{path}/{name}".lstrip("/") if path else name
+                    entry["expires_at"] = ttl_map.get(file_path_key, None)
+            else:
+                for entry in result.get("entries", []):
+                    entry["expires_at"] = None
+        except (RuntimeError, ImportError):
+            # Standalone mode -- no TTL tracking
+            for entry in result.get("entries", []):
+                entry["expires_at"] = None
+
+        return result
     except PathTraversalError as exc:
         return _handle_path_traversal(exc)  # type: ignore[return-value]
     except FileNotFoundError as exc:
@@ -92,6 +118,7 @@ async def upload_files(
     files: list[UploadFile],
     path: str = Query(""),
     conflict_resolution: ConflictResolution | None = Query(None),
+    ttl: int | None = Query(None),
     x_device_id: str | None = Header(None),
     x_device_name: str | None = Header(None),
 ) -> Any:
@@ -109,6 +136,21 @@ async def upload_files(
                 config.shared_folder, path, file, conflict_resolution
             )
             results.append(result.model_dump())
+
+        # Record file TTL for each uploaded file (when running under relay)
+        effective_ttl = ttl if ttl is not None else 86400  # Default 1 day
+        if effective_ttl > 0 and config.mount_code is not None:
+            try:
+                from relay.app.services.file_ttl_db import get_file_ttl_db
+                file_ttl_db = get_file_ttl_db()
+                for r in results:
+                    # Build relative path from upload directory + filename
+                    name = r.get("name", "")
+                    if name:
+                        file_path = f"{path}/{name}".lstrip("/") if path else name
+                        await file_ttl_db.record_file_ttl(config.mount_code, file_path, effective_ttl)
+            except (RuntimeError, ImportError):
+                pass  # Not running under relay (standalone server mode)
 
         # Broadcast upload toast to WS clients
         file_count = len(results)

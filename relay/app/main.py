@@ -29,12 +29,24 @@ from relay.app.services.ttl_sweep import run_ttl_sweep
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Manage application lifecycle — creates SqliteMountRegistry, starts TTL sweep, initializes drop box, cleans up on shutdown."""
+    """Manage application lifecycle — creates SqliteMountRegistry, starts TTL sweep, initializes drop box and file TTL, cleans up on shutdown."""
+    import logging
+    import os
+
     from relay.app.services.dropbox import init_dropbox, set_dropbox_client
+    from relay.app.services.file_ttl_db import FileTtlDb, set_file_ttl_db
+    from relay.app.services.file_ttl_sweep import run_file_ttl_sweep
+
+    _logger = logging.getLogger("relay.lifespan")
 
     config = get_config()
     registry = await SqliteMountRegistry.create(config.db_path)
     set_registry(registry)
+
+    # Initialize file TTL tracking on the same SQLite connection
+    file_ttl_db = FileTtlDb(registry._db)
+    await file_ttl_db.init_table()
+    set_file_ttl_db(file_ttl_db)
 
     # Initialize drop box server app and register as a first-class mount
     dropbox_client = await init_dropbox(Path(config.data_dir), config.dropbox_code)
@@ -47,17 +59,34 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         expires_at=None,
     )
 
+    # Boot-time cleanup: delete expired drop box files
+    expired_paths = await file_ttl_db.delete_expired_for_mount(config.dropbox_code)
+    for fp in expired_paths:
+        full_path = Path(config.data_dir) / "dropbox" / fp.lstrip("/")
+        if full_path.exists():
+            os.remove(full_path)
+            _logger.info("Boot cleanup: deleted expired drop box file %s", fp)
+
     sweep_task = asyncio.create_task(
         run_ttl_sweep(registry, config)
     )
+    file_ttl_sweep_task = asyncio.create_task(
+        run_file_ttl_sweep(file_ttl_db, Path(config.data_dir), config.dropbox_code, 60, None)
+    )
     yield
     sweep_task.cancel()
+    file_ttl_sweep_task.cancel()
     try:
         await sweep_task
     except asyncio.CancelledError:
         pass
+    try:
+        await file_ttl_sweep_task
+    except asyncio.CancelledError:
+        pass
     await dropbox_client.aclose()
     set_dropbox_client(None)
+    set_file_ttl_db(None)
     await registry.close()
 
 
