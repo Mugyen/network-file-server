@@ -1,5 +1,9 @@
 # Project Log
 
+## 2026-04-03: Phase 15 complete: UX Polish and Drop Box
+
+Landing page with hero section, OG meta tags, and GitHub link. Connection status overlays (Host Offline/Mount Expired) via REST polling. Always-on drop box mount via httpx.ASGITransport in-process forwarding with reserved code protection. Per-file upload TTL (1h/6h/1d/7d/Never) with SQLite tracking, background sweep, expiry badges, WebSocket toast, and agent expired files prompt.
+
 ## 2026-03-30: Phase 14 complete: Persistent mount registry (14-02)
 
 Wired SqliteMountRegistry into relay lifespan, agent_ws reclaim logic, and TTL sweep retention cleanup. Agents now mark_offline on disconnect instead of deregistering, can reclaim OFFLINE mounts by code+IP match, and mount_registered message includes reclaimed/remaining_ttl fields. All relay tests migrated from sync MountRegistry to async SqliteMountRegistry with in-memory SQLite.
