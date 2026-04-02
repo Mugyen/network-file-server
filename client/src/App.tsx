@@ -28,6 +28,7 @@ import { useTheme, ThemeMode } from "./hooks/useTheme.ts";
 import { usePreview } from "./hooks/usePreview.ts";
 import { useClipboard } from "./hooks/useClipboard.ts";
 import { useFileRequests } from "./hooks/useFileRequests.ts";
+import { useMountStatus, MountStatus } from "./hooks/useMountStatus.ts";
 import FileList from "./components/FileList.tsx";
 import PreviewModal from "./components/PreviewModal.tsx";
 import Breadcrumbs from "./components/Breadcrumbs.tsx";
@@ -39,6 +40,7 @@ import FilterChips from "./components/FilterChips.tsx";
 import ThemeToggle from "./components/ThemeToggle.tsx";
 import ConnectionStatus, { ReconnectingBanner } from "./components/ConnectionStatus.tsx";
 import ToastContainer from "./components/ToastContainer.tsx";
+import { MountStatusOverlay } from "./components/MountStatusOverlay.tsx";
 import UploadOverlay from "./components/UploadOverlay.tsx";
 import UploadPanel from "./components/UploadPanel.tsx";
 import ConflictDialog from "./components/ConflictDialog.tsx";
@@ -78,6 +80,7 @@ function App({ serverMode, onLogout }: AppProps) {
   const { currentPath, navigateTo } = usePathNavigation();
   const ws = useWebSocket(deviceName);
   const toast = useToast();
+  const mountStatus = useMountStatus();
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [serverInfo, setServerInfo] = useState<ServerInfoData | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -113,6 +116,9 @@ function App({ serverMode, onLogout }: AppProps) {
       setLoading(false);
     }
   }, [currentPath]);
+
+  // Wire mount status recovery to file list refresh
+  mountStatus.onRecoveryRef.current = loadFiles;
 
   const upload = useUpload(currentPath, loadFiles);
   const { isDragging, dragHandlers } = useDragDrop(upload.uploadFiles);
@@ -329,7 +335,7 @@ function App({ serverMode, onLogout }: AppProps) {
         <div className="container mx-auto max-w-4xl px-4 flex items-center justify-between">
           <div className="flex items-center">
             <h1 className="text-2xl font-bold text-gray-800 dark:text-gray-100">
-              WiFi File Server
+              Network File Server
             </h1>
             <ModeBadges
               readOnly={serverMode.readOnly}
@@ -395,8 +401,9 @@ function App({ serverMode, onLogout }: AppProps) {
         </div>
       </header>
 
-      {!ws.isConnected && <ReconnectingBanner />}
+      {!ws.isConnected && mountStatus.status !== MountStatus.OFFLINE && mountStatus.status !== MountStatus.EXPIRED && <ReconnectingBanner />}
 
+      <MountStatusOverlay status={isRemoteMount() ? mountStatus.status : MountStatus.ONLINE}>
       <main className="container mx-auto p-4 max-w-4xl">
         {loading && (
           <p className="text-center text-gray-500 dark:text-gray-400 py-8">Loading...</p>
@@ -501,6 +508,7 @@ function App({ serverMode, onLogout }: AppProps) {
           </>
         )}
       </main>
+      </MountStatusOverlay>
 
       {/* Upload panel -- floating bottom-right (hidden in read-only) */}
       {!isReadOnly && (
