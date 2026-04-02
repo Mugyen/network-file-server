@@ -17,9 +17,9 @@ async def test_landing_page_returns_200(relay_client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_landing_page_contains_wifi_file_server(relay_client) -> None:
+async def test_landing_page_contains_network_file_server(relay_client) -> None:
     response = await relay_client.get("/")
-    assert "WiFi File Server" in response.text
+    assert "Network File Server" in response.text
 
 
 @pytest.mark.asyncio
@@ -63,7 +63,7 @@ async def test_code_redirect_alphanumeric(relay_client) -> None:
 async def test_empty_code_returns_landing_page(relay_client) -> None:
     response = await relay_client.get("/?code=", follow_redirects=False)
     assert response.status_code == 200
-    assert "WiFi File Server" in response.text
+    assert "Network File Server" in response.text
 
 
 # ---------------------------------------------------------------------------
@@ -99,7 +99,7 @@ def test_expired_template_renders() -> None:
 def test_landing_template_renders() -> None:
     tmpl = templates.get_template("landing.html")
     rendered = tmpl.render({})
-    assert "WiFi File Server" in rendered
+    assert "Network File Server" in rendered
 
 
 def test_all_error_templates_extend_base() -> None:
@@ -109,3 +109,52 @@ def test_all_error_templates_extend_base() -> None:
         rendered = tmpl.render({})
         # base.html provides the .card container
         assert "card" in rendered, f"{name} should inherit .card from base.html"
+
+
+# ---------------------------------------------------------------------------
+# OG meta tags — LAND-03
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_og_title_meta_tag_present(relay_client) -> None:
+    """GET / response contains og:title meta tag."""
+    response = await relay_client.get("/")
+    assert response.status_code == 200
+    assert 'og:title' in response.text
+
+
+@pytest.mark.asyncio
+async def test_og_description_meta_tag_present(relay_client) -> None:
+    """GET / response contains og:description meta tag."""
+    response = await relay_client.get("/")
+    assert response.status_code == 200
+    assert 'og:description' in response.text
+
+
+@pytest.mark.asyncio
+async def test_og_image_meta_tag_with_absolute_url(relay_client) -> None:
+    """GET / response contains og:image meta tag with absolute URL."""
+    response = await relay_client.get("/")
+    assert response.status_code == 200
+    assert 'og:image' in response.text
+    # Must be an absolute URL (starts with http)
+    assert 'http' in response.text.split('og:image')[1].split('>')[0]
+
+
+@pytest.mark.asyncio
+async def test_static_og_image_returns_200(relay_client) -> None:
+    """GET /static/og-image.png returns 200 with image/png content type."""
+    response = await relay_client.get("/static/og-image.png")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+
+
+def test_error_templates_inherit_og_tags() -> None:
+    """All error templates (not_found, offline, expired) inherit OG tags from base.html."""
+    for name in ("not_found.html", "offline.html", "expired.html"):
+        tmpl = templates.get_template(name)
+        rendered = tmpl.render({})
+        assert 'og:title' in rendered, f"{name} should have og:title from base.html"
+        assert 'og:description' in rendered, f"{name} should have og:description from base.html"
+        assert 'og:image' in rendered, f"{name} should have og:image from base.html"
