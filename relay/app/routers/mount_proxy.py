@@ -60,6 +60,26 @@ def rewrite_html_asset_paths(html: str, mount_prefix: str) -> str:
     return _ASSET_PATH_RE.sub(rf"\1{mount_prefix}/", html)
 
 
+@router.get("/m/{code}/status")
+async def mount_status(code: str) -> dict[str, str]:
+    """Return the current status of a mount code.
+
+    Returns JSON: {"status": "online"|"offline"|"expired"|"not_found"}
+    Not rate-limited — status polling at 30s intervals should not consume
+    the proxy rate limit budget.
+    """
+    registry = get_registry()
+    try:
+        await registry.get_connection(code)
+        return {"status": "online"}
+    except MountOfflineError:
+        return {"status": "offline"}
+    except MountExpiredError:
+        return {"status": "expired"}
+    except MountNotFoundError:
+        return {"status": "not_found"}
+
+
 @router.api_route(
     "/m/{code}/{path:path}",
     methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
