@@ -6,6 +6,7 @@ credentials) and permissive in development (wildcard, no credentials).
 """
 
 import asyncio
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
@@ -28,10 +29,23 @@ from relay.app.services.ttl_sweep import run_ttl_sweep
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Manage application lifecycle — creates SqliteMountRegistry, starts TTL sweep, cleans up on shutdown."""
+    """Manage application lifecycle — creates SqliteMountRegistry, starts TTL sweep, initializes drop box, cleans up on shutdown."""
+    from relay.app.services.dropbox import init_dropbox, set_dropbox_client
+
     config = get_config()
     registry = await SqliteMountRegistry.create(config.db_path)
     set_registry(registry)
+
+    # Initialize drop box server app and register as a first-class mount
+    dropbox_client = await init_dropbox(Path(config.data_dir), config.dropbox_code)
+    set_dropbox_client(dropbox_client)
+    await registry.register(
+        code=config.dropbox_code,
+        connection=None,
+        agent_ip="127.0.0.1",
+        created_at=time.time(),
+        expires_at=None,
+    )
 
     sweep_task = asyncio.create_task(
         run_ttl_sweep(registry, config)
@@ -42,6 +56,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await sweep_task
     except asyncio.CancelledError:
         pass
+    await dropbox_client.aclose()
+    set_dropbox_client(None)
     await registry.close()
 
 

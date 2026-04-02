@@ -16,6 +16,7 @@ COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --locked --no-install-project --no-dev
 COPY relay/ relay/
 COPY tunnel/ tunnel/
+COPY server/ server/
 RUN uv sync --locked --no-editable --no-dev
 
 # Stage 3: Slim runtime
@@ -24,6 +25,8 @@ WORKDIR /app
 COPY --from=python-builder /app/.venv /app/.venv
 COPY --from=client-builder /build/dist /app/client/dist
 COPY relay/templates /app/relay/templates
+COPY relay/static /app/relay/static
+VOLUME ["/data"]
 ENV PATH="/app/.venv/bin:$PATH"
 ENV VIRTUAL_ENV="/app/.venv"
 ENV PORT=8080

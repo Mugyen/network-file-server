@@ -15,6 +15,7 @@ from relay.app.config import get_config
 from relay.app.exceptions import MountExpiredError, MountNotFoundError, MountOfflineError
 from relay.app.rate_limit import get_client_ip, limiter
 from relay.app.routers.landing import templates
+from relay.app.services.dropbox import get_dropbox_client
 from relay.app.services.mount_registry import get_registry
 from tunnel.constants import FIRST_BYTE_TIMEOUT_S, MAX_PAYLOAD_BYTES
 from tunnel.exceptions import FirstByteTimeoutError
@@ -106,6 +107,34 @@ async def proxy_request(request: Request, code: str, path: str) -> Response:
         or plain Response on timeout.
     """
     start: float = time.monotonic()
+
+    # Drop box interception — forward to local server app via httpx ASGITransport
+    dropbox_client = get_dropbox_client()
+    config = get_config()
+    if dropbox_client is not None and code == config.dropbox_code:
+        resp = await dropbox_client.request(
+            method=request.method,
+            url=f"/{path}",
+            headers=dict(request.headers),
+            content=await request.body(),
+            params=str(request.url.query) if request.url.query else None,
+        )
+        resp_content_type = resp.headers.get("content-type", "application/octet-stream")
+        # Apply same HTML rewriting as tunnel-proxied responses
+        if resp_content_type.startswith("text/html"):
+            rewritten = rewrite_html_asset_paths(resp.text, f"/m/{code}")
+            return Response(
+                content=rewritten,
+                status_code=resp.status_code,
+                headers={k: v for k, v in resp.headers.items() if k.lower() not in HOP_BY_HOP and k.lower() != "content-length"},
+                media_type=resp_content_type,
+            )
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            headers={k: v for k, v in resp.headers.items() if k.lower() not in HOP_BY_HOP},
+            media_type=resp_content_type,
+        )
 
     # Extract client IP — reuses shared get_client_ip for consistency with rate limiter
     try:
@@ -244,6 +273,12 @@ async def proxy_websocket(websocket: WebSocket, code: str, path: str) -> None:
         code:      Mount code extracted from the URL path.
         path:      Remaining path after the mount code.
     """
+    # Drop box WebSocket: accept and close gracefully (httpx can't forward WS)
+    if code == get_config().dropbox_code:
+        await websocket.accept()
+        await websocket.close(code=1000)
+        return
+
     try:
         conn = await get_registry().get_connection(code)
     except (MountNotFoundError, MountOfflineError, MountExpiredError):
