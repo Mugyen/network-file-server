@@ -462,6 +462,8 @@ function App({ serverMode, onLogout }: AppProps) {
                   onNewFolder={handleNewFolderRequest}
                   onRequestFile={fileRequests.toggleForm}
                   currentPath={currentPath}
+                  fileTtl={upload.fileTtl}
+                  onFileTtlChange={upload.setFileTtl}
                 />
               )
             )}

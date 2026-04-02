@@ -6,13 +6,15 @@ interface ToolbarProps {
   onNewFolder: () => void;
   onRequestFile: () => void;
   currentPath: string;
+  fileTtl: number;
+  onFileTtlChange: (ttl: number) => void;
 }
 
 /**
  * Toolbar with Upload button (opens hidden file input) and
  * New Folder button (triggers create folder dialog in parent).
  */
-function Toolbar({ onUploadClick, onNewFolder, onRequestFile, currentPath: _currentPath }: ToolbarProps) {
+function Toolbar({ onUploadClick, onNewFolder, onRequestFile, currentPath: _currentPath, fileTtl, onFileTtlChange }: ToolbarProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   function handleUploadButtonClick(): void {
@@ -38,6 +40,19 @@ function Toolbar({ onUploadClick, onNewFolder, onRequestFile, currentPath: _curr
         <Upload className="h-4 w-4" />
         Upload
       </button>
+
+      <select
+        value={String(fileTtl)}
+        onChange={(e) => onFileTtlChange(Number(e.target.value))}
+        className="rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-700 dark:bg-gray-800 dark:border-gray-600 dark:text-gray-300"
+        title="File expiry"
+      >
+        <option value="3600">1 hour</option>
+        <option value="21600">6 hours</option>
+        <option value="86400">1 day</option>
+        <option value="604800">7 days</option>
+        <option value="0">Never</option>
+      </select>
 
       <input
         ref={fileInputRef}

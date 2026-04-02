@@ -5,6 +5,7 @@ Provides connect_and_serve (single connection attempt) and run_agent_loop
 """
 
 import asyncio
+import functools
 import json
 import time
 import uuid
@@ -131,10 +132,42 @@ async def _agent_receive_loop_with_metadata(
                     conn.handle_pong()
                 elif message.get("type") == "ping":
                     await conn.send_control({"type": "pong"})
+                elif message.get("type") == "expired_files":
+                    await _handle_expired_files(conn, message)
     finally:
         # Wait for in-flight tasks to complete before returning
         if pending_tasks:
             await asyncio.gather(*pending_tasks, return_exceptions=True)
+
+
+async def _handle_expired_files(conn: TunnelConnection, message: dict) -> None:
+    """Handle expired_files control message from relay — prompt user to keep or delete."""
+    expired_list: list[dict] = message.get("files", [])
+    if not expired_list:
+        return
+
+    print(f"\n{len(expired_list)} file(s) have expired TTLs:")
+    for f in expired_list:
+        print(f"  - {f['path']}")
+
+    loop = asyncio.get_running_loop()
+    answer: str = await loop.run_in_executor(
+        None,
+        functools.partial(input, "Delete expired files? [y/N]: "),
+    )
+
+    if answer.strip().lower() == "y":
+        await conn.send_control({
+            "type": "delete_expired_files",
+            "code": message.get("code", ""),
+        })
+        print("Requested deletion of expired files.")
+    else:
+        await conn.send_control({
+            "type": "keep_expired_files",
+            "code": message.get("code", ""),
+        })
+        print("Keeping expired files.")
 
 
 def _format_remaining(seconds: int) -> str:

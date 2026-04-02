@@ -12,6 +12,7 @@ export interface FileEntry {
   size_display: string;
   type: FileType;
   modified: string;
+  expires_at: string | null;
 }
 
 export interface DirectoryListing {

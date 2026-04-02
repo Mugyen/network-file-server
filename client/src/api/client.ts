@@ -90,6 +90,7 @@ export function uploadWithProgress(
   targetPath: string,
   conflictResolution: ConflictAction | null,
   onProgress: (percent: number) => void,
+  ttl: number,
 ): Promise<UploadResult[]> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -116,7 +117,7 @@ export function uploadWithProgress(
       reject(new Error("Upload failed: network error"));
     });
 
-    let url = `${API_BASE}/files/upload?path=${encodeURIComponent(targetPath)}`;
+    let url = `${API_BASE}/files/upload?path=${encodeURIComponent(targetPath)}&ttl=${String(ttl)}`;
     if (conflictResolution !== null) {
       url += `&conflict_resolution=${encodeURIComponent(conflictResolution)}`;
     }

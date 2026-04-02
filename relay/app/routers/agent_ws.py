@@ -181,6 +181,21 @@ async def agent_websocket(
         "reclaimed": reclaimed,
         "remaining_ttl": remaining_ttl,
     })
+    # Send expired files list to agent on reclaim so it can prompt user
+    if reclaimed:
+        try:
+            from relay.app.services.file_ttl_db import get_file_ttl_db
+            file_ttl_db = get_file_ttl_db()
+            expired = await file_ttl_db.get_expired_for_mount(assigned_code)
+            if expired:
+                await conn.send_control({
+                    "type": "expired_files",
+                    "code": assigned_code,
+                    "files": [{"path": fp, "expired_at": exp} for fp, exp in expired],
+                })
+        except RuntimeError:
+            pass  # FileTtlDb not initialized
+
     conn.start_heartbeat(HEARTBEAT_INTERVAL_S, HEARTBEAT_MISSED_LIMIT)
     try:
         await conn.run_receive_loop()
