@@ -6,6 +6,7 @@ from mount_proxy, not through a tunnel connection.
 """
 
 from pathlib import Path
+from typing import Any
 
 from httpx import ASGITransport, AsyncClient
 
@@ -13,6 +14,7 @@ from server.app.config import ServerConfig, set_server_config
 from server.app.main import create_app
 
 _dropbox_client: AsyncClient | None = None
+_dropbox_app: Any = None
 
 
 async def init_dropbox(data_dir: Path, dropbox_code: str) -> AsyncClient:
@@ -43,6 +45,7 @@ async def init_dropbox(data_dir: Path, dropbox_code: str) -> AsyncClient:
     )
     set_server_config(config)
     server_app = create_app()
+    set_dropbox_app(server_app)
     transport = ASGITransport(app=server_app)
     client = AsyncClient(transport=transport, base_url="http://dropbox")
     return client
@@ -57,3 +60,23 @@ def set_dropbox_client(client: AsyncClient | None) -> None:
     """Install the drop box httpx client singleton."""
     global _dropbox_client
     _dropbox_client = client
+
+
+def get_dropbox_app() -> Any:
+    """Return the raw ASGI app for the drop box server.
+
+    Required by the WebSocket bridge in mount_proxy to create
+    ASGIWebSocketTransport connections.
+
+    Raises:
+        RuntimeError: If init_dropbox() has not been called.
+    """
+    if _dropbox_app is None:
+        raise RuntimeError("Drop box app not initialized. Call init_dropbox() first.")
+    return _dropbox_app
+
+
+def set_dropbox_app(app: Any) -> None:
+    """Install the drop box ASGI app singleton."""
+    global _dropbox_app
+    _dropbox_app = app

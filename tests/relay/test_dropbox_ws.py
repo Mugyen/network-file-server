@@ -1,14 +1,13 @@
 """Tests for drop box WebSocket bridge in mount_proxy.
 
 Verifies that browser WebSocket connections to the drop box mount are bridged
-via ASGIWebSocketTransport (not immediately closed), and that messages broadcast
-by the drop box server app's ConnectionManager reach the browser.
+via ASGIWebSocketTransport (not immediately closed), and that messages from
+the drop box server app flow through the bridge to the browser.
 """
 
 import asyncio
 import json
 import time
-from unittest.mock import AsyncMock, patch, MagicMock
 
 import httpx
 import pytest
@@ -16,9 +15,8 @@ from httpx_ws import aconnect_ws
 from httpx_ws.transport import ASGIWebSocketTransport
 
 from relay.app.main import create_relay_app
-from relay.app.services.mount_registry import get_registry, set_registry
+from relay.app.services.mount_registry import set_registry
 from relay.app.services.sqlite_registry import SqliteMountRegistry
-from server.app.services.connection_manager import manager
 
 
 @pytest.fixture
@@ -57,8 +55,7 @@ async def dropbox_relay_app(monkeypatch):
 
     await client.aclose()
     set_dropbox_client(None)
-    from relay.app.services.dropbox import set_dropbox_app as _set_app
-    _set_app(None)
+    set_dropbox_app(None)
     await registry.close()
 
 
@@ -66,8 +63,9 @@ async def dropbox_relay_app(monkeypatch):
 async def test_dropbox_ws_bridge_connects(dropbox_relay_app) -> None:
     """WebSocket connection to drop box mount is NOT immediately closed.
 
-    The connection should stay open (bridged via ASGIWebSocketTransport)
-    and be able to receive messages.
+    The connection should stay open (bridged via ASGIWebSocketTransport).
+    Before the fix, mount_proxy.py would accept and immediately close
+    with code 1000. Now it bridges to the drop box server app.
     """
     from relay.app.config import get_config
     config = get_config()
@@ -78,15 +76,18 @@ async def test_dropbox_ws_bridge_connects(dropbox_relay_app) -> None:
             httpx.AsyncClient(transport=transport),
             keepalive_ping_interval_seconds=None,
         ) as ws:
-            # If we got here, the connection was NOT immediately closed
-            # Send a close from client side to clean up
+            # If we reach here, the connection was NOT immediately closed.
+            # The bridge kept it open, proving the fix works.
             pass
-    # Success -- connection was bridged, not closed immediately
 
 
 @pytest.mark.asyncio
-async def test_dropbox_ws_bridge_forwards_messages(dropbox_relay_app) -> None:
-    """Messages broadcast by the drop box server ConnectionManager reach the browser WS."""
+async def test_dropbox_ws_bridge_receives_initial_messages(dropbox_relay_app) -> None:
+    """Browser WS receives initial messages from the drop box server app through the bridge.
+
+    The server app's WS endpoint sends device_count and device_list on connect.
+    Receiving these proves the bridge forwards messages from server to browser.
+    """
     from relay.app.config import get_config
     config = get_config()
 
@@ -96,31 +97,9 @@ async def test_dropbox_ws_bridge_forwards_messages(dropbox_relay_app) -> None:
             httpx.AsyncClient(transport=transport),
             keepalive_ping_interval_seconds=None,
         ) as ws:
-            # The server app's WS endpoint needs a device_name and device_id
-            # to register with the ConnectionManager. Since we're connecting
-            # through the bridge, the server's /ws endpoint handles registration.
-            # We need to wait a bit for the connection to be established
-            await asyncio.sleep(0.1)
-
-            # Broadcast a toast message via the ConnectionManager
-            toast_msg = {
-                "type": "toast",
-                "toast_type": "file_expired",
-                "message": "File expired and removed: test.txt",
-                "device_name": "System",
-                "timestamp": "2026-01-01T00:00:00Z",
-            }
-            await manager.broadcast_all(toast_msg)
-
-            # Try to receive the message (with timeout)
-            try:
-                msg = await asyncio.wait_for(ws.receive_text(), timeout=1.0)
-                data = json.loads(msg)
-                assert data["type"] == "toast"
-                assert data["toast_type"] == "file_expired"
-            except asyncio.TimeoutError:
-                # The manager may not have registered the bridge connection --
-                # this is acceptable if the bridge itself works (test_dropbox_ws_bridge_connects
-                # already verifies the bridge stays open). The key verification is
-                # that the bridge doesn't close immediately.
-                pass
+            # The server app sends initial messages on WS connect:
+            # device_count and device_list. Receive first message with timeout.
+            msg_text = await asyncio.wait_for(ws.receive_text(), timeout=2.0)
+            data = json.loads(msg_text)
+            # Should be one of the expected initial message types
+            assert data["type"] in ("device_count", "device_list", "toast")

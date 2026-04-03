@@ -17,6 +17,7 @@ export type WSMessageType = (typeof WSMessageType)[keyof typeof WSMessageType];
 /** Toast notification types matching server ToastType enum. */
 export const ToastType = {
   FILE_UPLOADED: "file_uploaded",
+  FILE_EXPIRED: "file_expired",
   DEVICE_CONNECTED: "device_connected",
   DEVICE_DISCONNECTED: "device_disconnected",
   REQUEST_CREATED: "request_created",

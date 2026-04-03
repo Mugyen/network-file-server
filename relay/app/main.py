@@ -36,6 +36,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from relay.app.services.dropbox import init_dropbox, set_dropbox_client
     from relay.app.services.file_ttl_db import FileTtlDb, set_file_ttl_db
     from relay.app.services.file_ttl_sweep import run_file_ttl_sweep
+    from server.app.services.connection_manager import manager
 
     _logger = logging.getLogger("relay.lifespan")
 
@@ -71,7 +72,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         run_ttl_sweep(registry, config)
     )
     file_ttl_sweep_task = asyncio.create_task(
-        run_file_ttl_sweep(file_ttl_db, Path(config.data_dir), config.dropbox_code, 60, None)
+        run_file_ttl_sweep(file_ttl_db, Path(config.data_dir), config.dropbox_code, 60, manager.broadcast_all)
     )
     yield
     sweep_task.cancel()

@@ -9,6 +9,7 @@ For agent-backed mounts, records are cleaned up but files are not deleted
 import asyncio
 import logging
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Coroutine
 
@@ -49,7 +50,10 @@ async def file_ttl_sweep_once(
         for fp in deleted:
             await broadcast_fn({
                 "type": "toast",
+                "toast_type": "file_expired",
                 "message": f"File expired and removed: {Path(fp).name}",
+                "device_name": "System",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
             })
     return deleted
 

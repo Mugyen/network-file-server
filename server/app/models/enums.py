@@ -29,6 +29,7 @@ class WSMessageType(str, Enum):
 class ToastType(str, Enum):
     """Types of toast notifications broadcast via WebSocket."""
     FILE_UPLOADED = "file_uploaded"
+    FILE_EXPIRED = "file_expired"
     DEVICE_CONNECTED = "device_connected"
     DEVICE_DISCONNECTED = "device_disconnected"
     REQUEST_CREATED = "request_created"

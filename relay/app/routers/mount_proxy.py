@@ -11,11 +11,15 @@ from typing import AsyncGenerator
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response, StreamingResponse
 
+import httpx
+import httpx_ws
+from httpx_ws.transport import ASGIWebSocketTransport
+
 from relay.app.config import get_config
 from relay.app.exceptions import MountExpiredError, MountNotFoundError, MountOfflineError
 from relay.app.rate_limit import get_client_ip, limiter
 from relay.app.routers.landing import templates
-from relay.app.services.dropbox import get_dropbox_client
+from relay.app.services.dropbox import get_dropbox_app, get_dropbox_client
 from relay.app.services.mount_registry import get_registry
 from tunnel.constants import FIRST_BYTE_TIMEOUT_S, MAX_PAYLOAD_BYTES
 from tunnel.exceptions import FirstByteTimeoutError
@@ -273,10 +277,54 @@ async def proxy_websocket(websocket: WebSocket, code: str, path: str) -> None:
         code:      Mount code extracted from the URL path.
         path:      Remaining path after the mount code.
     """
-    # Drop box WebSocket: accept and close gracefully (httpx can't forward WS)
+    # Drop box WebSocket: bridge to local server app via ASGIWebSocketTransport
     if code == get_config().dropbox_code:
+        app = get_dropbox_app()
         await websocket.accept()
-        await websocket.close(code=1000)
+        query = str(websocket.url.query) if websocket.url.query else ""
+        local_ws_url = f"ws://dropbox/{path}"
+        if query:
+            local_ws_url = f"{local_ws_url}?{query}"
+        forward_headers = {
+            k: v for k, v in websocket.headers.items()
+            if k.lower() not in HOP_BY_HOP and k.lower() != "host"
+        }
+        try:
+            async with ASGIWebSocketTransport(app=app) as ws_transport:
+                async with httpx_ws.aconnect_ws(
+                    local_ws_url,
+                    httpx.AsyncClient(transport=ws_transport),
+                    headers=forward_headers,
+                    keepalive_ping_interval_seconds=None,
+                ) as local_ws:
+
+                    async def browser_to_local() -> None:
+                        """Forward text messages from browser to local drop box app."""
+                        async for msg in websocket.iter_text():
+                            await local_ws.send_text(msg)
+
+                    async def local_to_browser() -> None:
+                        """Forward messages from local drop box app to browser."""
+                        while True:
+                            msg = await local_ws.receive_text()
+                            await websocket.send_text(msg)
+
+                    b2l = asyncio.create_task(browser_to_local())
+                    l2b = asyncio.create_task(local_to_browser())
+                    try:
+                        done, pending = await asyncio.wait(
+                            {b2l, l2b}, return_when=asyncio.FIRST_COMPLETED,
+                        )
+                        for t in pending:
+                            t.cancel()
+                            try:
+                                await t
+                            except (asyncio.CancelledError, Exception):
+                                pass
+                    finally:
+                        pass
+        except Exception:
+            pass
         return
 
     try:
