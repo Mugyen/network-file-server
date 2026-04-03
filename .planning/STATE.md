@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.3
 milestone_name: Productionize Friend Tier
-status: executing
-last_updated: "2026-03-30T12:39:09.817Z"
-last_activity: 2026-03-30 — Completed Phase 14 (Persistent Mount Registry) — all PERS requirements satisfied
+status: completed
+last_updated: "2026-04-03T12:53:41.283Z"
+last_activity: 2026-04-03 — Completed Phase 16 (Wire File TTL Notifications) — FTTL-04, FTTL-06 satisfied
 progress:
-  total_phases: 3
-  completed_phases: 3
-  total_plans: 7
-  completed_plans: 7
-  percent: 60
+  total_phases: 4
+  completed_phases: 4
+  total_plans: 8
+  completed_plans: 8
+  percent: 100
 ---
 
 # Project State
@@ -24,19 +24,19 @@ See: .planning/PROJECT.md (updated 2026-03-16)
 
 ## Current Position
 
-Phase: 15 of 15 (UX Polish and Drop Box)
-Plan: 1 of 4
-Status: In Progress
-Last activity: 2026-03-30 — Completed Phase 14 (Persistent Mount Registry) — all PERS requirements satisfied
+Phase: 16 of 16 (Wire File TTL Notifications)
+Plan: 1 of 1
+Status: Complete
+Last activity: 2026-04-03 — Completed Phase 16 (Wire File TTL Notifications) — FTTL-04, FTTL-06 satisfied
 
-Progress: [██████░░░░] 60%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 6 (this milestone)
+- Total plans completed: 8 (this milestone)
 - Average duration: 8min
-- Total execution time: 46min
+- Total execution time: 55min
 
 **By Phase:**
 
@@ -45,6 +45,7 @@ Progress: [██████░░░░] 60%
 | 12 | 2 | 12min | 6min |
 | 13 | 2 | 15min | 7min |
 | 14 | 2 | 19min | 10min |
+| 16 | 1 | 9min | 9min |
 
 ## Milestones Shipped
 
@@ -81,6 +82,8 @@ Key decisions for v1.3:
 - [14-01] TYPE_CHECKING guard on circular import between mount_registry.py and sqlite_registry.py
 - [14-02] httpx.ASGITransport does not trigger FastAPI lifespan -- test fixtures pre-create SqliteMountRegistry manually
 - [14-02] mount_count() method on SqliteMountRegistry for health endpoint (replaces private _mounts dict access)
+- [Phase 16]: Reused ASGIWebSocketTransport bridge pattern from agent/proxy.py for drop box WS
+- [Phase 16]: Generic set_control_handler callback in TunnelConnection rather than hardcoding message types in tunnel protocol
 
 ### Pending Todos
 
