@@ -23,6 +23,29 @@ logger = logging.getLogger("relay.agent")
 
 router = APIRouter()
 
+
+async def _handle_agent_control_for_mount(msg: dict, mount_code: str) -> None:
+    """Handle delete_expired_files and keep_expired_files control messages.
+
+    Both message types clear expired TTL records for the mount so the agent
+    is not re-prompted on the next reconnect.
+
+    Args:
+        msg: Parsed control message dict with at least a "type" key.
+        mount_code: The mount code this agent connection is registered under.
+    """
+    msg_type = msg.get("type")
+    if msg_type in ("delete_expired_files", "keep_expired_files"):
+        try:
+            from relay.app.services.file_ttl_db import get_file_ttl_db
+            file_ttl_db = get_file_ttl_db()
+            code = msg.get("code", mount_code)
+            await file_ttl_db.delete_expired_for_mount(code)
+            logger.info("Processed %s for mount=%s", msg_type, code)
+        except RuntimeError:
+            pass  # FileTtlDb not initialized -- no-op
+
+
 # Module-level rate limiter for mount registration.
 # Uses the `limits` library directly because SlowAPI decorators
 # do not work on WebSocket endpoints.
@@ -196,6 +219,16 @@ async def agent_websocket(
         except RuntimeError:
             pass  # FileTtlDb not initialized
 
+    async def _on_agent_control(msg: dict) -> None:
+        """Handle application-specific control messages from the agent.
+
+        delete_expired_files: agent deleted expired files, clear TTL records.
+        keep_expired_files: user chose to keep files, clear TTL records so
+        they are not re-prompted on next reconnect.
+        """
+        await _handle_agent_control_for_mount(msg, assigned_code)
+
+    conn.set_control_handler(_on_agent_control)
     conn.start_heartbeat(HEARTBEAT_INTERVAL_S, HEARTBEAT_MISSED_LIMIT)
     try:
         await conn.run_receive_loop()

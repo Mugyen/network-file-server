@@ -88,7 +88,7 @@ def test_get_config_raises_before_set_config() -> None:
 
 def test_load_config_data_dir_default() -> None:
     config = load_config(_CONFIG_YAML)
-    assert config.data_dir == "/data/"
+    assert config.data_dir == "/tmp/relay-data"
 
 
 def test_load_config_dropbox_code_default() -> None:

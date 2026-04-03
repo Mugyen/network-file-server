@@ -4,6 +4,7 @@ import asyncio
 import json
 import uuid
 from dataclasses import dataclass, field
+from typing import Any, Callable, Coroutine
 
 from tunnel.constants import MAX_STREAMS, QUEUE_DEPTH
 from tunnel.enums import FrameType
@@ -53,6 +54,7 @@ class TunnelConnection:
         self._heartbeat_task: asyncio.Task | None = None
         self._pong_event: asyncio.Event = asyncio.Event()
         self._closed: bool = False
+        self._control_handler: Callable[[dict], Coroutine[Any, Any, None]] | None = None
 
     # ------------------------------------------------------------------
     # Stream lifecycle
@@ -260,6 +262,18 @@ class TunnelConnection:
             )
         return message
 
+    def set_control_handler(self, handler: Callable[[dict], Coroutine[Any, Any, None]]) -> None:
+        """Register a callback for application-specific control messages.
+
+        Called for any text frame message type not handled by the tunnel itself
+        (ping/pong). This allows the relay to handle domain-specific messages
+        like delete_expired_files without modifying the tunnel protocol.
+
+        Args:
+            handler: Async callable receiving the parsed message dict.
+        """
+        self._control_handler = handler
+
     # ------------------------------------------------------------------
     # Receive loop — dispatches binary and text frames
     # ------------------------------------------------------------------
@@ -286,6 +300,9 @@ class TunnelConnection:
                     self.handle_pong()
                 elif message.get("type") == "ping":
                     await self.send_control({"type": "pong"})
+                else:
+                    if self._control_handler is not None:
+                        await self._control_handler(message)
             else:
                 # Starlette sends {"type": "websocket.disconnect"} on close —
                 # no "bytes" or "text" key present. Break to avoid calling
