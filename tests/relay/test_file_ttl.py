@@ -123,6 +123,9 @@ async def test_sweep_broadcasts_toast(file_ttl_db: FileTtlDb, tmp_path: Path) ->
     assert len(toasts) == 1
     assert "gone.txt" in toasts[0]["message"]
     assert toasts[0]["type"] == "toast"
+    assert toasts[0]["toast_type"] == "file_expired"
+    assert toasts[0]["device_name"] == "System"
+    assert "timestamp" in toasts[0]
 
 
 @pytest.mark.asyncio
