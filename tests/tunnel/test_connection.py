@@ -607,6 +607,88 @@ async def test_close_idempotent(mock_ws):
     await conn.close()  # Must not raise
 
 
+# ---------------------------------------------------------------------------
+# Control handler dispatch tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_control_handler_dispatch(mock_ws):
+    """TunnelConnection with a registered control handler dispatches non-ping/pong messages to it."""
+    conn = TunnelConnection(mock_ws)
+    received: list[dict] = []
+
+    async def handler(msg: dict) -> None:
+        received.append(msg)
+
+    conn.set_control_handler(handler)
+
+    # Feed a delete_expired_files message then a disconnect
+    mock_ws.feed_text(json.dumps({"type": "delete_expired_files", "code": "abc"}))
+
+    task = asyncio.create_task(conn.run_receive_loop())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+    assert len(received) == 1
+    assert received[0]["type"] == "delete_expired_files"
+    assert received[0]["code"] == "abc"
+
+
+@pytest.mark.asyncio
+async def test_control_handler_not_called_for_ping_pong(mock_ws):
+    """ping/pong messages are handled by the tunnel, not forwarded to control handler."""
+    conn = TunnelConnection(mock_ws)
+    received: list[dict] = []
+
+    async def handler(msg: dict) -> None:
+        received.append(msg)
+
+    conn.set_control_handler(handler)
+
+    # Feed a pong message then cancel
+    mock_ws.feed_text(json.dumps({"type": "pong"}))
+
+    task = asyncio.create_task(conn.run_receive_loop())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+    # Control handler should NOT have been called for pong
+    assert len(received) == 0
+
+
+@pytest.mark.asyncio
+async def test_no_control_handler_silently_drops(mock_ws):
+    """Unknown message type with no handler set completes without error."""
+    conn = TunnelConnection(mock_ws)
+
+    # Feed an unknown message type -- no control handler set
+    mock_ws.feed_text(json.dumps({"type": "unknown_msg", "data": "test"}))
+
+    task = asyncio.create_task(conn.run_receive_loop())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+    # No crash = success
+
+
+# ---------------------------------------------------------------------------
+# Teardown tests
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
 async def test_close_cancels_heartbeat_and_streams(mock_ws):
     """close() cancels the heartbeat task and closes all open streams."""

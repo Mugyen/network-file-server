@@ -89,3 +89,52 @@ async def test_reclaim_no_expired_files_no_control(relay_app, file_ttl_with_regi
     expired = await file_ttl_db.get_expired_for_mount("agentcode2")
     # No expired files, so no control message should be sent
     assert len(expired) == 0
+
+
+# ---------------------------------------------------------------------------
+# Agent-to-relay expired files handler tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delete_expired_files_clears_records(relay_app, file_ttl_with_registry) -> None:
+    """Agent sending delete_expired_files clears expired TTL records for that mount."""
+    registry = get_registry()
+    file_ttl_db = file_ttl_with_registry
+
+    # Register mount and add expired records
+    conn = MockTunnelConnection()
+    await registry.register("agentmnt", conn, agent_ip="127.0.0.1", created_at=time.time(), expires_at=time.time() + 3600)
+    await file_ttl_db.record_file_ttl("agentmnt", "expired1.txt", -1)
+    await file_ttl_db.record_file_ttl("agentmnt", "expired2.txt", -1)
+
+    # Simulate the handler function from agent_ws.py
+    from relay.app.routers.agent_ws import _handle_agent_control_for_mount
+    await _handle_agent_control_for_mount(
+        {"type": "delete_expired_files", "code": "agentmnt"},
+        "agentmnt",
+    )
+
+    # Expired records should be cleared
+    expired = await file_ttl_db.get_expired_for_mount("agentmnt")
+    assert len(expired) == 0
+
+
+@pytest.mark.asyncio
+async def test_keep_expired_files_clears_records(relay_app, file_ttl_with_registry) -> None:
+    """Agent sending keep_expired_files also clears expired TTL records (no re-prompt)."""
+    registry = get_registry()
+    file_ttl_db = file_ttl_with_registry
+
+    conn = MockTunnelConnection()
+    await registry.register("agentmnt2", conn, agent_ip="127.0.0.1", created_at=time.time(), expires_at=time.time() + 3600)
+    await file_ttl_db.record_file_ttl("agentmnt2", "kept-file.txt", -1)
+
+    from relay.app.routers.agent_ws import _handle_agent_control_for_mount
+    await _handle_agent_control_for_mount(
+        {"type": "keep_expired_files", "code": "agentmnt2"},
+        "agentmnt2",
+    )
+
+    expired = await file_ttl_db.get_expired_for_mount("agentmnt2")
+    assert len(expired) == 0
