@@ -9,12 +9,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getMountPrefix, isRemoteMount } from "../utils/remoteMount.ts";
 
-export enum MountStatus {
-  ONLINE = "online",
-  OFFLINE = "offline",
-  EXPIRED = "expired",
-  UNKNOWN = "unknown",
-}
+export const MountStatus = {
+  ONLINE: "online",
+  OFFLINE: "offline",
+  EXPIRED: "expired",
+  UNKNOWN: "unknown",
+} as const;
+
+export type MountStatus = (typeof MountStatus)[keyof typeof MountStatus];
 
 const POLL_INTERVAL_MS = 30000;
 
