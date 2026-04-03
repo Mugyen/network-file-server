@@ -1,5 +1,9 @@
 # Project Log
 
+## 2026-04-03: Phase 16 gap closure: Wire file TTL notifications
+
+Wired broadcast_fn into file TTL sweep (was None), bridged drop box WebSocket via ASGIWebSocketTransport (was closed immediately), added tunnel control handler for agent expired-files responses, and fixed stale config test assertion.
+
 ## 2026-04-03: Phase 15 complete: UX Polish and Drop Box
 
 Landing page with hero section, OG meta tags, and GitHub link. Connection status overlays (Host Offline/Mount Expired) via REST polling. Always-on drop box mount via httpx.ASGITransport in-process forwarding with reserved code protection. Per-file upload TTL (1h/6h/1d/7d/Never) with SQLite tracking, background sweep, expiry badges, WebSocket toast, and agent expired files prompt.
