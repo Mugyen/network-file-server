@@ -22,6 +22,8 @@ interface MountStatusResult {
   status: MountStatus;
   /** Set a callback to be invoked when status transitions to ONLINE from non-ONLINE. */
   onRecoveryRef: React.MutableRefObject<(() => void) | null>;
+  /** Trigger an immediate poll (e.g. when WebSocket disconnects). */
+  triggerPoll: () => void;
 }
 
 export function useMountStatus(): MountStatusResult {
@@ -94,5 +96,7 @@ export function useMountStatus(): MountStatusResult {
     };
   }, [poll]);
 
-  return { status, onRecoveryRef };
+  const triggerPoll = useCallback(() => { void poll(); }, [poll]);
+
+  return { status, onRecoveryRef, triggerPoll };
 }

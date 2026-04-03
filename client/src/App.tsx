@@ -127,6 +127,13 @@ function App({ serverMode, onLogout }: AppProps) {
     ws.addMessageHandler, ws.removeMessageHandler, deviceName, loadFiles,
   );
 
+  // Trigger immediate status poll when WebSocket disconnects in remote mode
+  useEffect(() => {
+    if (!ws.isConnected && isRemoteMount()) {
+      mountStatus.triggerPoll();
+    }
+  }, [ws.isConnected, mountStatus.triggerPoll]);
+
   // Wire toast handler to WebSocket messages
   useEffect(() => {
     ws.addMessageHandler(WSMessageType.TOAST, (data: unknown) => {
@@ -401,7 +408,7 @@ function App({ serverMode, onLogout }: AppProps) {
         </div>
       </header>
 
-      {!ws.isConnected && mountStatus.status !== MountStatus.OFFLINE && mountStatus.status !== MountStatus.EXPIRED && <ReconnectingBanner />}
+      {!ws.isConnected && !isRemoteMount() && <ReconnectingBanner />}
 
       <MountStatusOverlay status={isRemoteMount() ? mountStatus.status : MountStatus.ONLINE}>
       <main className="container mx-auto p-4 max-w-4xl">
