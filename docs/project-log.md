@@ -191,3 +191,31 @@ Added PreviewModal with 7 sub-components: image gallery (zoom toggle, arrow navi
 ## 2026-03-09: WebSocket infrastructure with toast notifications and connection status (04-01)
 
 Added WebSocket endpoint (/ws) with ConnectionManager for device tracking and broadcast, atomic JSON persistence utility, toast notifications (file upload, device connect/disconnect) with auto-dismiss and overflow collapse, connection status dot with device count tooltip, and reconnecting banner with exponential backoff. 15 backend tests.
+
+## 2026-05-14: PWA Web Share Target for Android upload bypass
+
+Added manifest.webmanifest with share_target POST/multipart, minimal sw.js for installability, and POST /api/share-upload route that accepts shared files and 303-redirects to ../. Lets users on devices with broken file pickers (Realme/OPPO, some Samsung) upload via Android's share sheet instead. Also added accept="*/*" and 0.0.0.0 LAN-IP rewriting fixes.
+
+## 2026-05-18: Accounts library — users, nested groups, credentials, quotas (v1.3 phase 1)
+
+Added framework-agnostic `accounts/` package (enums, models, exceptions, bcrypt passwords, AccountStore ABC, SqliteAccountStore, transitive group resolution with write- and read-time cycle detection, per-user quota). Registered in pyproject wheel packages. 39 tests (happy/edge/failure + fastapi-free import isolation); ruff clean.
+
+## 2026-05-18: Relay accounts config + session signer + store wiring (v1.3 phase 2)
+
+Added session_secret/admin_users/accounts_db_path/default_user_quota_bytes to RelayConfig (env overrides; ephemeral secret + warning if unset). New relay/app/services/session.py (RelaySession: signed session + short-lived agent-owner tokens, salted) and account_store.py singleton. Wired SqliteAccountStore + RelaySession into relay lifespan. Added InvalidSessionError/AuthenticationRequiredError/AccessDeniedError. 28 new tests; full relay+accounts suite 264 green.
+
+## 2026-05-18: Relay auth + admin HTTP API (v1.3 phase 3)
+
+Added relay/app/dependencies.py (get_optional_identity / get_current_identity / require_admin, admins from config), routers/auth.py (POST /auth/signup|login|logout|agent-token, GET /auth/me with httponly wfs_session cookie) and routers/admin.py (admin-gated user enable/disable, group CRUD, membership add-by-name/remove with cycle+dup mapping to 409). Wired into relay app. 21 new tests; full relay+accounts suite 285 green.
+
+## 2026-05-18: Agent-as-owner handshake + mount policy persistence (v1.3 phase 4 + phase 5 data layer)
+
+Added agent/auth.py (AgentOwner, parse_allow_entry, fetch_agent_token), agent CLI flags --login/--password-stdin/--access-mode/--allow (password kept), and an agent_auth control frame sent before mount_registered. Relay agent_ws now reads/validates the handshake, verifies the owner token, resolves allowlist names→ids, and persists policy. SqliteMountRegistry gained owner_user_id/access_mode/has_password columns (migrated), a mount_policy table, set_owner_policy/get_policy, and try_reclaim_as_owner (IP-independent owner reclaim). MountPolicy/PolicyEntry models added. Agent stops (no retry) on AgentAuthError. 17 new tests; full suite 800 green.
+
+## 2026-05-18: Relay access enforcement at the proxy (v1.3 phase 5)
+
+Added relay/app/services/access_policy.py (authorize + identity_from_cookies) implementing the access-decision model: allowlisted signed-in users pass identified (password bypassed downstream), OPEN mounts allow anon, RESTRICTED+password falls through to the server password gate, RESTRICTED+no-password denies (AuthenticationRequiredError→302/401, AccessDeniedError→403 forbidden.html). Wired enforcement into mount_proxy proxy_request and proxy_websocket (close 1008). Legacy/dropbox mounts fail open. 12 new tests; full suite 812 green.
+
+## 2026-05-18: Trusted relay identity propagation + per-request server role (v1.3 phase 6 core)
+
+Relay mount_proxy now strips inbound X-WFS-* and injects authoritative X-WFS-User/Role/Auth-Bypass for allowlisted users (HTTP + WS). New server/app/services/relay_identity.py gates trust on relay-served mode (mount_code set) so LAN clients cannot spoof. auth_middleware honors X-WFS-Auth-Bypass (relay-served only); mode_guard derives per-request role from X-WFS-Role with global read_only/receive fallback; server-info exposes current_user/current_role/access_mode. 19 new tests incl. LAN spoof regressions; full suite 821 green. NOTE: RECEIVE currently = upload-only (existing receive semantics); the "see own uploads" refinement is still outstanding.

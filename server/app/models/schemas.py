@@ -38,6 +38,9 @@ class ServerInfo(BaseModel):
     receive: bool
     password_required: bool
     hostname: str
+    current_user: str | None = None
+    current_role: str | None = None
+    access_mode: str | None = None
 
 
 class UploadResult(BaseModel):

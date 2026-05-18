@@ -9,6 +9,7 @@ from http.cookies import SimpleCookie
 from typing import Any, Callable
 
 from server.app.services.auth_service import AuthTokenService
+from server.app.services.relay_identity import HEADER_AUTH_BYPASS, is_relay_served
 
 # Type aliases for ASGI
 Scope = dict[str, Any]
@@ -53,6 +54,17 @@ class AuthMiddleware:
 
         # Parse cookies from headers
         headers = dict(scope.get("headers", []))
+
+        # Relay-vouched allowlisted user: the relay strips inbound
+        # X-WFS-* and injects this only for authorised accounts. Honour
+        # it only when relay-served (LAN clients can't be trusted).
+        bypass = headers.get(
+            HEADER_AUTH_BYPASS.encode("latin-1"), b""
+        ).decode("latin-1")
+        if bypass == "1" and is_relay_served():
+            await self._app(scope, receive, send)
+            return
+
         cookie_header = headers.get(b"cookie", b"").decode("latin-1")
 
         token = _extract_session_cookie(cookie_header)
