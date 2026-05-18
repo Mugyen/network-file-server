@@ -7,18 +7,26 @@ import re
 import time
 import uuid
 from typing import AsyncGenerator
+from urllib.parse import quote
 
-from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response, StreamingResponse
+from fastapi import APIRouter, Request, WebSocket
+from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 
 import httpx
 import httpx_ws
 from httpx_ws.transport import ASGIWebSocketTransport
 
 from relay.app.config import get_config
-from relay.app.exceptions import MountExpiredError, MountNotFoundError, MountOfflineError
+from relay.app.exceptions import (
+    AccessDeniedError,
+    AuthenticationRequiredError,
+    MountExpiredError,
+    MountNotFoundError,
+    MountOfflineError,
+)
 from relay.app.rate_limit import get_client_ip, limiter
 from relay.app.routers.landing import templates
+from relay.app.services.access_policy import authorize, identity_from_cookies
 from relay.app.services.dropbox import get_dropbox_app, get_dropbox_client
 from relay.app.services.mount_registry import get_registry
 from tunnel.constants import FIRST_BYTE_TIMEOUT_S, MAX_PAYLOAD_BYTES
@@ -140,6 +148,29 @@ async def proxy_request(request: Request, code: str, path: str) -> Response:
             media_type=resp_content_type,
         )
 
+    # --- Account access enforcement (allowlisted users bypass the server
+    # password; non-allowlisted users fall back to it on RESTRICTED+pw
+    # mounts; RESTRICTED+no-pw mounts require login/allowlist). ---
+    registry = get_registry()
+    identity = identity_from_cookies(request.cookies)
+    try:
+        decision = await authorize(registry, code, identity)
+    except AuthenticationRequiredError:
+        next_url = request.url.path
+        if request.url.query:
+            next_url = f"{next_url}?{request.url.query}"
+        if "text/html" in request.headers.get("accept", ""):
+            return RedirectResponse(
+                url=f"/login?next={quote(next_url, safe='')}", status_code=302
+            )
+        return JSONResponse(
+            {"error": "authentication required"}, status_code=401
+        )
+    except AccessDeniedError:
+        return templates.TemplateResponse(
+            request, "forbidden.html", status_code=403
+        )
+
     # Extract client IP — reuses shared get_client_ip for consistency with rate limiter
     try:
         client_ip: str = get_client_ip(request)
@@ -147,7 +178,7 @@ async def proxy_request(request: Request, code: str, path: str) -> Response:
         client_ip = "unknown"
 
     try:
-        conn = await get_registry().get_connection(code)
+        conn = await registry.get_connection(code)
     except MountNotFoundError:
         return templates.TemplateResponse(
             request, "not_found.html", status_code=404
@@ -161,12 +192,19 @@ async def proxy_request(request: Request, code: str, path: str) -> Response:
             request, "expired.html", status_code=410
         )
 
-    # Build forwarded headers — strip hop-by-hop, rewrite Host
+    # Build forwarded headers — strip hop-by-hop + any spoofed X-WFS-*,
+    # rewrite Host, then inject trusted identity for allowlisted users.
     forward_headers: dict[str, str] = {}
     for header_name, header_value in request.headers.items():
-        if header_name.lower() not in HOP_BY_HOP and header_name.lower() != "host":
-            forward_headers[header_name] = header_value
+        lname = header_name.lower()
+        if lname in HOP_BY_HOP or lname == "host" or lname.startswith("x-wfs-"):
+            continue
+        forward_headers[header_name] = header_value
     forward_headers["host"] = request.headers.get("host", "")
+    if decision.identified:
+        forward_headers["x-wfs-user"] = decision.username
+        forward_headers["x-wfs-role"] = decision.role.value
+        forward_headers["x-wfs-auth-bypass"] = "1"
 
     content_length: int = int(request.headers.get("content-length", "0"))
 
@@ -327,8 +365,17 @@ async def proxy_websocket(websocket: WebSocket, code: str, path: str) -> None:
             pass
         return
 
+    registry = get_registry()
+    identity = identity_from_cookies(websocket.cookies)
     try:
-        conn = await get_registry().get_connection(code)
+        decision = await authorize(registry, code, identity)
+    except (AuthenticationRequiredError, AccessDeniedError):
+        await websocket.accept()
+        await websocket.close(code=1008)
+        return
+
+    try:
+        conn = await registry.get_connection(code)
     except (MountNotFoundError, MountOfflineError, MountExpiredError):
         await websocket.accept()
         await websocket.close(code=1011)
@@ -336,12 +383,19 @@ async def proxy_websocket(websocket: WebSocket, code: str, path: str) -> None:
 
     await websocket.accept()
 
-    # Forward non-hop-by-hop headers (including cookies) to agent
+    # Forward non-hop-by-hop headers (including cookies); strip spoofed
+    # X-WFS-* and inject trusted identity for allowlisted users.
     forward_headers: dict[str, str] = {}
     for header_name, header_value in websocket.headers.items():
-        if header_name.lower() not in HOP_BY_HOP and header_name.lower() != "host":
-            forward_headers[header_name] = header_value
+        lname = header_name.lower()
+        if lname in HOP_BY_HOP or lname == "host" or lname.startswith("x-wfs-"):
+            continue
+        forward_headers[header_name] = header_value
     forward_headers["host"] = websocket.headers.get("host", "")
+    if decision.identified:
+        forward_headers["x-wfs-user"] = decision.username
+        forward_headers["x-wfs-role"] = decision.role.value
+        forward_headers["x-wfs-auth-bypass"] = "1"
 
     ws_id = uuid.uuid4()
     conn.open_stream(ws_id)
