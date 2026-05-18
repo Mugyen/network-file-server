@@ -132,3 +132,55 @@ async def registered_relay_client(relay_app, mock_connection):
     transport = httpx.ASGITransport(app=relay_app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client, registry
+
+
+@pytest.fixture
+async def account_store():
+    """Install an in-memory accounts store as the global singleton."""
+    from accounts import SqliteAccountStore
+    from relay.app.services.account_store import set_account_store
+
+    store = await SqliteAccountStore.create(":memory:")
+    set_account_store(store)
+    yield store
+    set_account_store(None)
+    await store.close()
+
+
+@pytest.fixture
+def relay_session():
+    """Install a deterministic RelaySession as the global singleton."""
+    from relay.app.services.session import RelaySession, set_relay_session
+
+    s = RelaySession("test-relay-secret")
+    set_relay_session(s)
+    yield s
+    set_relay_session(None)
+
+
+@pytest.fixture
+async def auth_client(relay_app, account_store, relay_session):
+    """AsyncClient with accounts store + session signer wired in."""
+    transport = httpx.ASGITransport(app=relay_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
+
+
+@pytest.fixture
+def make_admin():
+    """Return a helper that marks a username as a relay admin.
+
+    Rewrites the global (frozen) RelayConfig; relay_app recreates config
+    per test, so the mutation does not leak across tests.
+    """
+    import dataclasses
+
+    from relay.app.config import get_config, set_config
+
+    def _make_admin(username: str) -> None:
+        cfg = get_config()
+        set_config(
+            dataclasses.replace(cfg, admin_users=[username.strip().lower()])
+        )
+
+    return _make_admin
