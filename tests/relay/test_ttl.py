@@ -41,6 +41,10 @@ def _make_test_config(
         db_path=":memory:",
         data_dir="/tmp/test-data",
         dropbox_code="dropbox",
+        session_secret="test-secret",
+        admin_users=[],
+        accounts_db_path=":memory:",
+        default_user_quota_bytes=1073741824,
     )
 
 
@@ -61,6 +65,17 @@ async def _recv_mount_registered(app, path: str) -> dict:
             keepalive_ping_interval_seconds=None,
             keepalive_ping_timeout_seconds=None,
         ) as ws:
+            await ws.send_text(
+                json.dumps(
+                    {
+                        "type": "agent_auth",
+                        "token": None,
+                        "access_mode": "open",
+                        "has_password": False,
+                        "allowlist": [],
+                    }
+                )
+            )
             raw = await ws.receive_text()
             return json.loads(raw)
 

@@ -33,9 +33,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     import logging
     import os
 
+    from accounts import SqliteAccountStore
+
+    from relay.app.services.account_store import set_account_store
     from relay.app.services.dropbox import init_dropbox, set_dropbox_client
     from relay.app.services.file_ttl_db import FileTtlDb, set_file_ttl_db
     from relay.app.services.file_ttl_sweep import run_file_ttl_sweep
+    from relay.app.services.session import RelaySession, set_relay_session
     from server.app.services.connection_manager import manager
 
     _logger = logging.getLogger("relay.lifespan")
@@ -43,6 +47,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     config = get_config()
     registry = await SqliteMountRegistry.create(config.db_path)
     set_registry(registry)
+
+    # Accounts registry + session signer (shared across all mounts).
+    account_store = await SqliteAccountStore.create(config.accounts_db_path)
+    set_account_store(account_store)
+    set_relay_session(RelaySession(config.session_secret))
 
     # Initialize file TTL tracking on the same SQLite connection
     file_ttl_db = FileTtlDb(registry._db)
@@ -88,6 +97,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await dropbox_client.aclose()
     set_dropbox_client(None)
     set_file_ttl_db(None)
+    await account_store.close()
+    set_account_store(None)
+    set_relay_session(None)
     await registry.close()
 
 
@@ -145,13 +157,17 @@ def create_relay_app(config_path: Path | None = None) -> FastAPI:
     if static_dir.exists():
         application.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
+    from relay.app.routers.admin import router as admin_router
     from relay.app.routers.agent_ws import router as agent_ws_router
+    from relay.app.routers.auth import router as auth_router
     from relay.app.routers.health import router as health_router
     from relay.app.routers.landing import router as landing_router
     from relay.app.routers.mount_proxy import router as mount_proxy_router
 
     application.include_router(health_router)
     application.include_router(landing_router)
+    application.include_router(auth_router)
+    application.include_router(admin_router)
     application.include_router(agent_ws_router)
     application.include_router(mount_proxy_router)
 

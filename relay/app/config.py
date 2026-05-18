@@ -5,13 +5,17 @@ development defaults; environment variables override individual fields for
 Cloud Run deployments (12-factor app style).
 """
 
+import logging
 import os
+import secrets
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
 
 from relay.app.logging import RelayEnv
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -29,6 +33,10 @@ class RelayConfig:
     db_path: str
     data_dir: str
     dropbox_code: str
+    session_secret: str
+    admin_users: list[str]
+    accounts_db_path: str
+    default_user_quota_bytes: int
 
 
 def load_config(config_path: Path) -> RelayConfig:
@@ -43,6 +51,10 @@ def load_config(config_path: Path) -> RelayConfig:
       - RELAY_MAX_MOUNTS_PER_IP -> max_mounts_per_ip
       - RELAY_TTL_SWEEP_INTERVAL -> ttl_sweep_interval_seconds
       - RELAY_WARNING_BEFORE_SECONDS -> warning_before_seconds
+      - RELAY_SESSION_SECRET -> session_secret (ephemeral if unset)
+      - RELAY_ADMIN_USERS -> admin_users (comma-separated, lowercased)
+      - RELAY_ACCOUNTS_DB_PATH -> accounts_db_path
+      - RELAY_DEFAULT_USER_QUOTA_BYTES -> default_user_quota_bytes
 
     Args:
         config_path: Absolute or relative path to the config YAML file.
@@ -107,6 +119,45 @@ def load_config(config_path: Path) -> RelayConfig:
         raw.get("dropbox_code", "dropbox"),
     )
 
+    # --- Accounts (v1.3) ---------------------------------------------------
+    session_secret: str = os.environ.get(
+        "RELAY_SESSION_SECRET",
+        raw.get("session_secret") or "",
+    )
+    if not session_secret:
+        session_secret = secrets.token_urlsafe(32)
+        logger.warning(
+            "RELAY_SESSION_SECRET not set -- generated an ephemeral secret. "
+            "All sessions will be invalidated on relay restart. Set "
+            "RELAY_SESSION_SECRET for stable sessions in production."
+        )
+
+    admin_env: str | None = os.environ.get("RELAY_ADMIN_USERS")
+    if admin_env is not None:
+        admin_users: list[str] = [
+            u.strip().lower() for u in admin_env.split(",") if u.strip()
+        ]
+    else:
+        admin_users = [
+            str(u).strip().lower()
+            for u in raw.get("admin_users", [])
+            if str(u).strip()
+        ]
+
+    if db_path == ":memory:":
+        default_accounts_db = ":memory:"
+    else:
+        default_accounts_db = str(Path(db_path).parent / "accounts.db")
+    accounts_db_path: str = os.environ.get(
+        "RELAY_ACCOUNTS_DB_PATH",
+        raw.get("accounts_db_path") or default_accounts_db,
+    )
+
+    default_user_quota_bytes: int = int(os.environ.get(
+        "RELAY_DEFAULT_USER_QUOTA_BYTES",
+        str(raw.get("default_user_quota_bytes", 1073741824)),
+    ))
+
     # Validate: production requires explicit allowed_origins
     if env == RelayEnv.PRODUCTION and not allowed_origins:
         raise ValueError(
@@ -126,6 +177,10 @@ def load_config(config_path: Path) -> RelayConfig:
         db_path=db_path,
         data_dir=data_dir,
         dropbox_code=dropbox_code,
+        session_secret=session_secret,
+        admin_users=admin_users,
+        accounts_db_path=accounts_db_path,
+        default_user_quota_bytes=default_user_quota_bytes,
     )
 
 
