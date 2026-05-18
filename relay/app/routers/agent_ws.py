@@ -13,9 +13,22 @@ from limits import parse as parse_limit
 from limits.storage import MemoryStorage
 from limits.strategies import MovingWindowRateLimiter
 
+from accounts import (
+    AccessMode,
+    GroupNotFoundError,
+    Role,
+    SubjectType,
+    UserNotFoundError,
+)
 from relay.app.config import get_config
-from relay.app.exceptions import MountNotFoundError
-from relay.app.services.mount_registry import generate_mount_code, get_registry
+from relay.app.exceptions import InvalidSessionError, MountNotFoundError
+from relay.app.services.account_store import get_account_store
+from relay.app.services.mount_registry import (
+    PolicyEntry,
+    generate_mount_code,
+    get_registry,
+)
+from relay.app.services.session import get_relay_session
 from tunnel.connection import TunnelConnection
 from tunnel.constants import HEARTBEAT_INTERVAL_S, HEARTBEAT_MISSED_LIMIT
 
@@ -61,6 +74,93 @@ def reset_mount_reg_limiter() -> None:
     global _mount_reg_storage, _mount_reg_limiter
     _mount_reg_storage = MemoryStorage()
     _mount_reg_limiter = MovingWindowRateLimiter(_mount_reg_storage)
+
+
+async def _read_agent_auth(conn: TunnelConnection, websocket: WebSocket):
+    """Read+validate the agent_auth handshake frame.
+
+    Returns ``(owner_user_id|None, owner_username|None, AccessMode,
+    has_password, list[PolicyEntry])`` on success. On any protocol/auth
+    failure it sends an error frame, closes the socket (1008), and
+    returns ``None``.
+    """
+    try:
+        msg = await conn.receive_control()
+    except Exception:
+        await websocket.close(code=1008)
+        return None
+
+    if msg.get("type") != "agent_auth":
+        await websocket.send_json(
+            {"type": "error", "error": "expected agent_auth handshake"}
+        )
+        await websocket.close(code=1008)
+        return None
+
+    token = msg.get("token")
+    has_password = bool(msg.get("has_password", False))
+    raw_allow = msg.get("allowlist", []) or []
+    try:
+        access_mode = AccessMode(msg.get("access_mode", AccessMode.OPEN.value))
+    except ValueError:
+        await websocket.send_json({"type": "error", "error": "invalid access_mode"})
+        await websocket.close(code=1008)
+        return None
+
+    owner_user_id: int | None = None
+    owner_username: str | None = None
+    if token:
+        try:
+            owner_user_id = get_relay_session().verify_agent_owner_token(token)
+            owner_username = (
+                await get_account_store().get_user_by_id(owner_user_id)
+            ).username
+        except (InvalidSessionError, UserNotFoundError):
+            await websocket.send_json(
+                {"type": "error", "error": "invalid owner token"}
+            )
+            await websocket.close(code=1008)
+            return None
+
+    if access_mode == AccessMode.RESTRICTED and owner_user_id is None:
+        await websocket.send_json(
+            {"type": "error", "error": "restricted mount requires --login"}
+        )
+        await websocket.close(code=1008)
+        return None
+
+    entries: list[PolicyEntry] = []
+    store = get_account_store() if raw_allow else None
+    for item in raw_allow:
+        try:
+            st = SubjectType(item["subject_type"])
+            ref = str(item["subject_ref"])
+            role = Role(item["role"])
+        except (KeyError, ValueError, TypeError):
+            await websocket.send_json(
+                {"type": "error", "error": "malformed allowlist entry"}
+            )
+            await websocket.close(code=1008)
+            return None
+        try:
+            if st is SubjectType.USER:
+                subject_id = (await store.get_user_by_username(ref)).id
+            else:
+                subject_id = (await store.get_group_by_name(ref)).id
+        except (UserNotFoundError, GroupNotFoundError):
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "error": f"unknown {st.value} {ref!r} in allowlist",
+                }
+            )
+            await websocket.close(code=1008)
+            return None
+        entries.append(
+            PolicyEntry(subject_type=st, subject_id=subject_id, role=role)
+        )
+
+    return owner_user_id, owner_username, access_mode, has_password, entries
 
 
 @router.websocket("/agent/ws")
@@ -151,13 +251,27 @@ async def agent_websocket(
     # --- Normal mount registration flow ---
     await websocket.accept()
 
+    conn = TunnelConnection(websocket)
+
+    # Owner/policy handshake (exactly one agent_auth frame, before register).
+    auth = await _read_agent_auth(conn, websocket)
+    if auth is None:
+        return
+    owner_user_id, owner_username, access_mode, has_password, policy_entries = auth
+
     # Determine assigned code with reclaim-aware logic
     reclaimed: bool = False
     remaining_ttl: int | None = None
-    conn = TunnelConnection(websocket)
 
     if code is not None:
-        reclaim_result = await registry.try_reclaim(code, conn, client_ip)
+        reclaim_result = None
+        # Owners may reconnect from a new IP — try owner reclaim first.
+        if owner_user_id is not None:
+            reclaim_result = await registry.try_reclaim_as_owner(
+                code, conn, owner_user_id
+            )
+        if reclaim_result is None:
+            reclaim_result = await registry.try_reclaim(code, conn, client_ip)
         if reclaim_result is not None:
             assigned_code = code
             reclaimed = True
@@ -187,14 +301,31 @@ async def agent_websocket(
         effective_ttl = remaining_ttl if remaining_ttl is not None else 0
         expires_in = effective_ttl
 
+    # Persist owner + access policy for both fresh and reclaimed mounts.
+    try:
+        await registry.set_owner_policy(
+            assigned_code,
+            owner_user_id,
+            access_mode,
+            has_password,
+            policy_entries,
+        )
+    except MountNotFoundError:
+        logger.warning(
+            "set_owner_policy: mount %s missing after register", assigned_code
+        )
+
     reused_code: bool = code is not None and assigned_code == code
     logger.info(
-        "Agent connected: code=%s preferred_reuse=%s reclaimed=%s client=%s ttl=%d",
+        "Agent connected: code=%s preferred_reuse=%s reclaimed=%s client=%s "
+        "ttl=%d owner=%s access=%s",
         assigned_code,
         reused_code,
         reclaimed,
         client_ip,
         effective_ttl,
+        owner_username,
+        access_mode.value,
     )
     await conn.send_control({
         "type": "mount_registered",
@@ -203,6 +334,7 @@ async def agent_websocket(
         "expires_in": expires_in,
         "reclaimed": reclaimed,
         "remaining_ttl": remaining_ttl,
+        "owner": owner_username,
     })
     # Send expired files list to agent on reclaim so it can prompt user
     if reclaimed:

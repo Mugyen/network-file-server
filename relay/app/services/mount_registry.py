@@ -4,11 +4,38 @@ import secrets
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from accounts import AccessMode, Role, SubjectType
 from relay.app.enums import MountStatus
 from relay.app.exceptions import MountExpiredError, MountNotFoundError, MountOfflineError
 
 if TYPE_CHECKING:
     from tunnel.connection import TunnelConnection
+
+
+@dataclass(frozen=True)
+class PolicyEntry:
+    """One allowlist entry for a mount: a subject and its granted role."""
+
+    subject_type: SubjectType
+    subject_id: int
+    role: Role
+
+
+@dataclass(frozen=True)
+class MountPolicy:
+    """Access policy bound to a mount code.
+
+    owner_user_id is None for anonymous mounts (no --login). access_mode
+    OPEN means anyone may access; RESTRICTED gates on the allowlist (with
+    the per-mount password as the documented fallback, enforced in the
+    proxy layer).
+    """
+
+    code: str
+    owner_user_id: int | None
+    access_mode: AccessMode
+    has_password: bool
+    entries: tuple[PolicyEntry, ...]
 
 
 def generate_mount_code() -> str:

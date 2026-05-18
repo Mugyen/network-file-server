@@ -228,6 +228,17 @@ async def _ws_recv_first_message(app, path: str) -> dict:
             keepalive_ping_interval_seconds=None,
             keepalive_ping_timeout_seconds=None,
         ) as ws:
+            await ws.send_text(
+                json.dumps(
+                    {
+                        "type": "agent_auth",
+                        "token": None,
+                        "access_mode": "open",
+                        "has_password": False,
+                        "allowlist": [],
+                    }
+                )
+            )
             raw = await ws.receive_text()
             return json.loads(raw)
 

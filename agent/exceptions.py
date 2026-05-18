@@ -14,3 +14,16 @@ class AgentExpiredError(Exception):
     def __init__(self, message: str) -> None:
         super().__init__(message)
         self.message = message
+
+
+class AgentAuthError(Exception):
+    """Raised when owner authentication with the relay fails.
+
+    Signals a configuration/credential problem (bad password, unknown
+    relay user, unreachable auth endpoint) — the reconnect loop must NOT
+    retry, since retrying with the same bad credentials cannot succeed.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message

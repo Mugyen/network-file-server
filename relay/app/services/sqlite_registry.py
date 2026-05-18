@@ -13,9 +13,10 @@ from typing import TYPE_CHECKING
 
 import aiosqlite
 
+from accounts import AccessMode, Role, SubjectType
 from relay.app.enums import MountStatus
 from relay.app.exceptions import MountExpiredError, MountNotFoundError, MountOfflineError
-from relay.app.services.mount_registry import MountRecord
+from relay.app.services.mount_registry import MountPolicy, MountRecord, PolicyEntry
 
 if TYPE_CHECKING:
     from tunnel.connection import TunnelConnection
@@ -34,9 +35,29 @@ CREATE TABLE IF NOT EXISTS mounts (
     agent_ip TEXT NOT NULL,
     created_at REAL NOT NULL,
     expires_at REAL,
-    ttl_warned INTEGER NOT NULL DEFAULT 0
+    ttl_warned INTEGER NOT NULL DEFAULT 0,
+    owner_user_id INTEGER,
+    access_mode TEXT NOT NULL DEFAULT 'open',
+    has_password INTEGER NOT NULL DEFAULT 0
 )
 """
+
+_CREATE_POLICY_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS mount_policy (
+    code TEXT NOT NULL,
+    subject_type TEXT NOT NULL,
+    subject_id INTEGER NOT NULL,
+    role TEXT NOT NULL,
+    PRIMARY KEY (code, subject_type, subject_id)
+)
+"""
+
+# Columns added after the initial v1.2 schema; migrated on existing DBs.
+_MIGRATION_COLUMNS: dict[str, str] = {
+    "owner_user_id": "ALTER TABLE mounts ADD COLUMN owner_user_id INTEGER",
+    "access_mode": "ALTER TABLE mounts ADD COLUMN access_mode TEXT NOT NULL DEFAULT 'open'",
+    "has_password": "ALTER TABLE mounts ADD COLUMN has_password INTEGER NOT NULL DEFAULT 0",
+}
 
 _CREATE_IP_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_mounts_agent_ip ON mounts (agent_ip)
@@ -85,6 +106,15 @@ class SqliteMountRegistry:
         await db.execute(_CREATE_TABLE_SQL)
         await db.execute(_CREATE_IP_INDEX_SQL)
         await db.execute(_CREATE_STATUS_INDEX_SQL)
+        await db.execute(_CREATE_POLICY_TABLE_SQL)
+
+        # Migrate pre-v1.3 databases: add owner/access columns if missing.
+        async with db.execute("PRAGMA table_info(mounts)") as cursor:
+            existing_cols = {row[1] for row in await cursor.fetchall()}
+        for col, alter_sql in _MIGRATION_COLUMNS.items():
+            if col not in existing_cols:
+                await db.execute(alter_sql)
+
         await db.commit()
 
         if is_new_db:
@@ -319,6 +349,123 @@ class SqliteMountRegistry:
             (MountStatus.EXPIRED.value, cutoff),
         )
         await self._db.commit()
+
+    async def try_reclaim_as_owner(
+        self,
+        code: str,
+        connection: "TunnelConnection",
+        owner_user_id: int,
+    ) -> ReclaimResult | None:
+        """Reclaim an OFFLINE mount by code + owner identity (IP-independent).
+
+        Account owners may reconnect from a different IP, so ownership —
+        not the source IP — authorises the reclaim. Returns None if the
+        code is unknown, not OFFLINE, owned by someone else, or expired.
+        """
+        async with self._db.execute(
+            "SELECT status, owner_user_id, expires_at FROM mounts WHERE code = ?",
+            (code,),
+        ) as cursor:
+            row = await cursor.fetchone()
+
+        if row is None:
+            return None
+
+        status, stored_owner, expires_at = row
+        if status != MountStatus.OFFLINE.value:
+            return None
+        if stored_owner is None or stored_owner != owner_user_id:
+            return None
+
+        now = time.time()
+        if expires_at is not None and expires_at <= now:
+            return None
+
+        await self._db.execute(
+            "UPDATE mounts SET status = ? WHERE code = ?",
+            (MountStatus.ONLINE.value, code),
+        )
+        await self._db.commit()
+        self._connections[code] = connection
+
+        remaining = int(expires_at - now) if expires_at is not None else 0
+        return ReclaimResult(remaining_ttl=remaining)
+
+    async def set_owner_policy(
+        self,
+        code: str,
+        owner_user_id: int | None,
+        access_mode: AccessMode,
+        has_password: bool,
+        entries: list[PolicyEntry],
+    ) -> None:
+        """Persist a mount's owner + access policy, replacing any prior policy.
+
+        Raises:
+            MountNotFoundError: if the mount code is not registered.
+        """
+        cursor = await self._db.execute(
+            "UPDATE mounts SET owner_user_id = ?, access_mode = ?, has_password = ? "
+            "WHERE code = ?",
+            (owner_user_id, access_mode.value, 1 if has_password else 0, code),
+        )
+        if cursor.rowcount == 0:
+            raise MountNotFoundError(code)
+
+        await self._db.execute(
+            "DELETE FROM mount_policy WHERE code = ?", (code,)
+        )
+        for entry in entries:
+            await self._db.execute(
+                "INSERT OR REPLACE INTO mount_policy "
+                "(code, subject_type, subject_id, role) VALUES (?, ?, ?, ?)",
+                (
+                    code,
+                    entry.subject_type.value,
+                    entry.subject_id,
+                    entry.role.value,
+                ),
+            )
+        await self._db.commit()
+
+    async def get_policy(self, code: str) -> MountPolicy:
+        """Return the access policy for a mount.
+
+        Raises:
+            MountNotFoundError: if the mount code is not registered.
+        """
+        async with self._db.execute(
+            "SELECT owner_user_id, access_mode, has_password FROM mounts "
+            "WHERE code = ?",
+            (code,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            raise MountNotFoundError(code)
+
+        owner_user_id, access_mode, has_password = row
+        async with self._db.execute(
+            "SELECT subject_type, subject_id, role FROM mount_policy "
+            "WHERE code = ?",
+            (code,),
+        ) as cursor:
+            policy_rows = await cursor.fetchall()
+
+        entries = tuple(
+            PolicyEntry(
+                subject_type=SubjectType(st),
+                subject_id=sid,
+                role=Role(role),
+            )
+            for st, sid, role in policy_rows
+        )
+        return MountPolicy(
+            code=code,
+            owner_user_id=owner_user_id,
+            access_mode=AccessMode(access_mode),
+            has_password=bool(has_password),
+            entries=entries,
+        )
 
     async def close(self) -> None:
         """Close the aiosqlite connection."""

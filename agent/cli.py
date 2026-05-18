@@ -1,14 +1,17 @@
 """Agent CLI entry point — mount subcommand for remote relay sharing.
 
 Provides run_mount() which is called from server/app/cli.py when the user
-invokes `wifi-file-server mount <folder> --server <url>`.
+invokes `network-file-server mount <folder> --server <url>`.
 """
 
 import argparse
 import asyncio
+import getpass
 import sys
 from pathlib import Path
 
+from accounts import AccessMode
+from agent.auth import AgentOwner, parse_allow_entry
 from agent.connection import run_agent_loop
 from server.app.services.auth_service import hash_password
 
@@ -58,9 +61,60 @@ def run_mount(args: argparse.Namespace) -> None:
     name: str = args.name if args.name is not None else folder.name
     server_url: str = args.server
 
+    owner: AgentOwner | None = _build_owner(args, server_url)
+
     print(f"Mounting {folder} via {server_url}...")
 
     try:
-        asyncio_run(run_agent_loop(server_url, folder, name, password_hash, ttl_seconds))
+        asyncio_run(
+            run_agent_loop(server_url, folder, name, password_hash, ttl_seconds, owner)
+        )
     except KeyboardInterrupt:
         print("Unmounting...")
+
+
+def _build_owner(args: argparse.Namespace, server_url: str) -> AgentOwner | None:
+    """Construct an AgentOwner from --login/--access-mode/--allow, or None.
+
+    Exits(1) on misconfiguration (restricted without login, bad --allow,
+    missing owner password).
+    """
+    login: str | None = getattr(args, "login", None)
+    access_mode_arg: str | None = getattr(args, "access_mode", None)
+
+    if login is None:
+        if access_mode_arg == AccessMode.RESTRICTED.value:
+            print("Error: --access-mode restricted requires --login")
+            sys.exit(1)
+        return None
+
+    if getattr(args, "password_stdin", False):
+        owner_password = sys.stdin.readline().rstrip("\n")
+    else:
+        owner_password = getpass.getpass(f"Relay password for '{login}': ")
+    if not owner_password:
+        print("Error: an owner password is required with --login")
+        sys.exit(1)
+
+    # Default to RESTRICTED when an owner logs in (the point of logging in
+    # is usually to restrict access); --access-mode can override.
+    access_mode = (
+        AccessMode(access_mode_arg)
+        if access_mode_arg is not None
+        else AccessMode.RESTRICTED
+    )
+
+    try:
+        allowlist = tuple(
+            parse_allow_entry(spec) for spec in (getattr(args, "allow", None) or [])
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+
+    return AgentOwner(
+        username=login,
+        password=owner_password,
+        access_mode=access_mode,
+        allowlist=allowlist,
+    )

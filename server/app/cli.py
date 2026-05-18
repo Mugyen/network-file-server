@@ -1,9 +1,9 @@
-"""CLI entry point for the WiFi File Server.
+"""CLI entry point for the Network File Server.
 
 Provides main() for argparse-based CLI and run_with_defaults() convenience function.
 Supports two modes:
-  - LAN mode (default): wifi-file-server <folder> [options]
-  - Mount mode: wifi-file-server mount <folder> --server <url>
+  - LAN mode (default): network-file-server <folder> [options]
+  - Mount mode: network-file-server mount <folder> --server <url>
 
 Subcommand detection: _parse_args() inspects argv[0] for known subcommands.
 When 'mount' is detected, the mount parser is used directly. Otherwise, the LAN
@@ -37,8 +37,8 @@ def _build_parser() -> argparse.ArgumentParser:
     """Build and return the LAN-mode argument parser.
 
     This parser handles the default invocation:
-      wifi-file-server <folder> [--port PORT] [--host HOST] [--password PW]
-                                [--read-only] [--receive]
+      network-file-server <folder> [--port PORT] [--host HOST] [--password PW]
+                                   [--read-only] [--receive]
 
     It does NOT include mount subcommand parsing. Mount is handled separately
     by _build_mount_parser() and _parse_args() which routes based on argv.
@@ -47,7 +47,7 @@ def _build_parser() -> argparse.ArgumentParser:
     and expect LAN-mode arg parsing. Those tests continue to work unchanged.
     """
     parser = argparse.ArgumentParser(
-        description="WiFi File Server - Share files over local network"
+        description="Network File Server - Share files over local network"
     )
     parser.add_argument(
         "folder",
@@ -85,7 +85,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def _build_mount_parser() -> argparse.ArgumentParser:
     """Build and return the argument parser for the mount subcommand.
 
-    Handles: wifi-file-server mount <folder> --server <url> [--name NAME]
+    Handles: network-file-server mount <folder> --server <url> [--name NAME]
     """
     parser = argparse.ArgumentParser(
         description="Mount a local folder through a relay server",
@@ -113,6 +113,29 @@ def _build_mount_parser() -> argparse.ArgumentParser:
         type=parse_duration,
         dest="ttl_seconds",
         help="Auto-expire duration (e.g. 30m, 2h, 1d). Agent exits cleanly after this time.",
+    )
+    parser.add_argument(
+        "--login",
+        help="Relay username that owns this mount (enables account access control)",
+    )
+    parser.add_argument(
+        "--password-stdin",
+        action="store_true",
+        dest="password_stdin",
+        help="Read the relay owner password from stdin instead of prompting",
+    )
+    parser.add_argument(
+        "--access-mode",
+        choices=["open", "restricted"],
+        dest="access_mode",
+        help="open = anyone may access; restricted = only allowlisted accounts "
+        "(default: restricted when --login is given)",
+    )
+    parser.add_argument(
+        "--allow",
+        action="append",
+        help="Allowlist entry 'type:ref:role' (e.g. user:alice:write, "
+        "group:eng:read). Repeatable.",
     )
     return parser
 
@@ -145,6 +168,10 @@ def _parse_args(argv: Optional[list] = None) -> argparse.Namespace:
             name=mount_args.name,
             password=mount_args.password,
             ttl_seconds=mount_args.ttl_seconds,
+            login=mount_args.login,
+            password_stdin=mount_args.password_stdin,
+            access_mode=mount_args.access_mode,
+            allow=mount_args.allow,
         )
 
     # LAN mode: parse with standard parser, add command=None
@@ -226,7 +253,7 @@ def main() -> None:
     # Initialize ShareLinkService for share link functionality
     set_share_service(ShareLinkService(share_secret_key))
 
-    print(f"\nWiFi File Server Starting...")
+    print(f"\nNetwork File Server Starting...")
     print(f"Sharing folder: {config.shared_folder}")
 
     # Print active modes
@@ -269,7 +296,7 @@ def run_with_defaults(folder: str) -> None:
     Port 8000: FastAPI convention.
     Host 0.0.0.0: Binds to all interfaces for LAN access.
     """
-    sys.argv = ["wifi-file-server", folder]
+    sys.argv = ["network-file-server", folder]
     main()
 
 
