@@ -45,6 +45,9 @@ def _make_test_config(
         admin_users=[],
         accounts_db_path=":memory:",
         default_user_quota_bytes=1073741824,
+        auth_signup_rate="100/hour",
+        auth_login_rate="100/minute",
+        auth_agent_token_rate="100/minute",
     )
 
 

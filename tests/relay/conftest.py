@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import os
 import time
 
 import httpx
@@ -82,6 +81,18 @@ async def _setup_in_memory_registry() -> SqliteMountRegistry:
     registry = await SqliteMountRegistry.create(":memory:")
     set_registry(registry)
     return registry
+
+
+@pytest.fixture(autouse=True)
+def _relax_auth_rate_limits(monkeypatch):
+    """Disable auth rate limits for relay tests (the slowapi limiter is
+    process-global and would otherwise accumulate across the suite for
+    the shared test client IP). The dedicated rate-limit test overrides
+    these with its own low limits + unique X-Forwarded-For IP.
+    """
+    monkeypatch.setenv("RELAY_AUTH_SIGNUP_RATE", "100000/hour")
+    monkeypatch.setenv("RELAY_AUTH_LOGIN_RATE", "100000/minute")
+    monkeypatch.setenv("RELAY_AUTH_AGENT_TOKEN_RATE", "100000/minute")
 
 
 @pytest.fixture

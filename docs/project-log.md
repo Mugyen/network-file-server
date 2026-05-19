@@ -231,3 +231,7 @@ Added relay/app/services/user_storage.py (isolated <data_dir>/users/<id> dir, us
 ## 2026-05-19: Client SPA — relay login/signup/admin/403 + access requests (v1.3 phase 8 frontend)
 
 Added client/src/api/accounts.ts (relay-root auth/admin/requests client) and client/src/pages/{LoginPage,SignupPage,AdminDashboard,Forbidden403}.tsx. main.tsx routes /login,/signup,/admin,/403 to relay pages and redirects mount access to /login?next= on relay 302/401. Client builds clean (tsc + vite). Browser/Playwright verification is the user's step (no headless browser here).
+
+## 2026-05-19: Rate limiting, scripts, docs, security pass (v1.3 phase 9)
+
+Added config-driven per-IP rate limits (RELAY_AUTH_SIGNUP_RATE 5/hour, AUTH_LOGIN_RATE 10/min, AUTH_AGENT_TOKEN_RATE 10/min) on /auth/signup|login|agent-token via the shared slowapi limiter (response param added for header injection). Created scripts/{install_setup,build,run,test,clean}.sh (CLAUDE rule 12). README documents the accounts model/env/flows; feature-ideas/48 marked largely-delivered (API keys + SSO still open). Security pass: bcrypt constant-time, generic 401s, httponly+samesite+secure-via-proxy session cookie, 120s agent-token max-age, inbound x-wfs-* strip regression covered. 3 new tests; full suite 848 green; all feature files ruff-clean.

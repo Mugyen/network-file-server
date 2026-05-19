@@ -34,6 +34,44 @@ Mount a local folder through the relay from any machine:
 uv run network-file-server /path/to/folder mount --relay http://relay-host:8001
 ```
 
+## User accounts (relay)
+
+The relay is the identity provider for all its mounts (GitHub-Enterprise
+style). Accounts + groups live in a SQLite DB on the relay.
+
+Relay env:
+
+```bash
+RELAY_SESSION_SECRET=<stable-random>      # required in prod; ephemeral if unset
+RELAY_ADMIN_USERS=alice,bob               # comma-separated admin usernames
+RELAY_ACCOUNTS_DB_PATH=/data/accounts.db  # default: sibling of RELAY_DB_PATH
+RELAY_DEFAULT_USER_QUOTA_BYTES=1073741824 # per-user relay storage (1 GiB)
+```
+
+- Visitors self-register at `/signup` (unique username + password), sign in
+  at `/login`, or **continue as guest** for open mounts.
+- Admins (from `RELAY_ADMIN_USERS`) manage users/groups and approve access
+  requests at `/admin`. Groups may contain users *and* other groups.
+- Per-user relay storage: `GET/POST/DELETE /me/files`, `GET /me/quota`
+  (login required; 413 over quota).
+
+Mount with account access control (the per-mount `--password` still works
+and is an independent fallback — signing in as an allowlisted user bypasses
+it; not being allowlisted falls back to it):
+
+```bash
+uv run network-file-server mount /folder --server https://relay \
+  --login alice --access-mode restricted \
+  --allow user:bob:write --allow group:eng:read
+# password via prompt, or: echo "$PW" | ... --password-stdin
+```
+
+Roles: `read` (browse/download), `write` (full), `receive` (upload + see
+only your own uploads). Restricted mounts with **no** password require an
+allowlisted login; non-allowlisted users can submit an access request that
+the mount owner or an admin approves. **LAN-direct** access (no relay) is
+unaffected and still guarded only by the per-mount password.
+
 ## Docker (Cloud Run)
 
 ```bash
@@ -67,8 +105,11 @@ Set `RELAY_DB_PATH=/path/to/mounts.db` to override SQLite mount registry locatio
 ## Test
 
 ```bash
-uv run pytest server/tests/ -v
+scripts/test.sh                 # full suite (relay + server + agent + accounts)
+scripts/test.sh tests/accounts  # a subset
 ```
+
+Helper scripts: `scripts/{install_setup,build,run,test,clean}.sh`.
 
 ## Client Development
 

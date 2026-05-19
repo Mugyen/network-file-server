@@ -18,6 +18,9 @@ rate_limits:
   mount_registration: "5/hour"
   proxy_requests: "300/minute"
   max_mounts_per_ip: 5
+  auth_signup: "5/hour"          # per-IP account signups
+  auth_login: "10/minute"        # per-IP login attempts
+  auth_agent_token: "10/minute"  # per-IP agent owner-token exchanges
 
 ttl:
   max_seconds: 86400           # 24 hours

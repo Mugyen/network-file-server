@@ -37,6 +37,9 @@ class RelayConfig:
     admin_users: list[str]
     accounts_db_path: str
     default_user_quota_bytes: int
+    auth_signup_rate: str
+    auth_login_rate: str
+    auth_agent_token_rate: str
 
 
 def load_config(config_path: Path) -> RelayConfig:
@@ -158,6 +161,19 @@ def load_config(config_path: Path) -> RelayConfig:
         str(raw.get("default_user_quota_bytes", 1073741824)),
     ))
 
+    auth_signup_rate: str = os.environ.get(
+        "RELAY_AUTH_SIGNUP_RATE",
+        rate_limits.get("auth_signup", "5/hour"),
+    )
+    auth_login_rate: str = os.environ.get(
+        "RELAY_AUTH_LOGIN_RATE",
+        rate_limits.get("auth_login", "10/minute"),
+    )
+    auth_agent_token_rate: str = os.environ.get(
+        "RELAY_AUTH_AGENT_TOKEN_RATE",
+        rate_limits.get("auth_agent_token", "10/minute"),
+    )
+
     # Validate: production requires explicit allowed_origins
     if env == RelayEnv.PRODUCTION and not allowed_origins:
         raise ValueError(
@@ -181,6 +197,9 @@ def load_config(config_path: Path) -> RelayConfig:
         admin_users=admin_users,
         accounts_db_path=accounts_db_path,
         default_user_quota_bytes=default_user_quota_bytes,
+        auth_signup_rate=auth_signup_rate,
+        auth_login_rate=auth_login_rate,
+        auth_agent_token_rate=auth_agent_token_rate,
     )
 
 

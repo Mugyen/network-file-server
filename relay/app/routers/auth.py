@@ -4,9 +4,12 @@ Thin glue: input validation and persistence live in the ``accounts``
 library; these handlers only translate between HTTP and the library.
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+
+from relay.app.config import get_config
+from relay.app.rate_limit import limiter
 
 from accounts import (
     UsernameTakenError,
@@ -39,7 +42,10 @@ class LoginRequest(BaseModel):
 
 
 @router.post("/signup")
-async def signup(body: SignupRequest) -> dict[str, object]:
+@limiter.limit(lambda: get_config().auth_signup_rate)
+async def signup(
+    request: Request, response: Response, body: SignupRequest
+) -> dict[str, object]:
     """Self-register a new account. 409 if the username is taken."""
     store = get_account_store()
     try:
@@ -69,7 +75,10 @@ def _set_session_cookie(payload: dict[str, object], token: str) -> JSONResponse:
 
 
 @router.post("/login")
-async def login(body: LoginRequest) -> JSONResponse:
+@limiter.limit(lambda: get_config().auth_login_rate)
+async def login(
+    request: Request, response: Response, body: LoginRequest
+) -> JSONResponse:
     """Authenticate and set the session cookie. 401 on bad credentials."""
     store = get_account_store()
     try:
@@ -116,7 +125,10 @@ async def me(
 
 
 @router.post("/agent-token")
-async def agent_token(body: LoginRequest) -> dict[str, object]:
+@limiter.limit(lambda: get_config().auth_agent_token_rate)
+async def agent_token(
+    request: Request, response: Response, body: LoginRequest
+) -> dict[str, object]:
     """Exchange owner credentials for a short-lived agent-owner token.
 
     Used by the agent during the mount registration handshake (Phase 4) to
