@@ -7,6 +7,7 @@ import uuid
 import pytest
 
 from tunnel.connection import StreamState, TunnelConnection
+from tunnel.constants import QUEUE_DEPTH
 from tunnel.enums import FrameType
 from tunnel.exceptions import (
     StreamLimitError,
@@ -91,7 +92,7 @@ async def test_dispatch_data_to_open_stream(mock_ws):
     state = conn.open_stream(rid)
     payload = b"hello world"
 
-    conn._dispatch_frame(FrameType.DATA, rid, payload)
+    await conn._dispatch_frame(FrameType.DATA, rid, payload)
 
     assert not state.queue.empty()
     queued = state.queue.get_nowait()
@@ -105,7 +106,7 @@ async def test_dispatch_data_to_nonexistent_stream_is_ignored(mock_ws):
     rid = uuid.uuid4()
 
     # Should not raise — frames for missing streams are normal during teardown
-    conn._dispatch_frame(FrameType.DATA, rid, b"payload")
+    await conn._dispatch_frame(FrameType.DATA, rid, b"payload")
 
 
 @pytest.mark.asyncio
@@ -115,7 +116,7 @@ async def test_close_frame_sets_closed_event_and_removes_stream(mock_ws):
     rid = uuid.uuid4()
     state = conn.open_stream(rid)
 
-    conn._dispatch_frame(FrameType.CLOSE, rid, b"")
+    await conn._dispatch_frame(FrameType.CLOSE, rid, b"")
 
     assert state.closed.is_set()
     # Stream stays until consumer calls remove_stream (avoids race with StreamingResponse)
@@ -132,7 +133,7 @@ async def test_cancel_frame_sets_closed_event_and_removes_stream(mock_ws):
     rid = uuid.uuid4()
     state = conn.open_stream(rid)
 
-    conn._dispatch_frame(FrameType.CANCEL, rid, b"")
+    await conn._dispatch_frame(FrameType.CANCEL, rid, b"")
 
     assert state.closed.is_set()
     # Stream stays until consumer calls remove_stream
@@ -149,7 +150,7 @@ async def test_error_frame_sets_closed_event_and_removes_stream(mock_ws):
     rid = uuid.uuid4()
     state = conn.open_stream(rid)
 
-    conn._dispatch_frame(FrameType.ERROR, rid, b"")
+    await conn._dispatch_frame(FrameType.ERROR, rid, b"")
 
     assert state.closed.is_set()
     assert conn.get_stream(rid) is state
@@ -185,8 +186,8 @@ async def test_two_streams_receive_own_data_without_cross_contamination(mock_ws)
     payload_a = b"stream-a-data"
     payload_b = b"stream-b-data"
 
-    conn._dispatch_frame(FrameType.DATA, rid_a, payload_a)
-    conn._dispatch_frame(FrameType.DATA, rid_b, payload_b)
+    await conn._dispatch_frame(FrameType.DATA, rid_a, payload_a)
+    await conn._dispatch_frame(FrameType.DATA, rid_b, payload_b)
 
     assert state_a.queue.get_nowait() == payload_a
     assert state_b.queue.get_nowait() == payload_b
@@ -204,12 +205,45 @@ async def test_multiple_data_frames_per_stream_correct_counts(mock_ws):
     state_b = conn.open_stream(rid_b)
 
     for i in range(3):
-        conn._dispatch_frame(FrameType.DATA, rid_a, f"a-frame-{i}".encode())
+        await conn._dispatch_frame(FrameType.DATA, rid_a, f"a-frame-{i}".encode())
     for i in range(2):
-        conn._dispatch_frame(FrameType.DATA, rid_b, f"b-frame-{i}".encode())
+        await conn._dispatch_frame(FrameType.DATA, rid_b, f"b-frame-{i}".encode())
 
     assert state_a.queue.qsize() == 3
     assert state_b.queue.qsize() == 2
+
+
+@pytest.mark.asyncio
+async def test_dispatch_blocks_under_backpressure_instead_of_raising(mock_ws):
+    """A full stream queue makes _dispatch_frame block, not raise QueueFull.
+
+    Regression: previously put_nowait raised asyncio.QueueFull on a slow
+    consumer (e.g. a browser pulling a media preview), which propagated out
+    of the receive loop and tore down the entire agent tunnel.
+    """
+    conn = TunnelConnection(mock_ws)
+    rid = uuid.uuid4()
+    state = conn.open_stream(rid)
+
+    # Fill the bounded queue exactly to capacity.
+    for _ in range(QUEUE_DEPTH):
+        await conn._dispatch_frame(FrameType.DATA, rid, b"x")
+    assert state.queue.full()
+
+    # One more frame must block (backpressure), never raise QueueFull.
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(
+            conn._dispatch_frame(FrameType.DATA, rid, b"overflow"),
+            timeout=0.1,
+        )
+
+    # Draining one item lets a subsequent dispatch complete promptly.
+    assert state.queue.get_nowait() == b"x"
+    await asyncio.wait_for(
+        conn._dispatch_frame(FrameType.DATA, rid, b"after-drain"),
+        timeout=0.5,
+    )
+    assert state.queue.full()
 
 
 @pytest.mark.asyncio
@@ -221,7 +255,7 @@ async def test_cancel_stream_a_does_not_affect_stream_b(mock_ws):
     state_a = conn.open_stream(rid_a)
     state_b = conn.open_stream(rid_b)
 
-    conn._dispatch_frame(FrameType.CANCEL, rid_a, b"")
+    await conn._dispatch_frame(FrameType.CANCEL, rid_a, b"")
 
     # Stream A is closed
     assert state_a.closed.is_set()

@@ -56,6 +56,16 @@ class TunnelConnection:
         self._closed: bool = False
         self._control_handler: Callable[[dict], Coroutine[Any, Any, None]] | None = None
 
+    @property
+    def is_closed(self) -> bool:
+        """True once the connection has been torn down or closed.
+
+        Callers (e.g. the mount registry) use this to avoid handing out a
+        connection whose underlying WebSocket has already sent its close
+        frame, which would raise RuntimeError on the next send.
+        """
+        return self._closed
+
     # ------------------------------------------------------------------
     # Stream lifecycle
     # ------------------------------------------------------------------
@@ -126,13 +136,16 @@ class TunnelConnection:
             raise StreamNotFoundError(f"Stream {request_id} not found")
         return state
 
-    def _dispatch_frame(
+    async def _dispatch_frame(
         self, frame_type: FrameType, request_id: uuid.UUID, payload: bytes
     ) -> None:
         """Route an inbound frame to the correct stream or lifecycle handler.
 
-        - DATA/WS_DATA → put payload into stream queue (blocks under backpressure
-                         when called via asyncio — use put_nowait only in tests).
+        - DATA/WS_DATA → await put payload into the bounded stream queue. When
+                         the consumer lags (e.g. a browser pulling a media
+                         preview slowly) this blocks the receive loop, which
+                         propagates TCP backpressure to the sender instead of
+                         overflowing the queue and tearing down the whole tunnel.
         - CLOSE/CANCEL/ERROR/WS_CLOSE → call close_stream to signal and deregister.
 
         Silently ignores frames for streams that have already been closed and
@@ -147,7 +160,7 @@ class TunnelConnection:
         try:
             if frame_type in (FrameType.DATA, FrameType.WS_DATA):
                 state = self.get_stream(request_id)
-                state.queue.put_nowait(payload)
+                await state.queue.put(payload)
             elif frame_type in (FrameType.CLOSE, FrameType.CANCEL, FrameType.ERROR, FrameType.WS_CLOSE):
                 self.close_stream(request_id)
         except StreamNotFoundError:
@@ -292,7 +305,7 @@ class TunnelConnection:
             if "bytes" in frame_dict:
                 raw = frame_dict["bytes"]
                 frame_type, request_id, payload = deserialize_frame(raw)
-                self._dispatch_frame(frame_type, request_id, payload)
+                await self._dispatch_frame(frame_type, request_id, payload)
             elif "text" in frame_dict:
                 text = frame_dict["text"]
                 message: dict = json.loads(text)

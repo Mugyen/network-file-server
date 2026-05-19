@@ -315,6 +315,10 @@ class MockWSConnection:
         # Queue for agent_to_browser messages (chunks to yield from read_stream_iter)
         self._ws_response_queue: asyncio.Queue = asyncio.Queue()
 
+    @property
+    def is_closed(self) -> bool:
+        return False
+
     def open_stream(self, request_id: uuid.UUID) -> None:
         self.opened_streams.append(request_id)
 

@@ -227,7 +227,15 @@ class SqliteMountRegistry:
         if code not in self._connections:
             raise RuntimeError(f"Mount '{code}' has no tunnel connection (local mount)")
 
-        return self._connections[code]
+        connection = self._connections[code]
+        # A torn-down agent connection may linger in the map if mark_offline
+        # was a race-guard no-op (status flipped by reclaim churn). Treat it
+        # as offline so the proxy returns a clean mount-offline response
+        # instead of RuntimeError on the next send to a closed WebSocket.
+        if connection.is_closed:
+            raise MountOfflineError(code)
+
+        return connection
 
     async def mark_offline(self, code: str) -> None:
         """Transition an ONLINE mount to OFFLINE. No-op for non-ONLINE mounts.

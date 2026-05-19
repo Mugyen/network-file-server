@@ -12,6 +12,15 @@ const BASE_DELAY = 1000;
 /** Maximum jitter added to reconnect delay in milliseconds. */
 const MAX_JITTER = 1000;
 
+/**
+ * Minimum time a connection must stay open before it counts as "stable"
+ * and the backoff attempt counter is reset. The relay accepts the WS
+ * upgrade before it knows whether the agent is reachable, so a dead mount
+ * still produces a brief onopen→onclose. Without this gate the counter
+ * resets every attempt and reconnects hammer the relay every ~1s forever.
+ */
+const STABLE_CONNECTION_MS = 3000;
+
 interface UseWebSocketResult {
   isConnected: boolean;
   deviceCount: number;
@@ -35,6 +44,7 @@ export function useWebSocket(deviceName: string): UseWebSocketResult {
   const handlersRef = useRef<Map<string, (data: unknown) => void>>(new Map());
   const attemptRef = useRef<number>(0);
   const reconnectTimerRef = useRef<number | null>(null);
+  const stableTimerRef = useRef<number | null>(null);
   const mountedRef = useRef<boolean>(true);
 
   const connect = useCallback((): void => {
@@ -46,7 +56,13 @@ export function useWebSocket(deviceName: string): UseWebSocketResult {
     ws.onopen = (): void => {
       if (!mountedRef.current) return;
       setIsConnected(true);
-      attemptRef.current = 0;
+      // Only reset backoff if the connection survives long enough to be
+      // considered real. A relay that immediately closes (dead mount)
+      // never reaches this timer, so the counter keeps escalating.
+      stableTimerRef.current = window.setTimeout(() => {
+        attemptRef.current = 0;
+        stableTimerRef.current = null;
+      }, STABLE_CONNECTION_MS);
     };
 
     ws.onmessage = (event: MessageEvent): void => {
@@ -94,6 +110,13 @@ export function useWebSocket(deviceName: string): UseWebSocketResult {
       setMyDeviceId("");
       wsRef.current = null;
 
+      // Connection didn't survive to "stable" — cancel the pending reset
+      // so this failed attempt still counts toward the backoff.
+      if (stableTimerRef.current !== null) {
+        clearTimeout(stableTimerRef.current);
+        stableTimerRef.current = null;
+      }
+
       // Exponential backoff with jitter
       const delay = Math.min(
         BASE_DELAY * Math.pow(2, attemptRef.current),
@@ -119,6 +142,10 @@ export function useWebSocket(deviceName: string): UseWebSocketResult {
       if (reconnectTimerRef.current !== null) {
         clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;
+      }
+      if (stableTimerRef.current !== null) {
+        clearTimeout(stableTimerRef.current);
+        stableTimerRef.current = null;
       }
       if (wsRef.current !== null) {
         wsRef.current.close();

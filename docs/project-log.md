@@ -235,3 +235,15 @@ Added client/src/api/accounts.ts (relay-root auth/admin/requests client) and cli
 ## 2026-05-19: Rate limiting, scripts, docs, security pass (v1.3 phase 9)
 
 Added config-driven per-IP rate limits (RELAY_AUTH_SIGNUP_RATE 5/hour, AUTH_LOGIN_RATE 10/min, AUTH_AGENT_TOKEN_RATE 10/min) on /auth/signup|login|agent-token via the shared slowapi limiter (response param added for header injection). Created scripts/{install_setup,build,run,test,clean}.sh (CLAUDE rule 12). README documents the accounts model/env/flows; feature-ideas/48 marked largely-delivered (API keys + SSO still open). Security pass: bcrypt constant-time, generic 401s, httponly+samesite+secure-via-proxy session cookie, 120s agent-token max-age, inbound x-wfs-* strip regression covered. 3 new tests; full suite 848 green; all feature files ruff-clean.
+
+## 2026-05-19: Client WS reconnect backoff gate
+
+useWebSocket now resets the backoff attempt counter only after a connection stays open STABLE_CONNECTION_MS (3s), not immediately in onopen. The relay accepts the WS upgrade before it knows the agent is reachable, so a dead mount produced a brief onopen→onclose that reset the counter every attempt, hammering the relay every ~1s. Failed/short connections now escalate to the 30s cap. Client tsc clean.
+
+## 2026-05-19: Tunnel backpressure + stale-connection guard
+
+TunnelConnection._dispatch_frame is now async and awaits queue.put instead of put_nowait, so a slow consumer (e.g. browser pulling a media preview) applies TCP backpressure to the sender instead of raising QueueFull and tearing down the whole agent tunnel; relay and both agent receive loops updated to await it. Added TunnelConnection.is_closed; both registries' get_connection now raise MountOfflineError for a registered-but-closed connection so post-disconnect requests get a clean offline response instead of RuntimeError on a closed WebSocket. Added backpressure + closed-guard tests (mocks gained is_closed); full suite 851 green.
+
+## 2026-05-19: Playwright auth e2e
+
+Added @playwright/test + client/playwright.config.ts + client/e2e/auth.spec.ts and scripts/e2e.sh, which boots a throwaway relay (temp DBs, RELAY_ADMIN_USERS=admin), seeds admin/alice/bob, brings up an open and an alice-owned restricted mount, then runs 5 specs: signup, login (+wrong password), open-mount guest access, restricted anonymous→/login?next= redirect, and restricted denial→/403 request→admin approval→access granted. Wired install_setup.sh (playwright install chromium), clean.sh, client/.gitignore, README. 5/5 green. Note: server-rendered forbidden.html does not link to the React /403 request-access UI — reachable only by direct navigation (UX gap, not a test failure).

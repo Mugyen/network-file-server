@@ -130,6 +130,23 @@ async def test_get_connection_offline_raises_offline_error() -> None:
     await reg.close()
 
 
+async def test_get_connection_closed_connection_raises_offline_error() -> None:
+    """A registered-but-closed connection is treated as offline.
+
+    Regression: a torn-down agent connection could linger ONLINE (mark_offline
+    race-guard no-op under reclaim churn) and get_connection would hand it
+    back, causing RuntimeError on the next send to its closed WebSocket.
+    """
+    reg = await _make_registry(":memory:")
+    conn = MockTunnelConnection()
+    await reg.register("CLOSED01", conn, "127.0.0.1", _now(), None)
+    conn.closed = True  # status row stays ONLINE, but the connection is dead
+    with pytest.raises(MountOfflineError) as exc_info:
+        await reg.get_connection("CLOSED01")
+    assert exc_info.value.code == "CLOSED01"
+    await reg.close()
+
+
 async def test_get_connection_expired_raises_expired_error() -> None:
     reg = await _make_registry(":memory:")
     conn = MockTunnelConnection()

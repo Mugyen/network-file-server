@@ -107,9 +107,13 @@ Set `RELAY_DB_PATH=/path/to/mounts.db` to override SQLite mount registry locatio
 ```bash
 scripts/test.sh                 # full suite (relay + server + agent + accounts)
 scripts/test.sh tests/accounts  # a subset
+scripts/e2e.sh                  # Playwright auth e2e (spins up a throwaway relay+mounts)
+scripts/e2e.sh -g signup        # one e2e test (args pass through to playwright)
 ```
 
-Helper scripts: `scripts/{install_setup,build,run,test,clean}.sh`.
+`scripts/e2e.sh` needs Playwright Chromium (`scripts/install_setup.sh` installs it).
+
+Helper scripts: `scripts/{install_setup,build,run,test,e2e,clean}.sh`.
 
 ## Client Development
 

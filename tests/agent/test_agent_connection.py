@@ -289,7 +289,7 @@ async def test_agent_receive_loop_dispatches_open_frames(tmp_path: Path) -> None
 
     conn = MagicMock()
     conn._ws = MagicMock()
-    conn._dispatch_frame = MagicMock()
+    conn._dispatch_frame = AsyncMock()
     conn.handle_pong = MagicMock()
     conn._ws.receive = receive_with_yields
 
@@ -336,7 +336,7 @@ async def test_agent_receive_loop_dispatches_ws_open_frames() -> None:
 
     conn = MagicMock()
     conn._ws = MagicMock()
-    conn._dispatch_frame = MagicMock()
+    conn._dispatch_frame = AsyncMock()
     conn.handle_pong = MagicMock()
     conn._ws.receive = receive_with_yields
 

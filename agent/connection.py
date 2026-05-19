@@ -70,7 +70,7 @@ async def _agent_receive_loop(
                     pending_tasks.add(task)
                     task.add_done_callback(pending_tasks.discard)
                 else:
-                    conn._dispatch_frame(frame_type, request_id, payload)
+                    await conn._dispatch_frame(frame_type, request_id, payload)
             elif "text" in frame_dict:
                 text: str = frame_dict["text"]
                 message: dict = json.loads(text)
@@ -126,7 +126,7 @@ async def _agent_receive_loop_with_metadata(
                     pending_tasks.add(task)
                     task.add_done_callback(pending_tasks.discard)
                 else:
-                    conn._dispatch_frame(frame_type, request_id, payload)
+                    await conn._dispatch_frame(frame_type, request_id, payload)
             elif "text" in frame_dict:
                 text: str = frame_dict["text"]
                 message: dict = json.loads(text)

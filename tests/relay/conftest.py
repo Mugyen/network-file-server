@@ -37,6 +37,10 @@ class MockTunnelConnection:
         # Event that tests can set to unblock run_receive_loop
         self._killswitch: asyncio.Event = asyncio.Event()
 
+    @property
+    def is_closed(self) -> bool:
+        return self.closed
+
     def open_stream(self, request_id) -> None:
         self.opened_streams.append(request_id)
 

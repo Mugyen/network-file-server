@@ -9,5 +9,8 @@ uv sync --group dev
 echo "Installing client deps (npm)..."
 (cd client && npm install --legacy-peer-deps)
 
+echo "Installing Playwright Chromium (auth e2e — scripts/e2e.sh)..."
+(cd client && npx playwright install chromium)
+
 echo "Done. See README.md for the accounts env vars (RELAY_SESSION_SECRET,"
 echo "RELAY_ADMIN_USERS, RELAY_ACCOUNTS_DB_PATH, RELAY_DEFAULT_USER_QUOTA_BYTES)."

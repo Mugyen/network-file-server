@@ -137,6 +137,12 @@ class MountRegistry:
             raise MountOfflineError(code)
         if record.status == MountStatus.EXPIRED:
             raise MountExpiredError(code)
+        # A torn-down connection may still be recorded if its agent loop
+        # exited without an ONLINE->OFFLINE transition. Treat it as offline
+        # so the proxy returns a clean mount-offline response instead of
+        # RuntimeError on the next send to a closed WebSocket.
+        if record.connection.is_closed:
+            raise MountOfflineError(code)
         return record.connection
 
     def mark_offline(self, code: str) -> None:
