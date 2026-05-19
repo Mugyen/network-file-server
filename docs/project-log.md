@@ -227,3 +227,7 @@ Added server/app/services/upload_index.py (JSON sidecar mapping rel_path->upload
 ## 2026-05-19: Per-user relay storage + quota (v1.3 phase 7)
 
 Added relay/app/services/user_storage.py (isolated <data_dir>/users/<id> dir, usage walk, quota = accounts override else relay default) and routers/user_storage.py (/me/quota, /me/files list/upload/download/delete; login-required; 413 on quota exceeded with content-length pre-check + post-write rollback). Reuses server file_service helpers (path-traversal safe). Removed a long-stale unused import in relay/app/main.py. 6 tests; full suite 836 green.
+
+## 2026-05-19: Client SPA — relay login/signup/admin/403 + access requests (v1.3 phase 8 frontend)
+
+Added client/src/api/accounts.ts (relay-root auth/admin/requests client) and client/src/pages/{LoginPage,SignupPage,AdminDashboard,Forbidden403}.tsx. main.tsx routes /login,/signup,/admin,/403 to relay pages and redirects mount access to /login?next= on relay 302/401. Client builds clean (tsc + vite). Browser/Playwright verification is the user's step (no headless browser here).

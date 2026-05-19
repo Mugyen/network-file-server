@@ -4,6 +4,10 @@ import "./index.css";
 import App from "./App.tsx";
 import LoginPage from "./components/LoginPage.tsx";
 import DropBoxPage from "./components/DropBoxPage.tsx";
+import RelayLoginPage from "./pages/LoginPage.tsx";
+import SignupPage from "./pages/SignupPage.tsx";
+import AdminDashboard from "./pages/AdminDashboard.tsx";
+import Forbidden403 from "./pages/Forbidden403.tsx";
 import { fetchServerInfo } from "./api/serverInfo.ts";
 import type { ServerMode } from "./types/serverMode.ts";
 import { getApiBase } from "./utils/remoteMount.ts";
@@ -17,6 +21,18 @@ function Root() {
   useEffect(() => {
     async function loadServerMode(): Promise<void> {
       try {
+        // Relay account-gate detection: a RESTRICTED, password-less mount
+        // 302s to /login (or 401s for XHR). Detect and route to login.
+        const probe = await fetch(`${getApiBase()}/server-info`, {
+          credentials: "include",
+          redirect: "manual",
+        });
+        if (probe.type === "opaqueredirect" || probe.status === 401) {
+          const here = window.location.pathname + window.location.search;
+          window.location.assign(`/login?next=${encodeURIComponent(here)}`);
+          return;
+        }
+
         const info = await fetchServerInfo();
         const mode: ServerMode = {
           readOnly: info.read_only,
@@ -79,8 +95,28 @@ function Root() {
   return <App serverMode={mode} onLogout={() => setIsAuthenticated(false)} />;
 }
 
+/** Relay-served account pages are matched by exact path before the
+ *  mount/SPA flow runs. */
+function pickRoot() {
+  const path = window.location.pathname;
+  if (path === "/login") return <RelayLoginPage />;
+  if (path === "/signup") return <SignupPage />;
+  if (path === "/admin") return <AdminDashboard />;
+  if (path === "/403") return <Forbidden403 />;
+  return <Root />;
+}
+
 createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <Root />
-  </StrictMode>,
+  <StrictMode>{pickRoot()}</StrictMode>,
 );
+
+// Register service worker so the app is installable as a PWA (required for
+// Web Share Target on Android). Registered relative to the document URL so it
+// works both at the root and under /m/{code}/ when served via the relay.
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./sw.js").catch(() => {
+      // Ignore registration failures — the app still works without PWA install.
+    });
+  });
+}
