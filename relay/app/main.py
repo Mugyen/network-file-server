@@ -22,7 +22,7 @@ from relay.app.middleware.secure_cookies import SecureCookieMiddleware
 from relay.app.rate_limit import limiter, rate_limit_exceeded_handler
 from fastapi.staticfiles import StaticFiles
 
-from relay.app.services.mount_registry import get_registry, set_registry
+from relay.app.services.mount_registry import set_registry
 from relay.app.services.sqlite_registry import SqliteMountRegistry
 from relay.app.services.ttl_sweep import run_ttl_sweep
 
@@ -163,11 +163,13 @@ def create_relay_app(config_path: Path | None = None) -> FastAPI:
     from relay.app.routers.health import router as health_router
     from relay.app.routers.landing import router as landing_router
     from relay.app.routers.mount_proxy import router as mount_proxy_router
+    from relay.app.routers.user_storage import router as user_storage_router
 
     application.include_router(health_router)
     application.include_router(landing_router)
     application.include_router(auth_router)
     application.include_router(admin_router)
+    application.include_router(user_storage_router)
     application.include_router(agent_ws_router)
     application.include_router(mount_proxy_router)
 

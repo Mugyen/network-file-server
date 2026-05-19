@@ -223,3 +223,7 @@ Relay mount_proxy now strips inbound X-WFS-* and injects authoritative X-WFS-Use
 ## 2026-05-19: RECEIVE role = upload + see own uploads (v1.3 phase 6 completion)
 
 Added server/app/services/upload_index.py (JSON sidecar mapping rel_path->uploader, reuses persistence util). mode_guard: require_write_access now allows RECEIVE (upload), require_full_access still blocks RECEIVE (destructive ops), new require_browse_access + receive_scope_user. files.py records uploader on upload and scopes list/download/preview to the RECEIVE user's own files (search returns empty for RECEIVE; sidecar hidden). 8 new tests; full suite 830 green.
+
+## 2026-05-19: Per-user relay storage + quota (v1.3 phase 7)
+
+Added relay/app/services/user_storage.py (isolated <data_dir>/users/<id> dir, usage walk, quota = accounts override else relay default) and routers/user_storage.py (/me/quota, /me/files list/upload/download/delete; login-required; 413 on quota exceeded with content-length pre-check + post-write rollback). Reuses server file_service helpers (path-traversal safe). Removed a long-stale unused import in relay/app/main.py. 6 tests; full suite 836 green.
