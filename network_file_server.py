@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-WiFi File Server - A simple file sharing server over local network
+Network File Server - A simple file sharing server over local network
 Allows users to browse, download, and upload files from a specified folder
 """
 
@@ -160,7 +160,7 @@ def main():
     """Main function to start the server"""
     global SHARED_FOLDER
     
-    parser = argparse.ArgumentParser(description='WiFi File Server - Share files over local network')
+    parser = argparse.ArgumentParser(description='Network File Server - Share files over local network')
     parser.add_argument('folder', help='Path to the folder to share')
     parser.add_argument('--port', '-p', type=int, default=5000, help='Port to run the server on (default: 5000)')
     parser.add_argument('--host', default='0.0.0.0', help='Host to bind to (default: 0.0.0.0)')
@@ -187,7 +187,7 @@ def main():
     # Get local IP
     local_ip = get_local_ip()
     
-    print(f"\n🚀 WiFi File Server Starting...")
+    print(f"\n🚀 Network File Server Starting...")
     print(f"📁 Sharing folder: {folder_path}")
     print(f"🌐 Server URL: http://{local_ip}:{args.port}")
     print(f"🔗 Local URL: http://localhost:{args.port}")

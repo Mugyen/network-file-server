@@ -58,7 +58,7 @@ files_changed: 8
 
 # Phase 10 Plan 02: Agent Proxy, Connection Loop, and Mount CLI Summary
 
-**`wifi-file-server mount ./files --server <url>` wires complete path: CLI → WebSocket → relay mount code → OPEN frame dispatch → local ASGI proxy → DATA+CLOSE streaming → exponential backoff reconnect**
+**`network-file-server mount ./files --server <url>` wires complete path: CLI → WebSocket → relay mount code → OPEN frame dispatch → local ASGI proxy → DATA+CLOSE streaming → exponential backoff reconnect**
 
 ## Performance
 
@@ -72,7 +72,7 @@ files_changed: 8
 
 - `handle_open_frame` proxies OPEN frame metadata to local ASGI app via httpx ASGITransport, streams response as JSON metadata + body chunks, handles CANCEL via StreamNotFoundError, logs request line
 - `run_agent_loop` / `connect_and_serve` implement full WebSocket lifecycle: receive mount code, start heartbeat, create local ASGI client, dispatch OPEN frames as concurrent tasks, reconnect with exponential backoff, track preferred code across reconnects
-- `wifi-file-server mount ./files --server URL` and `wifi-file-server ./files` (LAN mode) both work; backward compatibility fully preserved
+- `network-file-server mount ./files --server URL` and `network-file-server ./files` (LAN mode) both work; backward compatibility fully preserved
 
 ## Task Commits
 
@@ -137,7 +137,7 @@ None beyond the deviations documented above.
 ## Next Phase Readiness
 
 - Full agent-side implementation complete: proxy, connection loop, reconnect, CLI
-- Phase 10 is complete — `wifi-file-server mount` is functional end-to-end
+- Phase 10 is complete — `network-file-server mount` is functional end-to-end
 - Next: Phase 11 (SPA base URL injection for relay-hosted UI) can proceed
 
 ## Self-Check: PASSED

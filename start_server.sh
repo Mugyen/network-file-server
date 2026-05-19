@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# WiFi File Server Startup Script
+# Network File Server Startup Script
 
-echo "🚀 WiFi File Server"
+echo "🚀 Network File Server"
 echo "=================="
 
 # Check if Python is available
@@ -58,4 +58,4 @@ echo "Press Ctrl+C to stop the server"
 echo ""
 
 # Start the server
-python3 wifi_file_server.py "$FOLDER_PATH" --port "$PORT"
+python3 network_file_server.py "$FOLDER_PATH" --port "$PORT"

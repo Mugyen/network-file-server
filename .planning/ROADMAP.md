@@ -5,7 +5,7 @@
 - ✅ **v1.0 MVP** — Phases 1-4 (shipped 2026-03-09)
 - ✅ **v1.1 Share & Access Control** — Phases 5-7 (shipped 2026-03-11)
 - ✅ **v1.2 Remote Mounts** — Phases 8-11 (shipped 2026-03-16)
-- 🚧 **v1.3 Productionize Friend Tier** — Phases 12-15 (in progress)
+- 🚧 **v1.3 Productionize Friend Tier** — Phases 12-16 (in progress)
 
 ## Phases
 
@@ -44,16 +44,26 @@ Full details: `.planning/milestones/v1.2-ROADMAP.md`
 
 </details>
 
-### 🚧 v1.3 Productionize Friend Tier (In Progress)
+### v1.3 Productionize Friend Tier (In Progress)
 
 **Milestone Goal:** Deploy the relay to Google Cloud Run and harden it for real-world use — Dockerized, secured, with persistent state, a default public drop box, and auto-expiring file uploads.
 
-- [ ] **Phase 12: Cloud Run Foundation** - Dockerize the relay, add health check and structured logging, fix HTTPS cookie/CORS/proxy-header security bugs
-- [ ] **Phase 13: Abuse Prevention** - Rate-limit mount registration and proxy requests, enforce max TTL and per-IP mount cap
-- [ ] **Phase 14: Persistent Mount Registry** - SQLite mount metadata store survives relay restarts; agents reclaim codes on reconnect
-- [ ] **Phase 15: UX Polish and Drop Box** - Landing page with OG tags, connection status overlays, always-on drop box, per-file upload TTL
+- [x] **Phase 12: Cloud Run Foundation** - Dockerize the relay, add health check and structured logging, fix HTTPS cookie/CORS/proxy-header security bugs (completed 2026-03-16)
+- [x] **Phase 13: Abuse Prevention** - Rate-limit mount registration and proxy requests, enforce max TTL and per-IP mount cap (completed 2026-03-17)
+- [x] **Phase 14: Persistent Mount Registry** - SQLite mount metadata store survives relay restarts; agents reclaim codes on reconnect (completed 2026-03-30)
+- [x] **Phase 15: UX Polish and Drop Box** - Landing page with OG tags, connection status overlays, always-on drop box, per-file upload TTL (completed 2026-04-03)
+- [x] **Phase 16: Wire File TTL Notifications & Expired Files Handler** - Fix broadcast_fn wiring for TTL toast, add tunnel handlers for agent keep/delete responses (gap closure) (completed 2026-04-03)
 
 Full details: `.planning/milestones/v1.3-ROADMAP.md`
+
+### Phase 16: Wire File TTL Notifications & Expired Files Handler
+**Goal**: File TTL auto-deletion sends WebSocket toast notifications to connected browsers, and the relay correctly processes agent responses to expired-files prompts on mount restart.
+**Depends on**: Phase 15
+**Requirements**: FTTL-04, FTTL-06
+**Plans:** 1/1 plans complete
+
+Plans:
+- [ ] 16-01-PLAN.md — Wire broadcast_fn, bridge drop box WS, add tunnel control handlers, fix config test
 
 ## Progress
 
@@ -70,7 +80,8 @@ Full details: `.planning/milestones/v1.3-ROADMAP.md`
 | 9. Relay Server | v1.2 | 2/2 | Complete | 2026-03-11 |
 | 10. Agent CLI | v1.2 | 2/2 | Complete | 2026-03-11 |
 | 11. Remote Access and Hardening | v1.2 | 5/5 | Complete | 2026-03-16 |
-| 12. Cloud Run Foundation | v1.3 | 0/2 | Not started | - |
-| 13. Abuse Prevention | v1.3 | 0/1 | Not started | - |
-| 14. Persistent Mount Registry | v1.3 | 0/1 | Not started | - |
-| 15. UX Polish and Drop Box | v1.3 | 0/4 | Not started | - |
+| 12. Cloud Run Foundation | v1.3 | 2/2 | Complete | 2026-03-16 |
+| 13. Abuse Prevention | v1.3 | 2/2 | Complete | 2026-03-17 |
+| 14. Persistent Mount Registry | v1.3 | 2/2 | Complete | 2026-03-30 |
+| 15. UX Polish and Drop Box | v1.3 | 4/4 | Complete | 2026-04-03 |
+| 16. Wire File TTL Notifications & Expired Files Handler | v1.3 | Complete    | 2026-04-03 | - |

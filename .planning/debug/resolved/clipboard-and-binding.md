@@ -1,16 +1,16 @@
 ---
-status: diagnosed
+status: resolved
 trigger: "Two related issues: no copy-to-clipboard button in scratchpad; relay only accessible via localhost"
 created: 2026-03-16T00:00:00Z
-updated: 2026-03-16T00:00:00Z
+updated: 2026-03-30T00:00:00Z
 ---
 
 ## Current Focus
 
-hypothesis: confirmed (two separate root causes identified)
+hypothesis: confirmed and verified (both fixes already applied in prior commits)
 test: n/a
 expecting: n/a
-next_action: hand off for fixing
+next_action: archive session
 
 ## Symptoms
 
@@ -42,6 +42,16 @@ started: always (features were never implemented/configured)
   found: Documented relay startup command is `uv run uvicorn relay.app.main:app --port 8001` with NO --host flag. Uvicorn defaults to `127.0.0.1` when --host is not specified.
   implication: The relay is unreachable from other devices because the documented startup command omits `--host 0.0.0.0`. This is a documentation/startup-config issue. Could be fixed by either (a) updating docs to include `--host 0.0.0.0`, or (b) adding a relay CLI entry point that defaults to 0.0.0.0 like the main server does (see server/app/cli.py line 191).
 
+- timestamp: 2026-03-30T00:00:00Z
+  checked: Current state of SnippetCard.tsx (127 lines), relay/cli.py, pyproject.toml, README.md
+  found: Both fixes were already applied in prior commits. SnippetCard.tsx now has a copy button (Copy/Check icons, handleCopy with navigator.clipboard + execCommand fallback, 1500ms checkmark feedback). relay/cli.py exists with argparse, defaults host to 0.0.0.0, and is registered as `network-relay` console script in pyproject.toml. README documents `uv run network-relay` binding 0.0.0.0:8001.
+  implication: No code changes needed. Session can be verified and resolved.
+
+- timestamp: 2026-03-30T00:00:00Z
+  checked: Verification via CLI and TypeScript compilation
+  found: `uv run network-relay --help` works correctly, shows default 0.0.0.0. TypeScript compiles cleanly (npx tsc --noEmit returns no errors).
+  implication: Both fixes are functional and verified.
+
 ## Eliminated
 
 (none -- both root causes confirmed on first investigation)
@@ -51,35 +61,33 @@ started: always (features were never implemented/configured)
 root_cause: |
   Two separate issues:
 
-  1. **Missing copy button (UI gap):** SnippetCard.tsx has no copy-to-clipboard button.
-     The component only has collapse/expand and delete actions. The navigator.clipboard
-     API is never called anywhere in the clipboard/scratchpad feature. This is a missing
-     feature, not a bug.
+  1. **Missing copy button (UI gap):** SnippetCard.tsx had no copy-to-clipboard button.
+     The component only had collapse/expand and delete actions. The navigator.clipboard
+     API was never called anywhere in the clipboard/scratchpad feature.
 
-  2. **Relay localhost binding (config gap):** The relay has no CLI entry point of its own.
-     It is started via bare uvicorn command: `uv run uvicorn relay.app.main:app --port 8001`.
-     Uvicorn defaults to binding on 127.0.0.1 when no --host is specified. The main server
-     (server/app/cli.py:191) defaults to 0.0.0.0, but the relay has no equivalent.
+  2. **Relay localhost binding (config gap):** The relay had no CLI entry point of its own.
+     It was started via bare uvicorn command defaulting to 127.0.0.1.
 
-fix: (not applied -- diagnosis only)
-verification: (not applied)
-files_changed: []
+fix: |
+  Both fixes were applied in prior commits on this branch:
 
-## Affected Files
+  1. **Copy button** (commit 3c9ee07): Added handleCopy() to SnippetCard with
+     navigator.clipboard.writeText() + execCommand fallback for HTTP-over-LAN.
+     Copy/Check icons from lucide-react. 1500ms checkmark feedback. Works in
+     both readOnly and editable modes.
 
-### Issue 1: Copy button
-- `client/src/components/SnippetCard.tsx` -- needs a copy button added per snippet card
-  - Add a Copy icon from lucide-react (e.g., `Copy` or `Clipboard`)
-  - Call `navigator.clipboard.writeText(snippet.content)` on click
-  - Show brief visual feedback (checkmark or tooltip) on successful copy
-  - Should work in both readOnly and editable modes
+  2. **Relay CLI** (commit c0e8ca3): Created relay/cli.py with argparse, defaulting
+     host to 0.0.0.0. Registered as `network-relay` console script in pyproject.toml.
+     README updated to document `uv run network-relay`.
 
-### Issue 2: Relay binding
-- Option A (minimal): Update documentation/startup instructions to use `--host 0.0.0.0`
-  - `.planning/phases/11-remote-access-and-hardening/.continue-here.md` line 55
-  - `README.md` (if relay startup is documented there)
-- Option B (proper): Add a relay CLI entry point similar to server/app/cli.py
-  - Create `relay/cli.py` or `relay/__main__.py`
-  - Default host to `0.0.0.0` (matching server behavior at server/app/cli.py:191)
-  - Accept `--port` and `--host` arguments
-  - Register as a console script in pyproject.toml
+verification: |
+  - relay/cli.py imports correctly
+  - `uv run network-relay --help` shows default 0.0.0.0 binding
+  - TypeScript compiles with no errors (npx tsc --noEmit)
+  - SnippetCard.tsx has Copy button with secure context + fallback pattern
+
+files_changed:
+  - client/src/components/SnippetCard.tsx (commit 3c9ee07)
+  - relay/cli.py (commit c0e8ca3)
+  - pyproject.toml (commit c0e8ca3)
+  - README.md (updated relay docs)

@@ -5,7 +5,7 @@
 ## Directory Layout
 
 ```
-wifi-ftp-server/
+network-file-server/
 ├── .gitignore              # Python bytecode, build artifacts, .venv
 ├── .python-version         # Python 3.11 (used by uv)
 ├── .planning/              # GSD planning documents
@@ -17,7 +17,7 @@ wifi-ftp-server/
 ├── templates/              # Flask Jinja2 HTML templates
 │   └── index.html          # Single-page file browser UI
 ├── main.py                 # uv scaffold placeholder (NOT the real entry point)
-├── wifi_file_server.py     # Entire application: routes, logic, CLI, server
+├── network_file_server.py     # Entire application: routes, logic, CLI, server
 ├── start_server.sh         # Shell wrapper script for quick startup
 ├── pyproject.toml          # uv project config (name, version, dependencies)
 ├── requirements.txt        # pip-style dependencies (Flask, Werkzeug)
@@ -45,8 +45,8 @@ wifi-ftp-server/
 ## Key File Locations
 
 **Entry Points:**
-- `wifi_file_server.py`: The real application entry point (run directly with `python wifi_file_server.py <folder>`)
-- `start_server.sh`: Shell convenience wrapper that validates environment and invokes `wifi_file_server.py`
+- `network_file_server.py`: The real application entry point (run directly with `python network_file_server.py <folder>`)
+- `start_server.sh`: Shell convenience wrapper that validates environment and invokes `network_file_server.py`
 - `main.py`: uv-generated placeholder; does not participate in the application
 
 **Configuration:**
@@ -56,12 +56,12 @@ wifi-ftp-server/
 - `uv.lock`: Locked dependency resolution
 
 **Core Logic:**
-- `wifi_file_server.py:22-55`: Utility functions (`get_local_ip`, `get_file_size`, `get_file_icon`)
-- `wifi_file_server.py:57-82`: Index route -- file listing and rendering
-- `wifi_file_server.py:84-101`: Download route -- file serving
-- `wifi_file_server.py:103-134`: Upload route -- file receiving
-- `wifi_file_server.py:136-157`: API route -- JSON file listing
-- `wifi_file_server.py:159-206`: CLI parsing and server startup
+- `network_file_server.py:22-55`: Utility functions (`get_local_ip`, `get_file_size`, `get_file_icon`)
+- `network_file_server.py:57-82`: Index route -- file listing and rendering
+- `network_file_server.py:84-101`: Download route -- file serving
+- `network_file_server.py:103-134`: Upload route -- file receiving
+- `network_file_server.py:136-157`: API route -- JSON file listing
+- `network_file_server.py:159-206`: CLI parsing and server startup
 
 **Web UI:**
 - `templates/index.html:1-289`: CSS styles (inline, no external stylesheet)
@@ -74,7 +74,7 @@ wifi-ftp-server/
 ## Naming Conventions
 
 **Files:**
-- Python modules: `snake_case.py` (e.g., `wifi_file_server.py`, `main.py`)
+- Python modules: `snake_case.py` (e.g., `network_file_server.py`, `main.py`)
 - Templates: `lowercase.html` (e.g., `index.html`)
 - Shell scripts: `snake_case.sh` (e.g., `start_server.sh`)
 - Feature docs: `NN-kebab-case.md` (e.g., `01-qr-code-connect.md`)
@@ -91,7 +91,7 @@ wifi-ftp-server/
 ## Where to Add New Code
 
 **New Route/Endpoint:**
-- Add to `wifi_file_server.py` alongside existing `@app.route()` handlers
+- Add to `network_file_server.py` alongside existing `@app.route()` handlers
 - Follow the existing pattern: decorator, docstring, guard clause checking `SHARED_FOLDER`, try/except with flash messages
 
 **New Template Page:**
@@ -99,12 +99,12 @@ wifi-ftp-server/
 - Follow Flask Jinja2 conventions; reference via `render_template('newpage.html')`
 
 **New Utility Function:**
-- Add to `wifi_file_server.py` in the utility section (lines 22-55, before route handlers)
+- Add to `network_file_server.py` in the utility section (lines 22-55, before route handlers)
 - When the file grows, consider extracting into a `utils.py` module
 
 **New Feature Module:**
-- Currently no module structure exists; everything is in `wifi_file_server.py`
-- For significant features, create a new Python module at the project root (e.g., `auth.py`, `api.py`) and import into `wifi_file_server.py`
+- Currently no module structure exists; everything is in `network_file_server.py`
+- For significant features, create a new Python module at the project root (e.g., `auth.py`, `api.py`) and import into `network_file_server.py`
 - Alternatively, create a `src/` or package directory if the project grows beyond 2-3 modules
 
 **New Static Assets (CSS/JS):**
@@ -115,7 +115,7 @@ wifi-ftp-server/
 **Tests:**
 - No test directory exists yet
 - Create `tests/` at the project root
-- Name test files `test_<module>.py` (e.g., `tests/test_wifi_file_server.py`)
+- Name test files `test_<module>.py` (e.g., `tests/test_network_file_server.py`)
 
 ## Special Directories
 

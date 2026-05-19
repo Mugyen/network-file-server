@@ -67,7 +67,7 @@ created: 2026-03-11
 
 | Behavior | Requirement | Why Manual | Test Instructions |
 |----------|-------------|------------|-------------------|
-| QR code scannable by phone camera | AGNT-03 | Visual verification | Run `wifi-file-server mount ./test --server <url>`, scan QR with phone |
+| QR code scannable by phone camera | AGNT-03 | Visual verification | Run `network-file-server mount ./test --server <url>`, scan QR with phone |
 | Terminal output formatting | AGNT-03 | Visual layout check | Verify URL, code, status line display correctly in terminal |
 
 ---

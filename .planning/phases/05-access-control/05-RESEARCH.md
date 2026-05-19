@@ -21,7 +21,7 @@ The password system uses `bcrypt` for hashing and `itsdangerous` for signed sess
 - Drop box: Inline success list below the drop zone showing completed files with checkmark, name, and size
 - Drop box: Show server/host machine name in header (not folder path)
 - Drop box: Inherit the app's existing dark/light/system theme toggle
-- Mode indicators: Subtle header pill badges next to "WiFi File Server" title
+- Mode indicators: Subtle header pill badges next to "Network File Server" title
 - Mode indicators: Text pills with color coding: "Read Only" (amber), "Protected" (blue, with lock icon)
 - Mode indicators: Receive mode needs no badge -- the entire drop box UI IS the indicator
 - Mode indicators: Normal mode shows no badge

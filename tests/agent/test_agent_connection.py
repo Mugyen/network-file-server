@@ -43,6 +43,7 @@ async def test_connect_and_serve_receives_mount_registered(tmp_path: Path) -> No
     )
     mock_conn.start_heartbeat = MagicMock()
     mock_conn.close = AsyncMock()
+    mock_conn.send_control = AsyncMock()
     mock_conn._ws = MagicMock()
     # _agent_receive_loop will call _ws.receive which raises ConnectionError to exit
     mock_conn._ws.receive = AsyncMock(side_effect=ConnectionError("ws closed"))
@@ -66,6 +67,7 @@ async def test_connect_and_serve_receives_mount_registered(tmp_path: Path) -> No
             preferred_code=None,
             password_hash=None,
             ttl_seconds=None,
+            owner=None,
         )
 
     assert result == assigned_code
@@ -84,6 +86,7 @@ async def test_connect_and_serve_raises_on_wrong_control_type(tmp_path: Path) ->
         return_value={"type": "unexpected_type", "code": "XYZ"}
     )
     mock_conn.close = AsyncMock()
+    mock_conn.send_control = AsyncMock()
 
     with (
         patch("agent.connection.websockets_connect") as mock_connect,
@@ -101,6 +104,7 @@ async def test_connect_and_serve_raises_on_wrong_control_type(tmp_path: Path) ->
                 preferred_code=None,
                 password_hash=None,
                 ttl_seconds=None,
+                owner=None,
             )
 
 
@@ -113,7 +117,7 @@ async def test_run_agent_loop_retries_after_disconnect(tmp_path: Path) -> None:
 
     async def fake_connect_and_serve(
         relay_url: str, folder: Path, name: str, preferred_code: str | None,
-        password_hash: bytes | None, ttl_seconds: int | None,
+        password_hash: bytes | None, ttl_seconds: int | None, owner=None,
     ) -> str:
         nonlocal call_count
         call_count += 1
@@ -135,6 +139,7 @@ async def test_run_agent_loop_retries_after_disconnect(tmp_path: Path) -> None:
             name="testfolder",
             password_hash=None,
             ttl_seconds=None,
+            owner=None,
         )
 
     assert call_count == 3
@@ -150,7 +155,7 @@ async def test_run_agent_loop_sends_preferred_code_on_reconnect(tmp_path: Path) 
 
     async def fake_connect_and_serve(
         relay_url: str, folder: Path, name: str, preferred_code: str | None,
-        password_hash: bytes | None, ttl_seconds: int | None,
+        password_hash: bytes | None, ttl_seconds: int | None, owner=None,
     ) -> str:
         call_args_list.append(preferred_code)
         if len(call_args_list) == 1:
@@ -171,6 +176,7 @@ async def test_run_agent_loop_sends_preferred_code_on_reconnect(tmp_path: Path) 
             name="testfolder",
             password_hash=None,
             ttl_seconds=None,
+            owner=None,
         )
 
     # First call: no preferred code (None)
@@ -208,7 +214,7 @@ async def test_run_agent_loop_resets_attempt_counter_after_success(tmp_path: Pat
 
     async def fake_connect_alternating(
         relay_url: str, folder: Path, name: str, preferred_code: str | None,
-        password_hash: bytes | None, ttl_seconds: int | None,
+        password_hash: bytes | None, ttl_seconds: int | None, owner=None,
     ) -> str:
         nonlocal call_count
         call_count += 1
@@ -236,6 +242,7 @@ async def test_run_agent_loop_resets_attempt_counter_after_success(tmp_path: Pat
             name="testfolder",
             password_hash=None,
             ttl_seconds=None,
+            owner=None,
         )
 
     # After the first success and then failure, attempt should reset to 1

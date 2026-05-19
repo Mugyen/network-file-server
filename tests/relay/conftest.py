@@ -2,13 +2,15 @@
 
 import asyncio
 import json
+import time
 
 import httpx
 import pytest
 from httpx import AsyncClient
 
 from relay.app.main import create_relay_app
-from relay.app.services.mount_registry import MountRegistry, set_registry
+from relay.app.services.mount_registry import set_registry
+from relay.app.services.sqlite_registry import SqliteMountRegistry
 
 
 class MockTunnelConnection:
@@ -70,12 +72,41 @@ class MockTunnelConnection:
         self.closed = True
 
 
+async def _setup_in_memory_registry() -> SqliteMountRegistry:
+    """Create an in-memory SqliteMountRegistry and install it as the global singleton.
+
+    Used by test fixtures and test helpers when the ASGI transport does not
+    trigger FastAPI lifespan events (e.g. httpx.ASGITransport, ASGIWebSocketTransport).
+    """
+    registry = await SqliteMountRegistry.create(":memory:")
+    set_registry(registry)
+    return registry
+
+
+@pytest.fixture(autouse=True)
+def _relax_auth_rate_limits(monkeypatch):
+    """Disable auth rate limits for relay tests (the slowapi limiter is
+    process-global and would otherwise accumulate across the suite for
+    the shared test client IP). The dedicated rate-limit test overrides
+    these with its own low limits + unique X-Forwarded-For IP.
+    """
+    monkeypatch.setenv("RELAY_AUTH_SIGNUP_RATE", "100000/hour")
+    monkeypatch.setenv("RELAY_AUTH_LOGIN_RATE", "100000/minute")
+    monkeypatch.setenv("RELAY_AUTH_AGENT_TOKEN_RATE", "100000/minute")
+
+
 @pytest.fixture
-def relay_app():
-    """Create a fresh relay app with a new MountRegistry for each test."""
+async def relay_app(monkeypatch):
+    """Create a fresh relay app with in-memory SQLite registry for each test.
+
+    Creates the SqliteMountRegistry manually since httpx.ASGITransport does
+    not trigger FastAPI lifespan events.
+    """
+    monkeypatch.setenv("RELAY_DB_PATH", ":memory:")
     app = create_relay_app()
-    set_registry(MountRegistry())
-    return app
+    registry = await _setup_in_memory_registry()
+    yield app
+    await registry.close()
 
 
 @pytest.fixture
@@ -93,14 +124,74 @@ def mock_connection() -> MockTunnelConnection:
 
 
 @pytest.fixture
-def registered_relay_client(relay_app, mock_connection):
+async def registered_relay_client(relay_app, mock_connection):
     """AsyncClient with a MockTunnelConnection pre-registered under 'testcode'.
 
-    Returns a tuple of (client_context_manager, registry) so tests can
+    Returns a tuple of (client, registry) so tests can
     access the registry for state manipulation (e.g. mark_offline).
     """
     from relay.app.services.mount_registry import get_registry
+
     registry = get_registry()
-    registry.register("testcode", mock_connection)
+    await registry.register(
+        "testcode",
+        mock_connection,
+        agent_ip="127.0.0.1",
+        created_at=time.time(),
+        expires_at=None,
+    )
     transport = httpx.ASGITransport(app=relay_app)
-    return AsyncClient(transport=transport, base_url="http://test"), registry
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client, registry
+
+
+@pytest.fixture
+async def account_store():
+    """Install an in-memory accounts store as the global singleton."""
+    from accounts import SqliteAccountStore
+    from relay.app.services.account_store import set_account_store
+
+    store = await SqliteAccountStore.create(":memory:")
+    set_account_store(store)
+    yield store
+    set_account_store(None)
+    await store.close()
+
+
+@pytest.fixture
+def relay_session():
+    """Install a deterministic RelaySession as the global singleton."""
+    from relay.app.services.session import RelaySession, set_relay_session
+
+    s = RelaySession("test-relay-secret")
+    set_relay_session(s)
+    yield s
+    set_relay_session(None)
+
+
+@pytest.fixture
+async def auth_client(relay_app, account_store, relay_session):
+    """AsyncClient with accounts store + session signer wired in."""
+    transport = httpx.ASGITransport(app=relay_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
+
+
+@pytest.fixture
+def make_admin():
+    """Return a helper that marks a username as a relay admin.
+
+    Rewrites the global (frozen) RelayConfig; relay_app recreates config
+    per test, so the mutation does not leak across tests.
+    """
+    import dataclasses
+
+    from relay.app.config import get_config, set_config
+
+    def _make_admin(username: str) -> None:
+        cfg = get_config()
+        set_config(
+            dataclasses.replace(cfg, admin_users=[username.strip().lower()])
+        )
+
+    return _make_admin

@@ -5,6 +5,7 @@ Provides connect_and_serve (single connection attempt) and run_agent_loop
 """
 
 import asyncio
+import functools
 import json
 import time
 import uuid
@@ -16,9 +17,11 @@ from httpx import ASGITransport
 from websockets.asyncio.client import connect as websockets_connect
 from websockets.exceptions import ConnectionClosed
 
+from accounts import AccessMode
+from agent.auth import AgentOwner, fetch_agent_token
 from agent.backoff import compute_backoff
 from agent.display import print_connected_status, print_mounted, print_reconnect_status
-from agent.exceptions import AgentExpiredError
+from agent.exceptions import AgentAuthError, AgentExpiredError
 from agent.proxy import handle_open_frame, handle_ws_open_frame
 from agent.ws_adapter import WebSocketClientAdapter
 from server.app.config import ServerConfig, set_server_config
@@ -131,10 +134,42 @@ async def _agent_receive_loop_with_metadata(
                     conn.handle_pong()
                 elif message.get("type") == "ping":
                     await conn.send_control({"type": "pong"})
+                elif message.get("type") == "expired_files":
+                    await _handle_expired_files(conn, message)
     finally:
         # Wait for in-flight tasks to complete before returning
         if pending_tasks:
             await asyncio.gather(*pending_tasks, return_exceptions=True)
+
+
+async def _handle_expired_files(conn: TunnelConnection, message: dict) -> None:
+    """Handle expired_files control message from relay — prompt user to keep or delete."""
+    expired_list: list[dict] = message.get("files", [])
+    if not expired_list:
+        return
+
+    print(f"\n{len(expired_list)} file(s) have expired TTLs:")
+    for f in expired_list:
+        print(f"  - {f['path']}")
+
+    loop = asyncio.get_running_loop()
+    answer: str = await loop.run_in_executor(
+        None,
+        functools.partial(input, "Delete expired files? [y/N]: "),
+    )
+
+    if answer.strip().lower() == "y":
+        await conn.send_control({
+            "type": "delete_expired_files",
+            "code": message.get("code", ""),
+        })
+        print("Requested deletion of expired files.")
+    else:
+        await conn.send_control({
+            "type": "keep_expired_files",
+            "code": message.get("code", ""),
+        })
+        print("Keeping expired files.")
 
 
 def _format_remaining(seconds: int) -> str:
@@ -186,6 +221,7 @@ async def connect_and_serve(
     preferred_code: str | None,
     password_hash: bytes | None,
     ttl_seconds: int | None,
+    owner: AgentOwner | None,
 ) -> str:
     """Connect to the relay WebSocket, register a mount, and serve requests.
 
@@ -226,6 +262,33 @@ async def connect_and_serve(
     async with websockets_connect(ws_url, ping_interval=None) as raw_ws:
         adapter = WebSocketClientAdapter(raw_ws)
         conn = TunnelConnection(adapter)
+
+        # Owner/policy handshake: the relay reads exactly one agent_auth
+        # control message after accepting the socket and before sending
+        # mount_registered. Anonymous/open mounts still send it (token=None).
+        token: str | None = None
+        if owner is not None:
+            token = await fetch_agent_token(
+                relay_url, owner.username, owner.password
+            )
+        await conn.send_control({
+            "type": "agent_auth",
+            "token": token,
+            "access_mode": (
+                owner.access_mode.value
+                if owner is not None
+                else AccessMode.OPEN.value
+            ),
+            "has_password": password_hash is not None,
+            "allowlist": [
+                {
+                    "subject_type": e.subject_type.value,
+                    "subject_ref": e.subject_ref,
+                    "role": e.role.value,
+                }
+                for e in (owner.allowlist if owner is not None else ())
+            ],
+        })
 
         control = await conn.receive_control()
         if control.get("type") != "mount_registered":
@@ -300,6 +363,7 @@ async def run_agent_loop(
     name: str,
     password_hash: bytes | None,
     ttl_seconds: int | None,
+    owner: AgentOwner | None,
 ) -> None:
     """Outer reconnect loop for the agent — retries with exponential backoff on disconnect.
 
@@ -326,13 +390,17 @@ async def run_agent_loop(
     while True:
         try:
             last_code = await connect_and_serve(
-                relay_url, folder, name, last_code, password_hash, ttl_seconds
+                relay_url, folder, name, last_code, password_hash, ttl_seconds, owner
             )
             # Clean disconnect — reset attempt counter
             attempt = 0
         except AgentExpiredError:
             # TTL expired — do NOT retry, exit cleanly
             print("Mount expired")
+            break
+        except AgentAuthError as exc:
+            # Bad credentials / unreachable auth — retrying cannot help.
+            print(f"Owner authentication failed: {exc.message}")
             break
         except KeyboardInterrupt:
             break

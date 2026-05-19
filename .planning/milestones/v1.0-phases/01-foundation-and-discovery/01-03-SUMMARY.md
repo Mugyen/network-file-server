@@ -97,7 +97,7 @@ Each task was committed atomically:
 - `client/src/components/ServerInfo.tsx` - Server info card with URL, IP, and QR code
 - `client/src/components/QrCodeDisplay.tsx` - QR code SVG renderer with label
 - `client/src/App.tsx` - Root component fetching data on mount and rendering all components
-- `client/index.html` - Updated title to "WiFi File Server", removed Vite icon
+- `client/index.html` - Updated title to "Network File Server", removed Vite icon
 
 ## Decisions Made
 - Tailwind CSS v4 with @tailwindcss/vite plugin: no PostCSS config or tailwind.config.js needed (v4 simplification)

@@ -1,0 +1,28 @@
+# Relay server configuration — development defaults.
+# Env vars override each field (12-factor app style for Cloud Run).
+# See relay/app/config.py for the env var names.
+
+env: development
+allowed_origins: []  # Empty means wildcard in dev; must be set in production
+db_path: /tmp/mounts.db  # SQLite mount registry; override via RELAY_DB_PATH env var
+data_dir: /tmp/relay-data  # Persistent data directory; override via RELAY_DATA_DIR env var (use /data/ in Docker)
+dropbox_code: dropbox  # Reserved mount code for always-on drop box; override via RELAY_DROPBOX_CODE env var
+
+# Accounts (v1.3): relay-hosted user/group registry.
+session_secret: "dev-insecure-relay-session-secret"  # Signs session cookies; MUST override via RELAY_SESSION_SECRET in production
+admin_users: []  # Usernames with admin rights; override via RELAY_ADMIN_USERS (comma-separated)
+accounts_db_path: ""  # SQLite accounts DB; empty = sibling of db_path; override via RELAY_ACCOUNTS_DB_PATH
+default_user_quota_bytes: 1073741824  # Default per-user relay storage quota (1 GiB); override via RELAY_DEFAULT_USER_QUOTA_BYTES
+
+rate_limits:
+  mount_registration: "5/hour"
+  proxy_requests: "300/minute"
+  max_mounts_per_ip: 5
+  auth_signup: "5/hour"          # per-IP account signups
+  auth_login: "10/minute"        # per-IP login attempts
+  auth_agent_token: "10/minute"  # per-IP agent owner-token exchanges
+
+ttl:
+  max_seconds: 86400           # 24 hours
+  sweep_interval_seconds: 45
+  warning_before_seconds: 300  # 5 minutes before expiry

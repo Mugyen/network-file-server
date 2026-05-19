@@ -4,11 +4,49 @@ import secrets
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from relay.app.enums import MountStatus
+from accounts import AccessMode, Role, SubjectType
+from relay.app.enums import AccessRequestStatus, MountStatus
 from relay.app.exceptions import MountExpiredError, MountNotFoundError, MountOfflineError
 
 if TYPE_CHECKING:
     from tunnel.connection import TunnelConnection
+
+
+@dataclass(frozen=True)
+class PolicyEntry:
+    """One allowlist entry for a mount: a subject and its granted role."""
+
+    subject_type: SubjectType
+    subject_id: int
+    role: Role
+
+
+@dataclass(frozen=True)
+class MountPolicy:
+    """Access policy bound to a mount code.
+
+    owner_user_id is None for anonymous mounts (no --login). access_mode
+    OPEN means anyone may access; RESTRICTED gates on the allowlist (with
+    the per-mount password as the documented fallback, enforced in the
+    proxy layer).
+    """
+
+    code: str
+    owner_user_id: int | None
+    access_mode: AccessMode
+    has_password: bool
+    entries: tuple[PolicyEntry, ...]
+
+
+@dataclass(frozen=True)
+class AccessRequest:
+    """A user's request to be allowlisted on a restricted mount."""
+
+    id: int
+    code: str
+    user_id: int
+    status: AccessRequestStatus
+    created_at: float
 
 
 def generate_mount_code() -> str:
@@ -27,6 +65,10 @@ class MountRecord:
     code: str
     connection: "TunnelConnection"
     status: MountStatus
+    agent_ip: str
+    created_at: float
+    expires_at: float | None
+    ttl_warned: bool
 
 
 class MountRegistry:
@@ -39,11 +81,25 @@ class MountRegistry:
     def __init__(self) -> None:
         self._mounts: dict[str, MountRecord] = {}
 
-    def register(self, code: str, connection: "TunnelConnection") -> None:
+    def register(
+        self,
+        code: str,
+        connection: "TunnelConnection",
+        agent_ip: str,
+        created_at: float,
+        expires_at: float | None,
+    ) -> None:
         """Register a tunnel connection under the given mount code.
 
-        Raises ValueError if code is empty. Overwrites any existing record
-        for the same code.
+        Args:
+            code: URL-safe mount code.
+            connection: Live tunnel connection to the agent.
+            agent_ip: IP address of the agent that created this mount.
+            created_at: Monotonic timestamp of mount creation.
+            expires_at: Monotonic timestamp when the mount expires, or None for no TTL.
+
+        Raises:
+            ValueError: If code is empty.
         """
         if not code:
             raise ValueError("Mount code must not be empty")
@@ -51,6 +107,10 @@ class MountRegistry:
             code=code,
             connection=connection,
             status=MountStatus.ONLINE,
+            agent_ip=agent_ip,
+            created_at=created_at,
+            expires_at=expires_at,
+            ttl_warned=False,
         )
 
     def deregister(self, code: str) -> None:
@@ -92,11 +152,37 @@ class MountRegistry:
         """Return True if a record exists for the given code, regardless of status."""
         return code in self._mounts
 
+    def count_mounts_by_ip(self, agent_ip: str) -> int:
+        """Count active (non-expired) mounts registered by this IP.
 
-_registry: MountRegistry | None = None
+        Args:
+            agent_ip: The IP address to count mounts for.
+
+        Returns:
+            Number of non-EXPIRED mounts held by the given IP.
+        """
+        return sum(
+            1
+            for m in self._mounts.values()
+            if m.agent_ip == agent_ip and m.status != MountStatus.EXPIRED
+        )
+
+    def active_mounts(self) -> list[MountRecord]:
+        """Return a snapshot of all non-EXPIRED mount records.
+
+        Returns a list copy, not a view into the internal dict, so callers
+        can iterate safely while the registry is mutated.
+        """
+        return [m for m in self._mounts.values() if m.status != MountStatus.EXPIRED]
 
 
-def get_registry() -> MountRegistry:
+if TYPE_CHECKING:
+    from relay.app.services.sqlite_registry import SqliteMountRegistry
+
+_registry: "MountRegistry | SqliteMountRegistry | None" = None
+
+
+def get_registry() -> "MountRegistry | SqliteMountRegistry":
     """Return the global MountRegistry instance.
 
     Raises RuntimeError if set_registry() has not been called.
@@ -106,7 +192,7 @@ def get_registry() -> MountRegistry:
     return _registry
 
 
-def set_registry(registry: MountRegistry) -> None:
+def set_registry(registry: "MountRegistry | SqliteMountRegistry") -> None:
     """Install the global MountRegistry instance.
 
     Called by the app factory and by tests to inject a fresh instance.

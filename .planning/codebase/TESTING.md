@@ -36,11 +36,11 @@ uv run pytest tests/            # Run specific directory
 tests/
   __init__.py
   conftest.py               # Shared fixtures (Flask test client, temp directories)
-  test_wifi_file_server.py  # Tests for wifi_file_server.py
+  test_network_file_server.py  # Tests for network_file_server.py
 ```
 
 **Naming:**
-- Use `test_` prefix for test files: `test_wifi_file_server.py`
+- Use `test_` prefix for test files: `test_network_file_server.py`
 - Use `test_` prefix for test functions: `test_get_file_size_returns_bytes()`
 
 ## Test Structure
@@ -50,7 +50,7 @@ tests/
 **Recommended Suite Organization:**
 ```python
 import pytest
-from wifi_file_server import app, get_file_size, get_file_icon, get_local_ip
+from network_file_server import app, get_file_size, get_file_icon, get_local_ip
 
 
 class TestGetFileSize:
@@ -97,7 +97,7 @@ from unittest.mock import patch, MagicMock
 class TestGetLocalIp:
     """Tests for the get_local_ip utility function."""
 
-    @patch("wifi_file_server.socket.socket")
+    @patch("network_file_server.socket.socket")
     def test_returns_local_ip_on_success(self, mock_socket_class: MagicMock) -> None:
         mock_socket = MagicMock()
         mock_socket.getsockname.return_value = ("192.168.1.100", 0)
@@ -105,7 +105,7 @@ class TestGetLocalIp:
         result = get_local_ip()
         assert result == "192.168.1.100"
 
-    @patch("wifi_file_server.socket.socket")
+    @patch("network_file_server.socket.socket")
     def test_returns_localhost_on_failure(self, mock_socket_class: MagicMock) -> None:
         mock_socket_class.side_effect = OSError("Network unreachable")
         result = get_local_ip()
@@ -127,7 +127,7 @@ class TestGetLocalIp:
 ```python
 import pytest
 from pathlib import Path
-from wifi_file_server import app
+from network_file_server import app
 
 
 @pytest.fixture
@@ -141,8 +141,8 @@ def shared_folder(tmp_path: Path) -> Path:
 @pytest.fixture
 def client(shared_folder: Path):
     """Flask test client with SHARED_FOLDER configured."""
-    import wifi_file_server
-    wifi_file_server.SHARED_FOLDER = str(shared_folder)
+    import network_file_server
+    network_file_server.SHARED_FOLDER = str(shared_folder)
     app.config["TESTING"] = True
     with app.test_client() as client:
         yield client
@@ -161,12 +161,12 @@ def client(shared_folder: Path):
 - Run: `uv run pytest --cov=. --cov-report=term-missing`
 
 **Priority areas for coverage (by risk):**
-1. `upload_file()` in `wifi_file_server.py` (lines 103-134) -- handles user file uploads, security-sensitive
-2. `download_file()` in `wifi_file_server.py` (lines 84-101) -- serves files, path traversal risk
-3. `index()` in `wifi_file_server.py` (lines 57-82) -- main page rendering, filesystem interaction
-4. `api_files()` in `wifi_file_server.py` (lines 136-157) -- JSON API, error handling
-5. `get_file_size()` in `wifi_file_server.py` (lines 34-41) -- unit conversion logic
-6. `get_file_icon()` in `wifi_file_server.py` (lines 43-55) -- extension mapping
+1. `upload_file()` in `network_file_server.py` (lines 103-134) -- handles user file uploads, security-sensitive
+2. `download_file()` in `network_file_server.py` (lines 84-101) -- serves files, path traversal risk
+3. `index()` in `network_file_server.py` (lines 57-82) -- main page rendering, filesystem interaction
+4. `api_files()` in `network_file_server.py` (lines 136-157) -- JSON API, error handling
+5. `get_file_size()` in `network_file_server.py` (lines 34-41) -- unit conversion logic
+6. `get_file_icon()` in `network_file_server.py` (lines 43-55) -- extension mapping
 
 ## Test Types
 
@@ -202,8 +202,8 @@ class TestIndexRoute:
         assert b"test_file.txt" in response.data
 
     def test_index_shows_error_when_folder_missing(self, client) -> None:
-        import wifi_file_server
-        wifi_file_server.SHARED_FOLDER = "/nonexistent/path"
+        import network_file_server
+        network_file_server.SHARED_FOLDER = "/nonexistent/path"
         response = client.get("/")
         assert response.status_code == 200  # Still renders, with flash message
 ```
@@ -258,8 +258,8 @@ class TestApiFilesRoute:
         assert data["files"][0]["name"] == "test_file.txt"
 
     def test_api_files_returns_404_when_folder_missing(self, client) -> None:
-        import wifi_file_server
-        wifi_file_server.SHARED_FOLDER = "/nonexistent"
+        import network_file_server
+        network_file_server.SHARED_FOLDER = "/nonexistent"
         response = client.get("/api/files")
         assert response.status_code == 404
 ```

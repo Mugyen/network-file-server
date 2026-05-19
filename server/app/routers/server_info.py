@@ -8,12 +8,13 @@ import logging
 import socket
 from urllib.parse import urlparse
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 from server.app.config import get_server_config
 from server.app.models.schemas import ServerInfo
 from server.app.services.network_service import detect_all_lan_ips, detect_primary_lan_ip
 from server.app.services.qr_service import generate_svg_qr
+from server.app.services.relay_identity import trusted_role, trusted_user
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ def _build_mount_url(relay_url: str, mount_code: str, lan_ip: str) -> str:
 
 
 @router.get("/server-info", response_model=ServerInfo)
-def get_server_info() -> ServerInfo:
+def get_server_info(request: Request) -> ServerInfo:
     """Return server information including IP, port, URL, and SVG QR code.
 
     In remote mount mode (mount_code set), returns the relay mount URL
@@ -55,6 +56,15 @@ def get_server_info() -> ServerInfo:
     """
     config = get_server_config()
     port = config.port
+
+    role = trusted_role(request.headers)
+    current_role = role.value if role is not None else None
+    current_user = trusted_user(request.headers)
+    access_mode = (
+        request.headers.get("x-wfs-access-mode")
+        if current_user is not None or current_role is not None
+        else None
+    )
 
     try:
         ip = detect_primary_lan_ip()
@@ -71,6 +81,9 @@ def get_server_info() -> ServerInfo:
             receive=config.receive,
             password_required=config.password_hash is not None,
             hostname=socket.gethostname(),
+            current_user=current_user,
+            current_role=current_role,
+            access_mode=access_mode,
         )
 
     # Remote mount mode: show relay mount URL instead of local server URL
@@ -97,4 +110,7 @@ def get_server_info() -> ServerInfo:
         receive=config.receive,
         password_required=config.password_hash is not None,
         hostname=socket.gethostname(),
+        current_user=current_user,
+        current_role=current_role,
+        access_mode=access_mode,
     )

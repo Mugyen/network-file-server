@@ -5,7 +5,7 @@
 ## Naming Patterns
 
 **Files:**
-- Python source files use `snake_case`: `wifi_file_server.py`, `main.py`
+- Python source files use `snake_case`: `network_file_server.py`, `main.py`
 - Single HTML template: `templates/index.html`
 - Shell scripts use `snake_case`: `start_server.sh`
 
@@ -35,12 +35,12 @@
 - When adding new code, follow PEP 8 conventions as observed in the existing source.
 
 **Line Length:**
-- No explicit limit configured. Longest lines in `wifi_file_server.py` are ~95 characters (the Flask import line at line 12).
+- No explicit limit configured. Longest lines in `network_file_server.py` are ~95 characters (the Flask import line at line 12).
 - Keep lines under 100 characters.
 
 ## Import Organization
 
-**Order (observed in `wifi_file_server.py`):**
+**Order (observed in `network_file_server.py`):**
 1. Standard library modules (`os`, `sys`, `argparse`, `mimetypes`, `socket`)
 2. Third-party framework imports (`from pathlib import Path`)
 3. Third-party packages (`flask`, `werkzeug`)
@@ -83,17 +83,17 @@ if not SHARED_FOLDER or not os.path.exists(SHARED_FOLDER):
 
 ## Logging
 
-**Framework:** No logging framework. Uses `print()` statements for server startup messages (lines 190-195 in `wifi_file_server.py`).
+**Framework:** No logging framework. Uses `print()` statements for server startup messages (lines 190-195 in `network_file_server.py`).
 
 **Patterns:**
-- `print()` with emoji prefixes for startup info: `print(f"\n{emoji} WiFi File Server Starting...")`
+- `print()` with emoji prefixes for startup info: `print(f"\n{emoji} Network File Server Starting...")`
 - `flash()` for user-facing web messages.
 - No structured logging, no log levels, no log files.
 
 ## Comments
 
 **When to Comment:**
-- Module-level docstring at top of `wifi_file_server.py` (lines 2-5): brief description of purpose.
+- Module-level docstring at top of `network_file_server.py` (lines 2-5): brief description of purpose.
 - Every function has a one-line docstring: `"""Get human readable file size"""`
 - Inline comments for non-obvious logic: `# Connect to a remote server to get local IP` (line 25), `# Sort files by name` (line 79).
 
@@ -120,8 +120,8 @@ if not SHARED_FOLDER or not os.path.exists(SHARED_FOLDER):
 **Barrel Files:** Not used. The project has only two Python files at root level.
 
 **Application Structure:**
-- `wifi_file_server.py`: Contains all application logic -- Flask app creation, route handlers, utility functions, CLI argument parsing, and server startup. This is a monolithic single-file application.
-- `main.py`: Stub entry point (prints "Hello from wifi-ftp-server!"). Not connected to the actual application.
+- `network_file_server.py`: Contains all application logic -- Flask app creation, route handlers, utility functions, CLI argument parsing, and server startup. This is a monolithic single-file application.
+- `main.py`: Stub entry point (prints "Hello from network-file-server!"). Not connected to the actual application.
 
 ## Global State
 

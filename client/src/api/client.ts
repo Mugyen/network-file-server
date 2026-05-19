@@ -1,7 +1,7 @@
 import type { ConflictAction } from "../types/upload.ts";
 import type { UploadResult } from "../types/upload.ts";
 import { getDeviceName } from "../types/websocket.ts";
-import { getApiBase, isRemoteMount, getMountPrefix } from "../utils/remoteMount.ts";
+import { getApiBase } from "../utils/remoteMount.ts";
 
 const API_BASE = getApiBase();
 
@@ -18,16 +18,11 @@ export class ApiError extends Error {
 }
 
 /**
- * When in remote mount mode, detect HTML error responses from the relay
- * (mount expired/not found/offline) and redirect to the mount root URL
- * so the relay's proper error page renders instead of raw HTML in the SPA.
+ * Throw an ApiError for non-ok responses. Previously redirected to the relay's
+ * Jinja2 error page in remote mount mode, but now the SPA handles error states
+ * via the MountStatusOverlay component and useMountStatus polling hook.
  */
 function handleRelayError(status: number, body: string): never {
-  if (isRemoteMount() && body.trimStart().startsWith("<!DOCTYPE")) {
-    window.location.replace(`${getMountPrefix()}/`);
-    // Throw to stop execution while redirect is pending
-    throw new ApiError(status, "Mount unavailable — redirecting...");
-  }
   throw new ApiError(status, body);
 }
 
@@ -95,6 +90,7 @@ export function uploadWithProgress(
   targetPath: string,
   conflictResolution: ConflictAction | null,
   onProgress: (percent: number) => void,
+  ttl: number,
 ): Promise<UploadResult[]> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -121,7 +117,7 @@ export function uploadWithProgress(
       reject(new Error("Upload failed: network error"));
     });
 
-    let url = `${API_BASE}/files/upload?path=${encodeURIComponent(targetPath)}`;
+    let url = `${API_BASE}/files/upload?path=${encodeURIComponent(targetPath)}&ttl=${String(ttl)}`;
     if (conflictResolution !== null) {
       url += `&conflict_resolution=${encodeURIComponent(conflictResolution)}`;
     }

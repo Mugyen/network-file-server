@@ -16,7 +16,7 @@ Knowing who's connected makes the server feel social and interactive. "Send to d
 - Connection history: see when devices connected/disconnected
 - Admin: block/kick devices
 - mDNS/Bonjour broadcast so the server appears in network discovery
-- Zero-conf: auto-discover other WiFi File Server instances on the network
+- Zero-conf: auto-discover other Network File Server instances on the network
 
 ## Scope
 Medium — 5-7 hours. Device tracking + mDNS are the main pieces.

@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Header, Query, UploadFile
+from fastapi import APIRouter, Depends, Header, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from server.app.config import get_server_config
@@ -27,7 +27,14 @@ from server.app.models.schemas import (
     RenameRequest,
     SearchResult,
 )
-from server.app.middleware.mode_guard import require_full_access, require_write_access
+from server.app.middleware.mode_guard import (
+    receive_scope_user,
+    require_browse_access,
+    require_full_access,
+    require_write_access,
+)
+from server.app.services import upload_index
+from server.app.services.relay_identity import trusted_user
 from server.app.models.enums import ToastType
 from server.app.services.connection_manager import manager
 from server.app.services.file_service import (
@@ -70,17 +77,64 @@ def _handle_invalid_name(exc: InvalidFileNameError) -> JSONResponse:
     )
 
 
-@router.get("/files", dependencies=[Depends(require_full_access)])
-def get_files(path: str = Query("")) -> dict:
-    """List files in the shared folder.
+@router.get("/files", dependencies=[Depends(require_browse_access)])
+async def get_files(request: Request, path: str = Query("")) -> dict:
+    """List files in the shared folder with optional TTL expiry data.
 
     Query parameter 'path' specifies a relative subdirectory.
     Empty string means root of the shared folder.
+    Enriches each file entry with expires_at (ISO timestamp or null).
     """
     config = get_server_config()
     try:
         listing = list_directory(config.shared_folder, path)
-        return listing.model_dump()
+        result = listing.model_dump()
+
+        # Never expose the uploader-index sidecar.
+        index_name = upload_index.index_filename()
+        result["entries"] = [
+            e for e in result.get("entries", []) if e.get("name") != index_name
+        ]
+
+        # RECEIVE role: show only files this user uploaded (hide
+        # directories and everyone else's / pre-existing files).
+        scope_user = receive_scope_user(request)
+        if scope_user is not None:
+            owned = await upload_index.owned_paths(config.shared_folder, scope_user)
+            filtered = []
+            for e in result["entries"]:
+                if e.get("type") == "directory":
+                    continue
+                name = e.get("name", "")
+                key = f"{path}/{name}".lstrip("/") if path else name
+                if key in owned:
+                    filtered.append(e)
+            result["entries"] = filtered
+
+        # Enrich file entries with TTL expiry timestamps
+        try:
+            from relay.app.services.file_ttl_db import get_file_ttl_db
+
+            if config.mount_code is not None:
+                file_ttl_db = get_file_ttl_db()
+                ttl_records = await file_ttl_db.get_ttl_for_mount(config.mount_code)
+                ttl_map: dict[str, str] = {}
+                for file_path, expires_at in ttl_records:
+                    ttl_map[file_path] = datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat()
+                for entry in result.get("entries", []):
+                    # Build relative path from listing directory + filename
+                    name = entry.get("name", "")
+                    file_path_key = f"{path}/{name}".lstrip("/") if path else name
+                    entry["expires_at"] = ttl_map.get(file_path_key, None)
+            else:
+                for entry in result.get("entries", []):
+                    entry["expires_at"] = None
+        except (RuntimeError, ImportError):
+            # Standalone mode -- no TTL tracking
+            for entry in result.get("entries", []):
+                entry["expires_at"] = None
+
+        return result
     except PathTraversalError as exc:
         return _handle_path_traversal(exc)  # type: ignore[return-value]
     except FileNotFoundError as exc:
@@ -90,8 +144,10 @@ def get_files(path: str = Query("")) -> dict:
 @router.post("/files/upload", response_model=None, dependencies=[Depends(require_write_access)])
 async def upload_files(
     files: list[UploadFile],
+    request: Request,
     path: str = Query(""),
     conflict_resolution: ConflictResolution | None = Query(None),
+    ttl: int | None = Query(None),
     x_device_id: str | None = Header(None),
     x_device_name: str | None = Header(None),
 ) -> Any:
@@ -109,6 +165,33 @@ async def upload_files(
                 config.shared_folder, path, file, conflict_resolution
             )
             results.append(result.model_dump())
+
+        # Record the uploader (trusted relay identity) so RECEIVE users
+        # can later see their own uploads.
+        uploader = trusted_user(request.headers)
+        if uploader is not None:
+            for r in results:
+                name = r.get("name", "")
+                if name:
+                    rel = f"{path}/{name}".lstrip("/") if path else name
+                    await upload_index.record_upload(
+                        config.shared_folder, rel, uploader
+                    )
+
+        # Record file TTL for each uploaded file (when running under relay)
+        effective_ttl = ttl if ttl is not None else 86400  # Default 1 day
+        if effective_ttl > 0 and config.mount_code is not None:
+            try:
+                from relay.app.services.file_ttl_db import get_file_ttl_db
+                file_ttl_db = get_file_ttl_db()
+                for r in results:
+                    # Build relative path from upload directory + filename
+                    name = r.get("name", "")
+                    if name:
+                        file_path = f"{path}/{name}".lstrip("/") if path else name
+                        await file_ttl_db.record_file_ttl(config.mount_code, file_path, effective_ttl)
+            except (RuntimeError, ImportError):
+                pass  # Not running under relay (standalone server mode)
 
         # Broadcast upload toast to WS clients
         file_count = len(results)
@@ -135,14 +218,19 @@ async def upload_files(
         return _handle_conflict(exc)
 
 
-@router.get("/files/download", response_model=None, dependencies=[Depends(require_full_access)])
-def download_single_file(path: str = Query(...)) -> Any:
+@router.get("/files/download", response_model=None, dependencies=[Depends(require_browse_access)])
+async def download_single_file(request: Request, path: str = Query(...)) -> Any:
     """Download a single file as an attachment.
 
     Returns FileResponse with Content-Disposition: attachment.
     Uses filename*=UTF-8'' encoding for unicode support.
     """
     config = get_server_config()
+    scope_user = receive_scope_user(request)
+    if scope_user is not None and not await upload_index.is_owned_by(
+        config.shared_folder, path, scope_user
+    ):
+        return JSONResponse(status_code=404, content={"error": "Not found"})
     try:
         file_path = download_file(config.shared_folder, path)
         encoded_name = quote(file_path.name)
@@ -164,16 +252,25 @@ def download_single_file(path: str = Query(...)) -> Any:
         return JSONResponse(status_code=400, content={"error": str(exc)})
 
 
-@router.post("/files/download-zip", response_model=None, dependencies=[Depends(require_full_access)])
-def download_zip(request: DownloadZipRequest) -> Any:
+@router.post("/files/download-zip", response_model=None, dependencies=[Depends(require_browse_access)])
+async def download_zip(request: Request, body: DownloadZipRequest) -> Any:
     """Download multiple files as a streaming ZIP archive.
 
     Accepts a JSON body with paths list. Uses zipstream-ng for
     memory-efficient streaming without buffering the full archive.
     """
     config = get_server_config()
+    scope_user = receive_scope_user(request)
+    if scope_user is not None:
+        for p in body.paths:
+            if not await upload_index.is_owned_by(
+                config.shared_folder, p, scope_user
+            ):
+                return JSONResponse(
+                    status_code=404, content={"error": "Not found"}
+                )
     try:
-        zip_generator = download_as_zip(config.shared_folder, request.paths)
+        zip_generator = download_as_zip(config.shared_folder, body.paths)
         return StreamingResponse(
             zip_generator,
             media_type="application/zip",
@@ -246,8 +343,9 @@ def create_new_folder(request: CreateFolderRequest) -> Any:
         return _handle_invalid_name(exc)
 
 
-@router.get("/files/search", response_model=None, dependencies=[Depends(require_full_access)])
+@router.get("/files/search", response_model=None, dependencies=[Depends(require_browse_access)])
 def search_files_endpoint(
+    request: Request,
     q: str = Query(...),
     path: str = Query(""),
 ) -> Any:
@@ -256,8 +354,13 @@ def search_files_endpoint(
     Query parameter 'q' is the search term (required, non-empty).
     Query parameter 'path' is the starting directory (default: root).
     Returns SearchResult with matching FileEntry list.
+
+    RECEIVE-scoped users get no search results (search results lack the
+    full path needed to safely scope to own uploads).
     """
     config = get_server_config()
+    if receive_scope_user(request) is not None:
+        return SearchResult(query=q, path=path, entries=[]).model_dump()
     try:
         results = search_files(config.shared_folder, path, q)
         return SearchResult(query=q, path=path, entries=results).model_dump()
@@ -269,8 +372,9 @@ def search_files_endpoint(
         return JSONResponse(status_code=400, content={"error": str(exc)})
 
 
-@router.get("/files/preview", response_model=None, dependencies=[Depends(require_full_access)])
-def preview_file(
+@router.get("/files/preview", response_model=None, dependencies=[Depends(require_browse_access)])
+async def preview_file(
+    request: Request,
     path: str = Query(...),
 ) -> Any:
     """Serve a file inline for preview.
@@ -280,6 +384,11 @@ def preview_file(
     handles Range requests (206 Partial Content) automatically.
     """
     config = get_server_config()
+    scope_user = receive_scope_user(request)
+    if scope_user is not None and not await upload_index.is_owned_by(
+        config.shared_folder, path, scope_user
+    ):
+        return JSONResponse(status_code=404, content={"error": "Not found"})
     try:
         file_path = download_file(config.shared_folder, path)
         mime_type, _ = mimetypes.guess_type(file_path.name)

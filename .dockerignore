@@ -1,0 +1,16 @@
+.git
+.planning
+.claude
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+node_modules
+client/node_modules
+tests
+server/tests
+docs
+feature-ideas
+*.md
+!README.md
+!relay/templates/*.html

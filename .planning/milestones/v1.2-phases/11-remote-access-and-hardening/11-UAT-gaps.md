@@ -25,7 +25,7 @@ expected: Open the clipboard/scratchpad panel through the relay mount. Add or vi
 result: pass
 
 ### 4. Relay CLI Entry Point
-expected: Run `uv run wifi-relay --help` in terminal. It shows usage with --host and --port flags. Run `uv run wifi-relay` — it starts the relay server binding to 0.0.0.0:8001 by default (check terminal output for the bind address).
+expected: Run `uv run network-relay --help` in terminal. It shows usage with --host and --port flags. Run `uv run network-relay` — it starts the relay server binding to 0.0.0.0:8001 by default (check terminal output for the bind address).
 result: pass
 
 ## Summary

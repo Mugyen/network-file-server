@@ -26,4 +26,16 @@ High — requires database for user records, session management rework, storage 
 
 ## Status
 
-Deferred to v1.3+
+**Largely delivered in v1.3.** Implemented: relay-hosted user accounts +
+nested groups, simple username/password signup/login, per-mount
+open/restricted access modes with user/group allowlists and read/write/
+receive roles, agent-as-owner handshake, relay-side enforcement with
+trusted identity propagation to mounts, per-user relay storage with
+quotas, owner/admin access-request approval, and an admin dashboard.
+
+**NOT delivered (still open):**
+- API keys for programmatic access (explicitly deferred — no public API yet)
+- SSO (out of scope)
+- Email verification / password reset
+
+This idea remains open until API keys are implemented.

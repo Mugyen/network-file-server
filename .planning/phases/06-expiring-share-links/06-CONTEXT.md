@@ -22,7 +22,7 @@ Users can generate temporary, self-expiring links to share specific files, and r
 ### Download page design
 - Clean, centered layout similar to DropBoxPage from Phase 5 — file name, file size, and prominent download button
 - Show file icon/type indicator for visual context
-- No server branding beyond "WiFi File Server" — recipient doesn't need to see folder path or host details
+- No server branding beyond "Network File Server" — recipient doesn't need to see folder path or host details
 - Expired link page: clear "This link has expired" message with no retry option — link is gone
 - Download page is a standalone route, not part of the SPA — works without React bundle for lightweight access
 

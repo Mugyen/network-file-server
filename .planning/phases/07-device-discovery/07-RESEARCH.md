@@ -42,7 +42,7 @@ The scope is narrow and well-defined: extend existing server-side tracking, add 
 
 ### Deferred Ideas (OUT OF SCOPE)
 - mDNS/Bonjour network broadcast (DISC-05) -- deferred to v2+ per REQUIREMENTS.md
-- Auto-discover other WiFi File Server instances (DISC-06) -- deferred to v2+
+- Auto-discover other Network File Server instances (DISC-06) -- deferred to v2+
 - Device activity tracking (last file accessed, upload/download stats) -- v2+ feature
 - Device blocking/kicking -- would need auth integration, out of scope
 </user_constraints>

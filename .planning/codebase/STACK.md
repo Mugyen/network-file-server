@@ -5,7 +5,7 @@
 ## Languages
 
 **Primary:**
-- Python 3.11 - All server logic, CLI, file operations (`wifi_file_server.py`, `main.py`)
+- Python 3.11 - All server logic, CLI, file operations (`network_file_server.py`, `main.py`)
 
 **Secondary:**
 - HTML/CSS/JavaScript - Single-page web UI (`templates/index.html`), inline styles and scripts, no build step
@@ -25,7 +25,7 @@
 ## Frameworks
 
 **Core:**
-- Flask 3.1.2 - HTTP server, routing, template rendering, file serving (`wifi_file_server.py`)
+- Flask 3.1.2 - HTTP server, routing, template rendering, file serving (`network_file_server.py`)
 - Jinja2 (transitive via Flask) - HTML templating (`templates/index.html`)
 - Werkzeug (transitive via Flask) - WSGI utilities, `secure_filename` for upload safety
 
@@ -40,7 +40,7 @@
 
 **Critical:**
 - `flask>=3.1.2` - The entire application is a Flask server; specified in `pyproject.toml`
-- `werkzeug` - Provides `secure_filename()` for upload path sanitization in `wifi_file_server.py` line 91, 120
+- `werkzeug` - Provides `secure_filename()` for upload path sanitization in `network_file_server.py` line 91, 120
 
 **Infrastructure (transitive via Flask):**
 - `blinker` 1.9.0 - Flask signal support
@@ -53,7 +53,7 @@
 
 ## Standard Library Usage
 
-Key stdlib modules used in `wifi_file_server.py`:
+Key stdlib modules used in `network_file_server.py`:
 - `os` - File system operations (listdir, path checks, getsize)
 - `sys` - Exit codes
 - `argparse` - CLI argument parsing (folder, port, host, debug flags)
@@ -65,10 +65,10 @@ Key stdlib modules used in `wifi_file_server.py`:
 
 **Environment:**
 - No `.env` file present - No environment variables used
-- Flask secret key is hardcoded in `wifi_file_server.py` line 17: `app.secret_key = 'your-secret-key-change-this'`
-- All configuration is via CLI arguments to `wifi_file_server.py`
+- Flask secret key is hardcoded in `network_file_server.py` line 17: `app.secret_key = 'your-secret-key-change-this'`
+- All configuration is via CLI arguments to `network_file_server.py`
 
-**CLI Arguments (defined in `wifi_file_server.py` lines 163-167):**
+**CLI Arguments (defined in `network_file_server.py` lines 163-167):**
 - `folder` (required) - Path to directory to share
 - `--port` / `-p` (default: 5000) - Server port
 - `--host` (default: 0.0.0.0) - Bind address

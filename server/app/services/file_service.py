@@ -30,7 +30,7 @@ def format_file_size(size_bytes: int) -> str:
     """Format a file size in bytes to a human-readable string.
 
     Uses units B, KB, MB, GB, TB with one decimal place.
-    Reuses logic from the original wifi_file_server.py get_file_size().
+    Reuses logic from the original network_file_server.py get_file_size().
     """
     size = float(size_bytes)
     for unit in ["B", "KB", "MB", "GB"]:

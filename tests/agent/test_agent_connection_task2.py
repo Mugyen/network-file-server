@@ -23,6 +23,7 @@ async def test_run_agent_loop_exits_cleanly_on_ttl_expiry(tmp_path: Path) -> Non
         preferred_code: str | None,
         password_hash: bytes | None,
         ttl_seconds: int | None,
+        owner=None,
     ) -> str:
         nonlocal call_count
         call_count += 1
@@ -38,6 +39,7 @@ async def test_run_agent_loop_exits_cleanly_on_ttl_expiry(tmp_path: Path) -> Non
             name="testfolder",
             password_hash=None,
             ttl_seconds=None,
+            owner=None,
         )
 
     # Must exit after first call — no retry
@@ -58,6 +60,7 @@ async def test_run_agent_loop_still_retries_on_connection_error(tmp_path: Path) 
         preferred_code: str | None,
         password_hash: bytes | None,
         ttl_seconds: int | None,
+        owner=None,
     ) -> str:
         nonlocal call_count
         call_count += 1
@@ -77,6 +80,7 @@ async def test_run_agent_loop_still_retries_on_connection_error(tmp_path: Path) 
             name="testfolder",
             password_hash=None,
             ttl_seconds=None,
+            owner=None,
         )
 
     assert call_count == 3
@@ -101,6 +105,7 @@ async def test_connect_and_serve_sets_password_hash_in_config(tmp_path: Path) ->
     )
     mock_conn.start_heartbeat = MagicMock()
     mock_conn.close = AsyncMock()
+    mock_conn.send_control = AsyncMock()
     mock_conn._ws = MagicMock()
     mock_conn._ws.receive = AsyncMock(side_effect=ConnectionError("ws closed"))
 
@@ -127,6 +132,7 @@ async def test_connect_and_serve_sets_password_hash_in_config(tmp_path: Path) ->
             preferred_code=None,
             password_hash=fake_hash,
             ttl_seconds=None,
+            owner=None,
         )
 
     assert captured_config["config"].password_hash == fake_hash
@@ -147,6 +153,7 @@ async def test_connect_and_serve_ttl_raises_agent_expired_error(tmp_path: Path) 
     )
     mock_conn.start_heartbeat = MagicMock()
     mock_conn.close = AsyncMock()
+    mock_conn.send_control = AsyncMock()
     mock_conn._ws = MagicMock()
     # Simulate a long-running receive that only returns after a brief sleep
     # The TTL is 0 seconds so it should expire almost immediately
@@ -183,4 +190,5 @@ async def test_connect_and_serve_ttl_raises_agent_expired_error(tmp_path: Path) 
                 preferred_code=None,
                 password_hash=None,
                 ttl_seconds=0,  # expires immediately
+                owner=None,
             )

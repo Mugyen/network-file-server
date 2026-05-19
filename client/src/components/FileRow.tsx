@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { FileType } from "../types/files.ts";
 import type { FileEntry } from "../types/files.ts";
 import FileIcon from "./FileIcon.tsx";
+import { ExpiryBadge } from "./ExpiryBadge.tsx";
 import { Download, Pencil, Trash2, Share2 } from "lucide-react";
 import ShareDialog from "./ShareDialog.tsx";
 
@@ -161,7 +162,10 @@ function FileRow({
 
       {/* Modified column */}
       <td className="py-2 px-3 text-gray-600 dark:text-gray-400 hidden md:table-cell">
-        {formatDate(file.modified)}
+        <div className="flex items-center gap-2">
+          <span>{formatDate(file.modified)}</span>
+          {file.expires_at !== null && <ExpiryBadge expiresAt={file.expires_at} />}
+        </div>
       </td>
 
       {/* Actions column -- visible on row hover */}

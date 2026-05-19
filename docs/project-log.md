@@ -1,5 +1,45 @@
 # Project Log
 
+## 2026-04-03: Phase 16 gap closure: Wire file TTL notifications
+
+Wired broadcast_fn into file TTL sweep (was None), bridged drop box WebSocket via ASGIWebSocketTransport (was closed immediately), added tunnel control handler for agent expired-files responses, and fixed stale config test assertion.
+
+## 2026-04-03: Phase 15 complete: UX Polish and Drop Box
+
+Landing page with hero section, OG meta tags, and GitHub link. Connection status overlays (Host Offline/Mount Expired) via REST polling. Always-on drop box mount via httpx.ASGITransport in-process forwarding with reserved code protection. Per-file upload TTL (1h/6h/1d/7d/Never) with SQLite tracking, background sweep, expiry badges, WebSocket toast, and agent expired files prompt.
+
+## 2026-03-30: Phase 14 complete: Persistent mount registry (14-02)
+
+Wired SqliteMountRegistry into relay lifespan, agent_ws reclaim logic, and TTL sweep retention cleanup. Agents now mark_offline on disconnect instead of deregistering, can reclaim OFFLINE mounts by code+IP match, and mount_registered message includes reclaimed/remaining_ttl fields. All relay tests migrated from sync MountRegistry to async SqliteMountRegistry with in-memory SQLite.
+
+## 2026-03-30: SqliteMountRegistry with persistence and reclaim (14-01)
+
+Added SqliteMountRegistry class (relay/app/services/sqlite_registry.py) as async SQLite-backed drop-in for MountRegistry. Persists mount metadata across relay restarts via aiosqlite. Includes startup cleanup, expire(), try_reclaim() with IP match, delete_expired_before() for retention, and RelayConfig.db_path extension.
+
+## 2026-03-30: Fix large file uploads through relay (FrameTooLargeError)
+
+Relay proxy stuffed entire HTTP request body into OPEN frame metadata, exceeding 64KB frame limit. Fixed by streaming request body as chunked DATA frames (using request.stream() for memory efficiency) with zero-length sentinel for end-of-body. Agent side reconstructs body from DATA frames before forwarding to ASGI app. 3 new agent tests for body reconstruction.
+
+## 2026-03-18: TTL enforcement, mount cap, and mount reg rate limiting (13-02)
+
+Added mount TTL enforcement with background sweep (ttl_sweep.py), per-IP mount cap (default 5), and mount registration rate limiting via `limits` library directly on WebSocket endpoint. TTL query param on /agent/ws capped to config max (24h). Sweep sends ttl_warning before expiry and marks mounts EXPIRED.
+
+## 2026-03-18: Config module, MountRecord extensions, and proxy rate limiting (13-01)
+
+Centralized relay config into YAML+env-var config module (relay/config.yaml, relay/app/config.py). Extended MountRecord with agent_ip, created_at, expires_at fields for abuse tracking. Added SlowAPI rate limiting on proxy requests with configurable rate, styled HTML 429 page for browsers, and JSON 429 for API clients.
+
+## 2026-03-16: SecureCookieMiddleware and conditional CORS lockdown (12-02)
+
+SecureCookieMiddleware stamps Secure flag on Set-Cookie behind HTTPS (X-Forwarded-Proto). CORS locked down in production (explicit origins with credentials) while dev retains wildcard. Missing RELAY_ALLOWED_ORIGINS in production raises ValueError.
+
+## 2026-03-16: Dockerize relay with health endpoint and structured logging (12-01)
+
+Multi-stage Dockerfile (Node + Python + slim runtime), `/health` endpoint with mount count, `CloudJsonFormatter` for Cloud Logging JSON output, `RelayEnv` enum for dev/production mode switching, `deploy_relay.sh` Cloud Run deploy script, and structured request/agent logging.
+
+## 2026-03-16: Rename project from network-file-server to network-file-server
+
+Renamed project, CLI commands (`network-file-server`, `network-relay`), display names, templates, shell scripts, tests, planning docs, and `network_file_server.py` → `network_file_server.py`.
+
 ## 2026-03-16: LAN IP resolution for mount QR codes
 
 When relay URL is localhost/127.0.0.1, the QR code and mount URL now show the LAN IP so phones on the same network can scan and connect. Also changed `run_mount_server.sh` to use `--relay` flag (translates to `--server` internally).
@@ -10,7 +50,7 @@ Added `run_relay.sh` and `run_mount_server.sh` — auto-rebuild client when sour
 
 ## 2026-03-16: Snippet copy button and relay CLI entry point (11-05)
 
-Added copy-to-clipboard button to each SnippetCard (navigator.clipboard.writeText with 1.5s Check icon feedback). Created `relay/cli.py` with `wifi-relay` console script — binds to 0.0.0.0:8001 by default, supports `--host` and `--port` flags.
+Added copy-to-clipboard button to each SnippetCard (navigator.clipboard.writeText with 1.5s Check icon feedback). Created `relay/cli.py` with `network-relay` console script — binds to 0.0.0.0:8001 by default, supports `--host` and `--port` flags.
 
 ## 2026-03-13: Fix hardcoded /api/ paths broken in remote mount mode
 
@@ -110,7 +150,7 @@ Added real-time shared clipboard with slide-out scratchpad panel. Named snippets
 
 ## 2026-03-09: FastAPI backend foundation (01-01)
 
-Scaffolded FastAPI backend with config validation, path traversal guard (resolve_safe_path), file listing API (GET /api/files), CORS middleware, and CLI entry point (wifi-file-server command). 43 tests covering all modules.
+Scaffolded FastAPI backend with config validation, path traversal guard (resolve_safe_path), file listing API (GET /api/files), CORS middleware, and CLI entry point (network-file-server command). 43 tests covering all modules.
 
 ## 2026-03-09: QR code and discovery services (01-02)
 
@@ -151,3 +191,47 @@ Added PreviewModal with 7 sub-components: image gallery (zoom toggle, arrow navi
 ## 2026-03-09: WebSocket infrastructure with toast notifications and connection status (04-01)
 
 Added WebSocket endpoint (/ws) with ConnectionManager for device tracking and broadcast, atomic JSON persistence utility, toast notifications (file upload, device connect/disconnect) with auto-dismiss and overflow collapse, connection status dot with device count tooltip, and reconnecting banner with exponential backoff. 15 backend tests.
+
+## 2026-05-14: PWA Web Share Target for Android upload bypass
+
+Added manifest.webmanifest with share_target POST/multipart, minimal sw.js for installability, and POST /api/share-upload route that accepts shared files and 303-redirects to ../. Lets users on devices with broken file pickers (Realme/OPPO, some Samsung) upload via Android's share sheet instead. Also added accept="*/*" and 0.0.0.0 LAN-IP rewriting fixes.
+
+## 2026-05-18: Accounts library — users, nested groups, credentials, quotas (v1.3 phase 1)
+
+Added framework-agnostic `accounts/` package (enums, models, exceptions, bcrypt passwords, AccountStore ABC, SqliteAccountStore, transitive group resolution with write- and read-time cycle detection, per-user quota). Registered in pyproject wheel packages. 39 tests (happy/edge/failure + fastapi-free import isolation); ruff clean.
+
+## 2026-05-18: Relay accounts config + session signer + store wiring (v1.3 phase 2)
+
+Added session_secret/admin_users/accounts_db_path/default_user_quota_bytes to RelayConfig (env overrides; ephemeral secret + warning if unset). New relay/app/services/session.py (RelaySession: signed session + short-lived agent-owner tokens, salted) and account_store.py singleton. Wired SqliteAccountStore + RelaySession into relay lifespan. Added InvalidSessionError/AuthenticationRequiredError/AccessDeniedError. 28 new tests; full relay+accounts suite 264 green.
+
+## 2026-05-18: Relay auth + admin HTTP API (v1.3 phase 3)
+
+Added relay/app/dependencies.py (get_optional_identity / get_current_identity / require_admin, admins from config), routers/auth.py (POST /auth/signup|login|logout|agent-token, GET /auth/me with httponly wfs_session cookie) and routers/admin.py (admin-gated user enable/disable, group CRUD, membership add-by-name/remove with cycle+dup mapping to 409). Wired into relay app. 21 new tests; full relay+accounts suite 285 green.
+
+## 2026-05-18: Agent-as-owner handshake + mount policy persistence (v1.3 phase 4 + phase 5 data layer)
+
+Added agent/auth.py (AgentOwner, parse_allow_entry, fetch_agent_token), agent CLI flags --login/--password-stdin/--access-mode/--allow (password kept), and an agent_auth control frame sent before mount_registered. Relay agent_ws now reads/validates the handshake, verifies the owner token, resolves allowlist names→ids, and persists policy. SqliteMountRegistry gained owner_user_id/access_mode/has_password columns (migrated), a mount_policy table, set_owner_policy/get_policy, and try_reclaim_as_owner (IP-independent owner reclaim). MountPolicy/PolicyEntry models added. Agent stops (no retry) on AgentAuthError. 17 new tests; full suite 800 green.
+
+## 2026-05-18: Relay access enforcement at the proxy (v1.3 phase 5)
+
+Added relay/app/services/access_policy.py (authorize + identity_from_cookies) implementing the access-decision model: allowlisted signed-in users pass identified (password bypassed downstream), OPEN mounts allow anon, RESTRICTED+password falls through to the server password gate, RESTRICTED+no-password denies (AuthenticationRequiredError→302/401, AccessDeniedError→403 forbidden.html). Wired enforcement into mount_proxy proxy_request and proxy_websocket (close 1008). Legacy/dropbox mounts fail open. 12 new tests; full suite 812 green.
+
+## 2026-05-18: Trusted relay identity propagation + per-request server role (v1.3 phase 6 core)
+
+Relay mount_proxy now strips inbound X-WFS-* and injects authoritative X-WFS-User/Role/Auth-Bypass for allowlisted users (HTTP + WS). New server/app/services/relay_identity.py gates trust on relay-served mode (mount_code set) so LAN clients cannot spoof. auth_middleware honors X-WFS-Auth-Bypass (relay-served only); mode_guard derives per-request role from X-WFS-Role with global read_only/receive fallback; server-info exposes current_user/current_role/access_mode. 19 new tests incl. LAN spoof regressions; full suite 821 green. NOTE: RECEIVE currently = upload-only (existing receive semantics); the "see own uploads" refinement is still outstanding.
+
+## 2026-05-19: RECEIVE role = upload + see own uploads (v1.3 phase 6 completion)
+
+Added server/app/services/upload_index.py (JSON sidecar mapping rel_path->uploader, reuses persistence util). mode_guard: require_write_access now allows RECEIVE (upload), require_full_access still blocks RECEIVE (destructive ops), new require_browse_access + receive_scope_user. files.py records uploader on upload and scopes list/download/preview to the RECEIVE user's own files (search returns empty for RECEIVE; sidecar hidden). 8 new tests; full suite 830 green.
+
+## 2026-05-19: Per-user relay storage + quota (v1.3 phase 7)
+
+Added relay/app/services/user_storage.py (isolated <data_dir>/users/<id> dir, usage walk, quota = accounts override else relay default) and routers/user_storage.py (/me/quota, /me/files list/upload/download/delete; login-required; 413 on quota exceeded with content-length pre-check + post-write rollback). Reuses server file_service helpers (path-traversal safe). Removed a long-stale unused import in relay/app/main.py. 6 tests; full suite 836 green.
+
+## 2026-05-19: Client SPA — relay login/signup/admin/403 + access requests (v1.3 phase 8 frontend)
+
+Added client/src/api/accounts.ts (relay-root auth/admin/requests client) and client/src/pages/{LoginPage,SignupPage,AdminDashboard,Forbidden403}.tsx. main.tsx routes /login,/signup,/admin,/403 to relay pages and redirects mount access to /login?next= on relay 302/401. Client builds clean (tsc + vite). Browser/Playwright verification is the user's step (no headless browser here).
+
+## 2026-05-19: Rate limiting, scripts, docs, security pass (v1.3 phase 9)
+
+Added config-driven per-IP rate limits (RELAY_AUTH_SIGNUP_RATE 5/hour, AUTH_LOGIN_RATE 10/min, AUTH_AGENT_TOKEN_RATE 10/min) on /auth/signup|login|agent-token via the shared slowapi limiter (response param added for header injection). Created scripts/{install_setup,build,run,test,clean}.sh (CLAUDE rule 12). README documents the accounts model/env/flows; feature-ideas/48 marked largely-delivered (API keys + SSO still open). Security pass: bcrypt constant-time, generic 401s, httponly+samesite+secure-via-proxy session cookie, 120s agent-token max-age, inbound x-wfs-* strip regression covered. 3 new tests; full suite 848 green; all feature files ruff-clean.

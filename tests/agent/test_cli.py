@@ -13,7 +13,7 @@ class TestMountSubcommand:
     """Tests for mount subcommand argument parsing."""
 
     def test_mount_subcommand_parses_correctly(self, tmp_path: Path) -> None:
-        """Test 1: wifi-file-server mount ./testfolder --server https://relay.example.com parses correctly."""
+        """Test 1: network-file-server mount ./testfolder --server https://relay.example.com parses correctly."""
         args = _parse_args(["mount", str(tmp_path), "--server", "https://relay.example.com"])
         assert args.command == "mount"
         assert args.folder == str(tmp_path)
@@ -40,25 +40,25 @@ class TestMountSubcommand:
 
 
 class TestBackwardCompatibility:
-    """Tests that bare wifi-file-server ./files still works."""
+    """Tests that bare network-file-server ./files still works."""
 
     def test_bare_folder_invocation_parses_correctly(self, tmp_path: Path) -> None:
-        """Test 4: wifi-file-server ./testfolder (bare, no subcommand) parses with command=None."""
+        """Test 4: network-file-server ./testfolder (bare, no subcommand) parses with command=None."""
         args = _parse_args([str(tmp_path)])
         # No subcommand means command is None
         assert args.command is None
         assert args.folder == str(tmp_path)
 
     def test_bare_folder_with_port_parses_correctly(self, tmp_path: Path) -> None:
-        """Test 5: wifi-file-server ./testfolder --port 9000 still works."""
+        """Test 5: network-file-server ./testfolder --port 9000 still works."""
         args = _parse_args([str(tmp_path), "--port", "9000"])
         assert args.command is None
         assert args.folder == str(tmp_path)
         assert args.port == 9000
 
     def test_missing_args_exits(self) -> None:
-        """wifi-file-server with no args at all — main() exits with error."""
-        with patch("sys.argv", ["wifi-file-server"]):
+        """network-file-server with no args at all — main() exits with error."""
+        with patch("sys.argv", ["network-file-server"]):
             from server.app.cli import main
             with pytest.raises(SystemExit):
                 main()

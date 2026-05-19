@@ -32,6 +32,8 @@ interface UseUploadResult {
   isUploading: boolean;
   collapsed: boolean;
   toggleCollapsed: () => void;
+  fileTtl: number;
+  setFileTtl: (ttl: number) => void;
 }
 
 /**
@@ -44,6 +46,7 @@ export function useUpload(
 ): UseUploadResult {
   const [uploads, setUploads] = useState<UploadFileState[]>([]);
   const [collapsed, setCollapsed] = useState<boolean>(false);
+  const [fileTtl, setFileTtl] = useState<number>(86400);
   const activeCount = useRef<number>(0);
   /** IDs currently being processed — prevents duplicate processUpload calls
    *  caused by React StrictMode double-firing effects. */
@@ -79,6 +82,7 @@ export function useUpload(
           (percent: number) => {
             updateUpload(entry.id, { progress: percent });
           },
+          fileTtl,
         );
         updateUpload(entry.id, {
           status: UploadStatus.DONE,
@@ -212,5 +216,7 @@ export function useUpload(
     isUploading,
     collapsed,
     toggleCollapsed,
+    fileTtl,
+    setFileTtl,
   };
 }

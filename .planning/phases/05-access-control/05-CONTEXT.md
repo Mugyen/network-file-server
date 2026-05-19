@@ -20,7 +20,7 @@ Server operator can restrict access and write operations via CLI flags (`--passw
 - Inherit the app's existing dark/light/system theme toggle — consistent with the rest of the server UI
 
 ### Mode indicators
-- Subtle header pill badges next to "WiFi File Server" title
+- Subtle header pill badges next to "Network File Server" title
 - Text pills with color coding: "Read Only" (amber), "🔒 Protected" (blue)
 - Receive mode needs no badge — the entire drop box UI IS the indicator
 - Normal mode (no flags) shows no badge
@@ -40,7 +40,7 @@ Server operator can restrict access and write operations via CLI flags (`--passw
 ## Specific Ideas
 
 - Drop box mockup shows the centered dashed drop zone with "Choose files..." button and uploaded file list below
-- Mode badge mockup: `WiFi File Server  [🔒 Protected] [Read Only]` — both badges visible simultaneously when combined
+- Mode badge mockup: `Network File Server  [🔒 Protected] [Read Only]` — both badges visible simultaneously when combined
 - Drop box header shows machine hostname (e.g., "Rahul's MacBook Pro") for server identification without exposing folder path
 
 </specifics>

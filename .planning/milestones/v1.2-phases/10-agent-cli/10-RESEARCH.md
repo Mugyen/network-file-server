@@ -10,8 +10,8 @@
 ### Locked Decisions
 
 **CLI structure:**
-- Subcommand pattern: `wifi-file-server mount ./files --server <url>`
-- Existing bare positional `wifi-file-server ./files` stays unchanged for LAN mode (no breaking change)
+- Subcommand pattern: `network-file-server mount ./files --server <url>`
+- Existing bare positional `network-file-server ./files` stays unchanged for LAN mode (no breaking change)
 - `--server` flag is required for mount subcommand (relay URL)
 - `--name` flag is optional (human-readable mount name, defaults to folder name)
 - Mount code assigned by relay server (agent does not request a specific code)
@@ -50,7 +50,7 @@ None — discussion stayed within phase scope
 
 | ID | Description | Research Support |
 |----|-------------|-----------------|
-| AGNT-01 | User can mount a local directory via `wifi-file-server mount ./files --server <url>` | argparse subcommand pattern; `_build_parser()` extension in `server/app/cli.py` |
+| AGNT-01 | User can mount a local directory via `network-file-server mount ./files --server <url>` | argparse subcommand pattern; `_build_parser()` extension in `server/app/cli.py` |
 | AGNT-02 | Agent starts local FastAPI server using `create_app()` and proxies tunneled requests via httpx | `httpx.AsyncClient` + `ASGITransport(app=create_app())`; parse OPEN frame metadata; send DATA+CLOSE frames back |
 | AGNT-03 | Agent displays mount URL and QR code in terminal after successful connection | Reuse `generate_ascii_qr()` from `server/app/services/qr_service.py`; mount URL is `{relay_url}/m/{code}` |
 | AGNT-04 | Agent auto-reconnects on WebSocket drop with exponential backoff and jitter | `websockets` v16 client library; manual reconnect loop with `asyncio.sleep`; update terminal status line |
@@ -140,10 +140,10 @@ tests/agent/
 ### Pattern 1: CLI Subcommand Extension
 
 **What:** Add `subparsers` to the existing `_build_parser()` in `server/app/cli.py`, or restructure to a top-level subcommand dispatcher.
-**When to use:** `wifi-file-server mount` — distinguishes remote mode from LAN mode without breaking existing positional arg.
+**When to use:** `network-file-server mount` — distinguishes remote mode from LAN mode without breaking existing positional arg.
 
 **How existing parser must change:**
-The current `_build_parser()` uses a bare positional `folder` argument. To add `mount` as a subcommand without breaking `wifi-file-server ./files`, the parser must become a subcommand-aware dispatcher. The bare `wifi-file-server ./files` invocation (no subcommand) should remain the default path.
+The current `_build_parser()` uses a bare positional `folder` argument. To add `mount` as a subcommand without breaking `network-file-server ./files`, the parser must become a subcommand-aware dispatcher. The bare `network-file-server ./files` invocation (no subcommand) should remain the default path.
 
 **Approach (backward-compatible):**
 ```python
@@ -159,10 +159,10 @@ mount_parser.add_argument("--name", help="Human-readable mount name (defaults to
 
 # In main(): if args.command == "mount": run_mount(args) else: run_lan_server(args)
 # Bare invocation with no subcommand: args.command is None — fall through to LAN mode
-# BUT: bare `wifi-file-server ./files` will fail because `folder` is now only on mount subparser
+# BUT: bare `network-file-server ./files` will fail because `folder` is now only on mount subparser
 ```
 
-**Critical issue:** The existing bare positional `wifi-file-server ./files` cannot coexist with subparsers using the same positional name. The clearest pattern is to keep the old `folder` as a top-level positional with `nargs='?'` (optional), and check `args.command` to dispatch.
+**Critical issue:** The existing bare positional `network-file-server ./files` cannot coexist with subparsers using the same positional name. The clearest pattern is to keep the old `folder` as a top-level positional with `nargs='?'` (optional), and check `args.command` to dispatch.
 
 ### Pattern 2: WebSocket Adapter for TunnelConnection
 
@@ -357,7 +357,7 @@ async def run_agent_loop(
 
 ### Pitfall 2: httpx is a dev-only dependency
 
-**What goes wrong:** `httpx` is in `[dependency-groups.dev]` in `pyproject.toml`. Production installs (`pip install wifi-ftp-server`) will NOT have httpx. The agent fails with `ModuleNotFoundError`.
+**What goes wrong:** `httpx` is in `[dependency-groups.dev]` in `pyproject.toml`. Production installs (`pip install network-file-server`) will NOT have httpx. The agent fails with `ModuleNotFoundError`.
 **Why it happens:** httpx was added only for tests in earlier phases. STATE.md explicitly notes this.
 **How to avoid:** Move `httpx>=0.28.0` from `[dependency-groups.dev]` to `[project.dependencies]` in `pyproject.toml` as the very first change.
 
@@ -578,9 +578,9 @@ def print_reconnect_status(attempt: int, next_in_s: float) -> None:
 
 | Req ID | Behavior | Test Type | Automated Command | File Exists? |
 |--------|----------|-----------|-------------------|-------------|
-| AGNT-01 | `wifi-file-server mount ./files --server <url>` parses correctly | unit | `uv run pytest tests/agent/test_cli.py -x` | ❌ Wave 0 |
+| AGNT-01 | `network-file-server mount ./files --server <url>` parses correctly | unit | `uv run pytest tests/agent/test_cli.py -x` | ❌ Wave 0 |
 | AGNT-01 | `--server` required, `--name` optional with folder default | unit | `uv run pytest tests/agent/test_cli.py::test_mount_args -x` | ❌ Wave 0 |
-| AGNT-01 | Existing `wifi-file-server ./files` (LAN mode) still works | unit | `uv run pytest server/tests/test_cli.py -x` | ✅ (existing) |
+| AGNT-01 | Existing `network-file-server ./files` (LAN mode) still works | unit | `uv run pytest server/tests/test_cli.py -x` | ✅ (existing) |
 | AGNT-02 | OPEN frame → httpx ASGI dispatch → DATA+CLOSE frames | unit | `uv run pytest tests/agent/test_proxy.py -x` | ❌ Wave 0 |
 | AGNT-02 | CANCEL frame aborts in-flight httpx request | unit | `uv run pytest tests/agent/test_proxy.py::test_cancel -x` | ❌ Wave 0 |
 | AGNT-02 | Concurrent OPEN frames handled via asyncio.create_task | unit | `uv run pytest tests/agent/test_proxy.py::test_concurrent -x` | ❌ Wave 0 |

@@ -96,7 +96,7 @@ class TestCLIValidation:
         with patch.object(
             sys,
             "argv",
-            ["wifi-file-server", str(tmp_path), "--read-only", "--receive"],
+            ["network-file-server", str(tmp_path), "--read-only", "--receive"],
         ):
             from server.app.cli import main
 
@@ -110,7 +110,7 @@ class TestCLIValidation:
         with patch.object(
             sys,
             "argv",
-            ["wifi-file-server", str(tmp_path), "--password", long_password],
+            ["network-file-server", str(tmp_path), "--password", long_password],
         ):
             from server.app.cli import main
 

@@ -11,7 +11,7 @@ from server.app.services.network_service import detect_primary_lan_ip
 from server.app.services.qr_service import generate_ascii_qr
 
 # Hostnames that resolve to the local machine and won't work from other devices.
-_LOCAL_HOSTS: frozenset[str] = frozenset({"localhost", "127.0.0.1", "::1"})
+_LOCAL_HOSTS: frozenset[str] = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
 
 
 def _resolve_lan_url(url: str) -> str:

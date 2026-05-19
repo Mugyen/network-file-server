@@ -10,7 +10,7 @@
 ### What Was Built
 - Binary WebSocket tunnel protocol with 21-byte frame headers, UUID multiplexing, and per-stream backpressure
 - Relay server with mount registry, landing page, error templates, and HTTP/WebSocket proxying
-- Agent CLI (`wifi-file-server mount`) with auto-reconnect, QR display, and terminal status
+- Agent CLI (`network-file-server mount`) with auto-reconnect, QR display, and terminal status
 - Password protection and TTL auto-expiry for remote mounts
 - SPA dynamic relay prefix detection — all v1.0/v1.1 features work through relay
 - WebSocket tunneling for clipboard, notifications, and device discovery through relay

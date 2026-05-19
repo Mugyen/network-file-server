@@ -20,6 +20,7 @@ from server.app.routers.file_requests import router as file_requests_router
 from server.app.routers.files import router as files_router
 from server.app.routers.server_info import router as server_info_router
 from server.app.routers.share import router as share_router
+from server.app.routers.share_target import router as share_target_router
 from server.app.routers.websocket import router as websocket_router
 from server.app.services.auth_service import get_token_service
 from server.app.services.share_service import ShareLinkService, set_share_service
@@ -32,7 +33,7 @@ def create_app() -> FastAPI:
     - Includes the files API router and server-info router.
     - Mounts SPA static files if client/dist exists (production mode).
     """
-    application = FastAPI(title="WiFi File Server")
+    application = FastAPI(title="Network File Server")
 
     # CORS: allow all origins for LAN access
     # Note: allow_credentials is NOT set to True (mutually exclusive with wildcard origins per CORS spec)
@@ -49,6 +50,7 @@ def create_app() -> FastAPI:
     application.include_router(files_router)
     application.include_router(server_info_router)
     application.include_router(share_router)
+    application.include_router(share_target_router)
     application.include_router(websocket_router)
 
     # Exception handlers for access control errors

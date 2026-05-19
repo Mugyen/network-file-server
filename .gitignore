@@ -8,3 +8,12 @@ wheels/
 
 # Virtual environments
 .venv
+
+# macOS
+.DS_Store
+
+# Runtime data (relay/server local state)
+.wfs_data/
+
+# Local test fixtures — large binaries, not for version control
+test-files/
