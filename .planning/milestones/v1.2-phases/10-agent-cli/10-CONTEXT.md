@@ -14,8 +14,8 @@ CLI command to mount a local directory through the relay server, making files ac
 ## Implementation Decisions
 
 ### CLI structure
-- Subcommand pattern: `wifi-file-server mount ./files --server <url>`
-- Existing bare positional `wifi-file-server ./files` stays unchanged for LAN mode (no breaking change)
+- Subcommand pattern: `network-file-server mount ./files --server <url>`
+- Existing bare positional `network-file-server ./files` stays unchanged for LAN mode (no breaking change)
 - `--server` flag is required for mount subcommand (relay URL)
 - `--name` flag is optional (human-readable mount name, defaults to folder name)
 - Mount code assigned by relay server (agent does not request a specific code)

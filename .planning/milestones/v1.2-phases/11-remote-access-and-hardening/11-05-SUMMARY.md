@@ -5,7 +5,7 @@ subsystem: frontend-clipboard,relay-cli
 tags: [clipboard, relay, cli, ux]
 dependency_graph:
   requires: []
-  provides: [copy-to-clipboard-snippet, wifi-relay-cli]
+  provides: [copy-to-clipboard-snippet, network-relay-cli]
   affects: [client/src/components/SnippetCard.tsx, relay/cli.py, pyproject.toml]
 tech_stack:
   added: []
@@ -30,7 +30,7 @@ metrics:
 
 # Phase 11 Plan 05: Clipboard Copy Button and Relay CLI Summary
 
-**One-liner:** Copy-to-clipboard button on SnippetCard with 1.5s visual feedback, plus `wifi-relay` CLI that binds to 0.0.0.0:8001 by default.
+**One-liner:** Copy-to-clipboard button on SnippetCard with 1.5s visual feedback, plus `network-relay` CLI that binds to 0.0.0.0:8001 by default.
 
 ## What Was Built
 
@@ -40,12 +40,12 @@ Added `Copy`/`Check` icons from lucide-react and a `copied` boolean state to `Sn
 
 ### Task 2: Relay CLI entry point
 
-Created `relay/cli.py` with a `main()` function using argparse. Registered as `wifi-relay` console script in `pyproject.toml`. Defaults: host=0.0.0.0, port=8001 (set via explicit None checks — no default parameters on the function per project conventions). Updated README to document `uv run wifi-relay` and its flags.
+Created `relay/cli.py` with a `main()` function using argparse. Registered as `network-relay` console script in `pyproject.toml`. Defaults: host=0.0.0.0, port=8001 (set via explicit None checks — no default parameters on the function per project conventions). Updated README to document `uv run network-relay` and its flags.
 
 ## Verification
 
 - `cd client && npx tsc --noEmit` — clean, no errors
-- `uv run wifi-relay --help` — shows --host and --port flags
+- `uv run network-relay --help` — shows --host and --port flags
 - `uv run pytest tests/ -x -q` — 208 passed
 
 ## Deviations from Plan
@@ -56,5 +56,5 @@ None - plan executed exactly as written.
 
 - relay/cli.py exists: FOUND
 - client/src/components/SnippetCard.tsx contains navigator.clipboard.writeText: FOUND
-- pyproject.toml contains wifi-relay entry: FOUND
+- pyproject.toml contains network-relay entry: FOUND
 - Commits 3c9ee07 and c0e8ca3: FOUND

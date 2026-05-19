@@ -1,5 +1,5 @@
 def main():
-    print("Hello from wifi-ftp-server!")
+    print("Hello from network-file-server!")
 
 
 if __name__ == "__main__":

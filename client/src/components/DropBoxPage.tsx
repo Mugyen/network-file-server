@@ -141,6 +141,7 @@ function DropBoxPage({ hostname }: DropBoxPageProps) {
             ref={fileInputRef}
             type="file"
             multiple
+            accept="*/*"
             onChange={handleFileChange}
             className="hidden"
           />

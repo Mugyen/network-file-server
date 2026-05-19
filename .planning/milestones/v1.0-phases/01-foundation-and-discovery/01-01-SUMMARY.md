@@ -13,7 +13,7 @@ provides:
   - Path traversal guard (resolve_safe_path)
   - File listing service (list_directory -> DirectoryListing)
   - ServerConfig with validation
-  - CLI entry point (wifi-file-server command)
+  - CLI entry point (network-file-server command)
   - GET /api/files endpoint with path query param
 affects: [01-02, 01-03, 02-01]
 
@@ -112,7 +112,7 @@ Each task was committed atomically:
 - **Issue:** uv sync warned that script entry points cannot be installed without a packaged project
 - **Fix:** Added [build-system] with hatchling and [tool.hatch.build.targets.wheel] packages config
 - **Files modified:** pyproject.toml
-- **Verification:** uv sync installs wifi-file-server command successfully
+- **Verification:** uv sync installs network-file-server command successfully
 - **Committed in:** 524690a (Task 3 commit)
 
 **2. [Rule 1 - Bug] Fixed CORS test to send Origin header**

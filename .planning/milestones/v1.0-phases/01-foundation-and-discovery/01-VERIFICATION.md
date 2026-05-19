@@ -21,7 +21,7 @@ Truths are aggregated from the must_haves of all three plans (01-01, 01-02, 01-0
 | # | Truth | Status | Evidence |
 |---|-------|--------|----------|
 | 1 | FastAPI app starts and responds to HTTP requests | VERIFIED | `server/app/main.py` has `create_app()` factory returning configured FastAPI instance; `app = create_app()` at module level; 64 backend tests pass using httpx AsyncClient against the app |
-| 2 | CLI accepts a folder path argument and optional port | VERIFIED | `server/app/cli.py` uses argparse with positional `folder`, `--port/-p`, `--host`; `run_with_defaults(folder: str)` convenience function present; pyproject.toml declares `wifi-file-server = "server.app.cli:main"` |
+| 2 | CLI accepts a folder path argument and optional port | VERIFIED | `server/app/cli.py` uses argparse with positional `folder`, `--port/-p`, `--host`; `run_with_defaults(folder: str)` convenience function present; pyproject.toml declares `network-file-server = "server.app.cli:main"` |
 | 3 | Requesting paths containing ../ or absolute paths outside the shared folder returns 403 | VERIFIED | `server/app/services/file_service.py` resolve_safe_path rejects `../`, absolute paths, symlinks escaping base; `server/app/routers/files.py` catches PathTraversalError and returns 403 JSONResponse; tests `test_traversal_returns_403` and 5 resolve_safe_path tests confirm |
 | 4 | GET /api/files returns JSON listing of files with name, size, type, and modified date | VERIFIED | `server/app/routers/files.py` GET /files calls list_directory, returns DirectoryListing model_dump; Pydantic models in schemas.py have all fields (name, size, size_display, type, modified); 7 route tests confirm correct responses |
 | 5 | API responses include CORS headers allowing cross-origin requests | VERIFIED | `server/app/main.py` adds CORSMiddleware with allow_origins=["*"]; test_cors.py tests confirm Access-Control-Allow-Origin header present and OPTIONS preflight returns CORS headers |
@@ -116,8 +116,8 @@ No orphaned requirements -- all 7 requirement IDs mapped to Phase 1 in REQUIREME
 
 ### 1. End-to-End Browser Experience
 
-**Test:** Start backend with `uv run wifi-file-server /tmp --port 8000`, start frontend with `cd client && npm run dev`, open http://localhost:5173 in browser.
-**Expected:** "WiFi File Server" header visible, file list shows contents of /tmp with names/sizes/dates, server info card shows QR code and IP address.
+**Test:** Start backend with `uv run network-file-server /tmp --port 8000`, start frontend with `cd client && npm run dev`, open http://localhost:5173 in browser.
+**Expected:** "Network File Server" header visible, file list shows contents of /tmp with names/sizes/dates, server info card shows QR code and IP address.
 **Why human:** Visual rendering, layout correctness, and QR code scannability cannot be verified programmatically.
 
 ### 2. QR Code Scannability

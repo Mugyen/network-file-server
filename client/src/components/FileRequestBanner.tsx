@@ -100,6 +100,7 @@ function FileRequestBanner({
         <input
           ref={fileInputRef}
           type="file"
+          accept="*/*"
           onChange={handleFileChange}
           className="hidden"
         />

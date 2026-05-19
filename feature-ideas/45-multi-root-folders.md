@@ -7,7 +7,7 @@ Serve multiple directories simultaneously from a single server instance. Each ro
 A common scenario: "I want to share my Downloads folder AND my project folder, but not my entire home directory." Currently you'd have to pick one or run two servers on different ports.
 
 ## Implementation
-- CLI accepts multiple paths: `uv run wifi-file-server ~/Downloads ~/Projects`
+- CLI accepts multiple paths: `uv run network-file-server ~/Downloads ~/Projects`
 - Each path becomes a named root in the API (using the folder's basename)
 - `GET /api/files` at the top level lists the roots, not files
 - Navigation below each root works exactly as today

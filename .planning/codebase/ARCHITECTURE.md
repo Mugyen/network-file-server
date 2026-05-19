@@ -24,7 +24,7 @@
 
 **Application Layer (Routes & Logic):**
 - Purpose: Handles HTTP requests, filesystem operations, file serving
-- Location: `wifi_file_server.py`
+- Location: `network_file_server.py`
 - Contains: Flask route handlers, utility functions, CLI argument parsing, server startup
 - Depends on: Flask, Werkzeug, Python stdlib (os, socket, argparse, pathlib, mimetypes)
 - Used by: Presentation layer (template rendering), API consumers (JSON endpoint)
@@ -79,30 +79,30 @@
 
 **File Metadata Dictionary:**
 - Purpose: Represents a file entry for display in the UI and API responses
-- Examples: Built inline in `wifi_file_server.py` lines 69-74 and 147-152
+- Examples: Built inline in `network_file_server.py` lines 69-74 and 147-152
 - Pattern: Dict with keys `name`, `size`, `icon`, `path`; constructed per-file during directory listing
 
 **Utility Functions:**
-- `get_local_ip()` at `wifi_file_server.py:22` - Discovers LAN IP via UDP socket trick
-- `get_file_size()` at `wifi_file_server.py:34` - Converts byte count to human-readable string
-- `get_file_icon()` at `wifi_file_server.py:43` - Maps file extensions to emoji icons via static dict
+- `get_local_ip()` at `network_file_server.py:22` - Discovers LAN IP via UDP socket trick
+- `get_file_size()` at `network_file_server.py:34` - Converts byte count to human-readable string
+- `get_file_icon()` at `network_file_server.py:43` - Maps file extensions to emoji icons via static dict
 
 ## Entry Points
 
-**Primary Entry Point (`wifi_file_server.py`):**
-- Location: `wifi_file_server.py:205` (`if __name__ == '__main__': main()`)
-- Triggers: Direct execution via `python wifi_file_server.py <folder> [--port N] [--host H] [--debug]`
+**Primary Entry Point (`network_file_server.py`):**
+- Location: `network_file_server.py:205` (`if __name__ == '__main__': main()`)
+- Triggers: Direct execution via `python network_file_server.py <folder> [--port N] [--host H] [--debug]`
 - Responsibilities: Parse CLI args, validate folder path, set global state, print server info, start Flask dev server
 
 **Shell Wrapper (`start_server.sh`):**
 - Location: `start_server.sh`
 - Triggers: `./start_server.sh <folder> [port]`
-- Responsibilities: Check Python availability, verify folder exists, install Flask if missing, invoke `wifi_file_server.py` with default port 6969
+- Responsibilities: Check Python availability, verify folder exists, install Flask if missing, invoke `network_file_server.py` with default port 6969
 
 **Placeholder Entry Point (`main.py`):**
 - Location: `main.py`
 - Triggers: Not currently used in the application flow
-- Responsibilities: Prints "Hello from wifi-ftp-server!" -- this is a uv-generated scaffold, not the real entry point
+- Responsibilities: Prints "Hello from network-file-server!" -- this is a uv-generated scaffold, not the real entry point
 
 ## HTTP Routes
 
@@ -132,7 +132,7 @@
 
 **Authentication:** None. No authentication or authorization. Any device on the local network can browse, download, and upload files.
 
-**Security:** Relies entirely on network-level isolation (same WiFi). `app.secret_key` is hardcoded as `'your-secret-key-change-this'` in `wifi_file_server.py:17`.
+**Security:** Relies entirely on network-level isolation (same WiFi). `app.secret_key` is hardcoded as `'your-secret-key-change-this'` in `network_file_server.py:17`.
 
 ---
 

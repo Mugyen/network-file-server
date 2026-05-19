@@ -12,7 +12,7 @@
 **Landing page:**
 - Code entry only — simple text input for mount code + submit button, no in-browser QR scanner
 - Server-rendered via Jinja2 templates (FastAPI + Jinja2)
-- Informational style — brief explanation of WiFi File Server, how mount codes work, plus the code input
+- Informational style — brief explanation of Network File Server, how mount codes work, plus the code input
 - On valid code submission: 302 redirect to `/m/{code}/`
 
 **Error pages:**
@@ -422,7 +422,7 @@ from relay.app.routers.mount_proxy import router as proxy_router
 from relay.app.routers.landing import router as landing_router
 
 def create_relay_app() -> FastAPI:
-    app = FastAPI(title="WiFi File Server Relay")
+    app = FastAPI(title="Network File Server Relay")
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
     app.include_router(agent_router)
     app.include_router(proxy_router)
@@ -440,7 +440,7 @@ app = create_relay_app()
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}WiFi File Server{% endblock %}</title>
+    <title>{% block title %}Network File Server{% endblock %}</title>
     <style>
         /* System font stack, light/dark mode — mirrors share_download.html style */
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -575,15 +575,15 @@ async def stream_generator(
 ## Sources
 
 ### Primary (HIGH confidence)
-- `/Users/rahul/Projects/wifi-ftp-server/tunnel/connection.py` — TunnelConnection API: `open_stream`, `send_open`, `read_stream`, `read_stream_iter`, `send_cancel`, `close`, `start_heartbeat`, `run_receive_loop`
-- `/Users/rahul/Projects/wifi-ftp-server/tunnel/protocol.py` — `WebSocketProtocol` interface
-- `/Users/rahul/Projects/wifi-ftp-server/server/app/routers/share.py` — Jinja2Templates pattern, template path resolution, TemplateResponse usage
-- `/Users/rahul/Projects/wifi-ftp-server/server/app/services/share_service.py` — service singleton pattern (get/set), typed exception hierarchy, dataclass registry entries
-- `/Users/rahul/Projects/wifi-ftp-server/server/app/main.py` — `create_app()` factory pattern
-- `/Users/rahul/Projects/wifi-ftp-server/server/app/models/enums.py` — `(str, Enum)` pattern for domain enums
-- `/Users/rahul/Projects/wifi-ftp-server/server/app/routers/websocket.py` — FastAPI WebSocket endpoint pattern with `WebSocketDisconnect` handling
-- `/Users/rahul/Projects/wifi-ftp-server/server/tests/conftest.py` — test fixture pattern (ASGITransport, AsyncClient)
-- `/Users/rahul/Projects/wifi-ftp-server/pyproject.toml` — confirmed fastapi 0.115+, jinja2 3.1+, no new deps needed
+- `/Users/rahul/Projects/network-file-server/tunnel/connection.py` — TunnelConnection API: `open_stream`, `send_open`, `read_stream`, `read_stream_iter`, `send_cancel`, `close`, `start_heartbeat`, `run_receive_loop`
+- `/Users/rahul/Projects/network-file-server/tunnel/protocol.py` — `WebSocketProtocol` interface
+- `/Users/rahul/Projects/network-file-server/server/app/routers/share.py` — Jinja2Templates pattern, template path resolution, TemplateResponse usage
+- `/Users/rahul/Projects/network-file-server/server/app/services/share_service.py` — service singleton pattern (get/set), typed exception hierarchy, dataclass registry entries
+- `/Users/rahul/Projects/network-file-server/server/app/main.py` — `create_app()` factory pattern
+- `/Users/rahul/Projects/network-file-server/server/app/models/enums.py` — `(str, Enum)` pattern for domain enums
+- `/Users/rahul/Projects/network-file-server/server/app/routers/websocket.py` — FastAPI WebSocket endpoint pattern with `WebSocketDisconnect` handling
+- `/Users/rahul/Projects/network-file-server/server/tests/conftest.py` — test fixture pattern (ASGITransport, AsyncClient)
+- `/Users/rahul/Projects/network-file-server/pyproject.toml` — confirmed fastapi 0.115+, jinja2 3.1+, no new deps needed
 - Locally verified: `starlette.requests.Request.is_disconnected` is an async method (Python 3.11, FastAPI 0.135.1)
 - Locally verified: `fastapi.responses.StreamingResponse` accepts async generators as `content`
 - Locally verified: `secrets.token_urlsafe(6)` produces 8-character URL-safe strings

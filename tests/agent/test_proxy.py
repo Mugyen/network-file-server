@@ -8,12 +8,13 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 import httpx
 import httpx_ws
 import pytest
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import Response, StreamingResponse
 from httpx import ASGITransport
 from httpx_ws.transport import ASGIWebSocketTransport
 
 from tunnel.connection import StreamState
+from tunnel.constants import MAX_PAYLOAD_BYTES
 from tunnel.exceptions import StreamNotFoundError
 
 
@@ -42,6 +43,42 @@ def make_streaming_app(chunk_size: int, num_chunks: int) -> FastAPI:
         return StreamingResponse(generate(), media_type="application/octet-stream")
 
     return test_app
+
+
+def make_echo_post_app() -> FastAPI:
+    """Create a minimal FastAPI app that echoes the request body back in the response."""
+    test_app = FastAPI()
+
+    @test_app.post("/upload")
+    async def post_upload(request: Request) -> Response:
+        body = await request.body()
+        return Response(content=body, status_code=200)
+
+    return test_app
+
+
+def make_conn_mock_chunked(body_chunks: list[bytes]) -> MagicMock:
+    """Return a mock TunnelConnection pre-loaded with multiple body chunks.
+
+    Loads each chunk into the StreamState queue followed by a zero-length
+    sentinel, simulating how the relay streams a large request body as
+    multiple DATA frames.
+
+    Args:
+        body_chunks: List of body chunk bytes to pre-load into the queue.
+    """
+    conn = MagicMock()
+    conn.send_data = AsyncMock()
+    conn.send_close = AsyncMock()
+    conn.remove_stream = MagicMock()
+
+    state = StreamState()
+    for chunk in body_chunks:
+        state.queue.put_nowait(chunk)
+    state.queue.put_nowait(b"")
+
+    conn.get_stream = MagicMock(return_value=state)
+    return conn
 
 
 def make_conn_mock(request_body: bytes = b"") -> MagicMock:
@@ -258,6 +295,109 @@ async def test_handle_open_frame_with_query_string() -> None:
     body_calls = conn.send_data.call_args_list[1:]
     total_body = b"".join(c[0][1] for c in body_calls)
     assert b"hello" in total_body
+
+
+@pytest.mark.asyncio
+async def test_handle_open_frame_post_small_body_reconstructed() -> None:
+    """POST with a small body (<64KB) is reconstructed from a single DATA frame and echoed back."""
+    from agent.proxy import handle_open_frame
+
+    test_app = make_echo_post_app()
+    asgi_client = httpx.AsyncClient(transport=ASGITransport(app=test_app), base_url="http://local")
+    request_body = b"small body content"
+    conn = make_conn_mock_chunked([request_body])
+    request_id = uuid.uuid4()
+
+    metadata = {
+        "method": "POST",
+        "path": "/upload",
+        "query": "",
+        "headers": {"content-type": "application/octet-stream"},
+        "content_length": len(request_body),
+    }
+
+    await handle_open_frame(conn, request_id, metadata, asgi_client)
+
+    # Response metadata frame should have status 200
+    first_call_payload = conn.send_data.call_args_list[0][0][1]
+    first_frame = json.loads(first_call_payload.decode("utf-8"))
+    assert first_frame["status"] == 200
+
+    # Response body should echo back the request body
+    body_calls = conn.send_data.call_args_list[1:]
+    total_body = b"".join(c[0][1] for c in body_calls)
+    assert total_body == request_body
+
+    conn.send_close.assert_called_once_with(request_id)
+
+
+@pytest.mark.asyncio
+async def test_handle_open_frame_post_large_body_multi_chunk() -> None:
+    """POST with body >64KB split across multiple DATA frames is reconstructed correctly."""
+    from agent.proxy import handle_open_frame
+
+    test_app = make_echo_post_app()
+    asgi_client = httpx.AsyncClient(transport=ASGITransport(app=test_app), base_url="http://local")
+
+    # Build a body larger than MAX_PAYLOAD_BYTES (64KB) to verify multi-chunk reconstruction
+    large_body = b"A" * (MAX_PAYLOAD_BYTES + 2048)
+
+    # Split into MAX_PAYLOAD_BYTES-sized chunks, mimicking relay-side chunking
+    chunks: list[bytes] = []
+    offset = 0
+    while offset < len(large_body):
+        end = offset + MAX_PAYLOAD_BYTES
+        chunks.append(large_body[offset:end])
+        offset = end
+
+    conn = make_conn_mock_chunked(chunks)
+    request_id = uuid.uuid4()
+
+    metadata = {
+        "method": "POST",
+        "path": "/upload",
+        "query": "",
+        "headers": {"content-type": "application/octet-stream"},
+        "content_length": len(large_body),
+    }
+
+    await handle_open_frame(conn, request_id, metadata, asgi_client)
+
+    # Response metadata frame should have status 200
+    first_call_payload = conn.send_data.call_args_list[0][0][1]
+    first_frame = json.loads(first_call_payload.decode("utf-8"))
+    assert first_frame["status"] == 200
+
+    # Response body should echo back the full large body
+    body_calls = conn.send_data.call_args_list[1:]
+    total_body = b"".join(c[0][1] for c in body_calls)
+    assert total_body == large_body
+
+    conn.send_close.assert_called_once_with(request_id)
+
+
+@pytest.mark.asyncio
+async def test_handle_open_frame_removes_stream_after_body_read() -> None:
+    """After reading all body DATA frames, the inbound stream is removed."""
+    from agent.proxy import handle_open_frame
+
+    test_app = make_echo_post_app()
+    asgi_client = httpx.AsyncClient(transport=ASGITransport(app=test_app), base_url="http://local")
+    conn = make_conn_mock_chunked([b"data"])
+    request_id = uuid.uuid4()
+
+    metadata = {
+        "method": "POST",
+        "path": "/upload",
+        "query": "",
+        "headers": {},
+        "content_length": 4,
+    }
+
+    await handle_open_frame(conn, request_id, metadata, asgi_client)
+
+    # remove_stream must have been called to clean up the inbound stream
+    conn.remove_stream.assert_called_once_with(request_id)
 
 
 # ---------------------------------------------------------------------------

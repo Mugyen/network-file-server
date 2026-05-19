@@ -22,7 +22,7 @@ The implementation spans three layers: (1) a backend share service and router (`
 - Share action available on files only, not folders (keep scope tight -- folder sharing is v2+)
 - Clean, centered layout similar to DropBoxPage from Phase 5 -- file name, file size, and prominent download button
 - Show file icon/type indicator for visual context
-- No server branding beyond "WiFi File Server" -- recipient doesn't see folder path or host details
+- No server branding beyond "Network File Server" -- recipient doesn't see folder path or host details
 - Expired link page: clear "This link has expired" message with no retry option -- link is gone
 - Download page is a standalone route, not part of the SPA -- works without React bundle for lightweight access
 - Active links panel accessible from server UI header or a dedicated section -- server operator only

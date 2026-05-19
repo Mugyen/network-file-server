@@ -58,6 +58,7 @@ function Toolbar({ onUploadClick, onNewFolder, onRequestFile, currentPath: _curr
         ref={fileInputRef}
         type="file"
         multiple
+        accept="*/*"
         onChange={handleFileChange}
         className="hidden"
       />

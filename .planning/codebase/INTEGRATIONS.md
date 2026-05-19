@@ -6,7 +6,7 @@
 
 **None.** This is a self-contained local network file server with no external API calls.
 
-The only outbound network operation is a UDP socket connection to `8.8.8.8:80` in `wifi_file_server.py` line 26, used solely to discover the machine's local IP address (no data is sent/received).
+The only outbound network operation is a UDP socket connection to `8.8.8.8:80` in `network_file_server.py` line 26, used solely to discover the machine's local IP address (no data is sent/received).
 
 ## Data Storage
 
@@ -16,9 +16,9 @@ The only outbound network operation is a UDP socket connection to `8.8.8.8:80` i
 **File Storage:**
 - Local filesystem only
 - Shared folder path set at runtime via CLI argument
-- Stored in global variable `SHARED_FOLDER` in `wifi_file_server.py` line 20
-- Files served via `flask.send_file()` (`wifi_file_server.py` line 98)
-- Uploads saved via `werkzeug` file object `.save()` (`wifi_file_server.py` line 129)
+- Stored in global variable `SHARED_FOLDER` in `network_file_server.py` line 20
+- Files served via `flask.send_file()` (`network_file_server.py` line 98)
+- Uploads saved via `werkzeug` file object `.save()` (`network_file_server.py` line 129)
 
 **Caching:**
 - None
@@ -28,7 +28,7 @@ The only outbound network operation is a UDP socket connection to `8.8.8.8:80` i
 **Auth Provider:**
 - None - No authentication mechanism
 - The server is open to any device on the local network
-- Flask `secret_key` is hardcoded (`wifi_file_server.py` line 17) but only used for flash message sessions, not for actual auth
+- Flask `secret_key` is hardcoded (`network_file_server.py` line 17) but only used for flash message sessions, not for actual auth
 
 ## Monitoring & Observability
 
@@ -37,7 +37,7 @@ The only outbound network operation is a UDP socket connection to `8.8.8.8:80` i
 
 **Logs:**
 - Flask's default request logging to stdout
-- Custom print statements for server startup info (`wifi_file_server.py` lines 190-195)
+- Custom print statements for server startup info (`network_file_server.py` lines 190-195)
 - No structured logging framework
 
 ## CI/CD & Deployment
@@ -56,7 +56,7 @@ The only outbound network operation is a UDP socket connection to `8.8.8.8:80` i
 - None - All configuration is via CLI arguments
 
 **Secrets location:**
-- Flask `secret_key` is hardcoded in source (`wifi_file_server.py` line 17)
+- Flask `secret_key` is hardcoded in source (`network_file_server.py` line 17)
 - No `.env` file or secrets management
 
 ## Webhooks & Callbacks
@@ -69,7 +69,7 @@ The only outbound network operation is a UDP socket connection to `8.8.8.8:80` i
 
 ## HTTP Endpoints (Internal API)
 
-The Flask server exposes these routes (all in `wifi_file_server.py`):
+The Flask server exposes these routes (all in `network_file_server.py`):
 
 | Method | Route | Handler | Purpose |
 |--------|-------|---------|---------|

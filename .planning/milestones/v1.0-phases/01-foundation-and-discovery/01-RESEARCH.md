@@ -6,7 +6,7 @@
 
 ## Summary
 
-Phase 1 replaces the existing Flask+Jinja single-file server with a FastAPI backend and React SPA frontend. The existing codebase (`wifi_file_server.py`, ~200 lines) provides a working reference for CLI argument parsing, local IP detection, and basic file listing, but will be fully replaced. The new architecture uses FastAPI to serve REST API endpoints for file listing and server information, plus serves the built React SPA via a catch-all route in production. During development, Vite proxies API requests to FastAPI.
+Phase 1 replaces the existing Flask+Jinja single-file server with a FastAPI backend and React SPA frontend. The existing codebase (`network_file_server.py`, ~200 lines) provides a working reference for CLI argument parsing, local IP detection, and basic file listing, but will be fully replaced. The new architecture uses FastAPI to serve REST API endpoints for file listing and server information, plus serves the built React SPA via a catch-all route in production. During development, Vite proxies API requests to FastAPI.
 
 The QR code discovery feature generates both ASCII output for the terminal and SVG for the web UI using the `qrcode` Python library. Local IP detection uses the stdlib `socket` approach (already in the codebase) which works on LAN-connected machines, with `ifaddr` as a fallback for multi-interface machines. Path traversal protection is the critical security requirement -- every file operation must validate resolved paths stay within the shared folder boundary.
 
@@ -91,7 +91,7 @@ npm install -D tailwindcss @tailwindcss/vite
 ### Recommended Project Structure
 
 ```
-wifi-ftp-server/
+network-file-server/
   server/
     app/
       __init__.py
@@ -189,7 +189,7 @@ from pathlib import Path
 from app.routers import files, server_info
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="WiFi File Server")
+    app = FastAPI(title="Network File Server")
 
     app.add_middleware(
         CORSMiddleware,
@@ -512,7 +512,7 @@ export { apiFetch, ApiError };
 
 **Deprecated/outdated:**
 - `requirements.txt` in the project root is stale (Flask 2.3.3) and conflicts with `pyproject.toml`. Should be removed or ignored.
-- `wifi_file_server.py` and `templates/index.html` are the old Flask app. Kept for reference but replaced by the new architecture.
+- `network_file_server.py` and `templates/index.html` are the old Flask app. Kept for reference but replaced by the new architecture.
 - `start_server.sh` references pip and the old entry point. Will need replacement.
 
 ## Open Questions

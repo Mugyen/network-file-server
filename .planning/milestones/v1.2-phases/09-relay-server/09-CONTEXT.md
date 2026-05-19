@@ -16,7 +16,7 @@ A public-facing relay server accepts agent WebSocket connections, routes browser
 ### Landing page
 - Code entry only — simple text input for mount code + submit button, no in-browser QR scanner
 - Server-rendered via Jinja2 templates (FastAPI + Jinja2)
-- Informational style — brief explanation of WiFi File Server, how mount codes work, plus the code input
+- Informational style — brief explanation of Network File Server, how mount codes work, plus the code input
 - On valid code submission: 302 redirect to `/m/{code}/`
 
 ### Error pages

@@ -52,7 +52,7 @@ Full details: `.planning/milestones/v1.2-ROADMAP.md`
 - [x] **Phase 13: Abuse Prevention** - Rate-limit mount registration and proxy requests, enforce max TTL and per-IP mount cap (completed 2026-03-17)
 - [x] **Phase 14: Persistent Mount Registry** - SQLite mount metadata store survives relay restarts; agents reclaim codes on reconnect (completed 2026-03-30)
 - [x] **Phase 15: UX Polish and Drop Box** - Landing page with OG tags, connection status overlays, always-on drop box, per-file upload TTL (completed 2026-04-03)
-- [ ] **Phase 16: Wire File TTL Notifications & Expired Files Handler** - Fix broadcast_fn wiring for TTL toast, add tunnel handlers for agent keep/delete responses (gap closure)
+- [x] **Phase 16: Wire File TTL Notifications & Expired Files Handler** - Fix broadcast_fn wiring for TTL toast, add tunnel handlers for agent keep/delete responses (gap closure) (completed 2026-04-03)
 
 Full details: `.planning/milestones/v1.3-ROADMAP.md`
 
@@ -60,7 +60,7 @@ Full details: `.planning/milestones/v1.3-ROADMAP.md`
 **Goal**: File TTL auto-deletion sends WebSocket toast notifications to connected browsers, and the relay correctly processes agent responses to expired-files prompts on mount restart.
 **Depends on**: Phase 15
 **Requirements**: FTTL-04, FTTL-06
-**Plans:** 1 plan
+**Plans:** 1/1 plans complete
 
 Plans:
 - [ ] 16-01-PLAN.md — Wire broadcast_fn, bridge drop box WS, add tunnel control handlers, fix config test
@@ -84,4 +84,4 @@ Plans:
 | 13. Abuse Prevention | v1.3 | 2/2 | Complete | 2026-03-17 |
 | 14. Persistent Mount Registry | v1.3 | 2/2 | Complete | 2026-03-30 |
 | 15. UX Polish and Drop Box | v1.3 | 4/4 | Complete | 2026-04-03 |
-| 16. Wire File TTL Notifications & Expired Files Handler | v1.3 | 0/1 | Pending | - |
+| 16. Wire File TTL Notifications & Expired Files Handler | v1.3 | Complete    | 2026-04-03 | - |

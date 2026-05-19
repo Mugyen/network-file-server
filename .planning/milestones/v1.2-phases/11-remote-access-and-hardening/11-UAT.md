@@ -18,7 +18,7 @@ expected: Kill any running server. Start the relay. Start the agent. Agent conne
 result: pass
 
 ### 2. Mount with Password Protection
-expected: Start agent with `wifi-file-server mount ./test-files --server http://localhost:8001 --password secret`. Visit mount URL in browser. Login page appears (same as LAN password mode). Enter wrong password — rejected. Enter correct password — file browser loads. Refresh page — session persists (cookie works).
+expected: Start agent with `network-file-server mount ./test-files --server http://localhost:8001 --password secret`. Visit mount URL in browser. Login page appears (same as LAN password mode). Enter wrong password — rejected. Enter correct password — file browser loads. Refresh page — session persists (cookie works).
 result: pass
 note: Re-verified after heartbeat/disconnect fixes (985e88c, 0c5ccd3). Login works, session cookie persists after reload.
 
@@ -28,7 +28,7 @@ result: pass
 note: Cookie isolation works. Observed separate issues — WS /m/{code}/ws connects then immediately disconnects (causes "Reconnecting..." UI), and no logout button or TTL display in UI.
 
 ### 4. TTL Auto-Expiry
-expected: Start agent with `wifi-file-server mount ./test-files --server http://localhost:8001 --ttl 1m`. Terminal shows countdown ("Expires in 59s" or similar, updating periodically). After 1 minute, agent prints unmounting message and exits cleanly (no reconnect attempts). Visiting the mount URL after expiry shows relay's error/expired page.
+expected: Start agent with `network-file-server mount ./test-files --server http://localhost:8001 --ttl 1m`. Terminal shows countdown ("Expires in 59s" or similar, updating periodically). After 1 minute, agent prints unmounting message and exits cleanly (no reconnect attempts). Visiting the mount URL after expiry shows relay's error/expired page.
 result: pass
 note: Required fixes — TTL countdown print timing, WebSocketClientAdapter missing close(), ConnectionClosed not caught, hardcoded /api/ paths, and SPA HTML error redirect.
 

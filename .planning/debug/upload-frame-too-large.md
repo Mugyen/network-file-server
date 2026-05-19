@@ -1,16 +1,16 @@
 ---
-status: diagnosed
+status: awaiting_human_verify
 trigger: "Large file uploads through relay fail with FrameTooLargeError"
 created: 2026-03-16T00:00:00Z
-updated: 2026-03-16T00:00:00Z
+updated: 2026-03-30T00:00:00Z
 ---
 
 ## Current Focus
 
 hypothesis: CONFIRMED - relay proxy stuffs entire HTTP request body into OPEN frame metadata, exceeding 64KB frame limit
-test: Code read of mount_proxy.py proxy_request and tunnel protocol
-expecting: OPEN frame metadata includes body field with full file contents
-next_action: Report diagnosis
+test: Fix applied and all 278 tests pass including 3 new agent-side body reconstruction tests
+expecting: Large file uploads through relay now succeed
+next_action: Await human verification of the fix in real workflow
 
 ## Symptoms
 
@@ -76,30 +76,40 @@ root_cause: |
   The request direction simply never implemented the same pattern.
 
 fix: |
-  NOT APPLIED (diagnosis only). The fix requires changes in two places:
+  Applied in two places:
 
   1. **relay/app/routers/mount_proxy.py** (sender side):
-     - Remove "body" from the OPEN frame metadata dict.
-     - After `send_open()`, stream the request body as chunked DATA frames
-       (iterating in MAX_PAYLOAD_BYTES chunks via `conn.send_data()`).
-     - Use `request.stream()` instead of `request.body()` to avoid buffering
-       the entire upload in memory.
-     - After all body chunks are sent, send a sentinel (e.g., a zero-length
-       DATA frame or a specific control message) so the agent knows the request
-       body is complete before forwarding to the ASGI app.
+     - Removed "body" from OPEN frame metadata; body no longer in OPEN frame.
+     - After send_open(), streams request body as chunked DATA frames using
+       request.stream() (no full-body buffering) with MAX_PAYLOAD_BYTES chunks.
+     - Sends zero-length DATA frame as end-of-body sentinel.
+     - OPEN metadata now includes content_length for informational purposes.
 
   2. **agent/proxy.py** (receiver side):
-     - Remove body extraction from metadata (`metadata.get("body", "")`).
-     - Before calling `asgi_client.stream()`, read DATA frames from
-       `conn.read_stream_iter(request_id)` to reconstruct the request body.
-     - The agent already calls `conn.open_stream(request_id)` in the dispatch
-       path (in `agent/connection.py`), so the stream is available for reading.
-     - Pass the reconstructed body as `content` to the httpx request.
+     - Removed body extraction from metadata.
+     - Reads DATA frames from stream queue until zero-length sentinel.
+     - Calls conn.remove_stream() after body is fully received to clean up
+       the inbound stream before sending the response.
+     - Passes reconstructed body as content to httpx request.
 
-  Key design decision: how to signal "request body complete" to the agent.
-  Options include a zero-length DATA frame, a new frame type (e.g., BODY_END),
-  or including a content-length in the OPEN metadata so the agent knows how
-  many bytes to expect.
+  3. **agent/connection.py** (dispatch):
+     - open_stream() called BEFORE spawning handle_open_frame task so DATA
+       frames arriving in subsequent receive loop iterations land in the queue.
 
-verification: N/A (diagnosis only)
-files_changed: []
+verification: |
+  All 278 tests pass (0 failures):
+  - 3 new agent-side tests verify POST body reconstruction from DATA frames:
+    - test_handle_open_frame_post_small_body_reconstructed (single chunk)
+    - test_handle_open_frame_post_large_body_multi_chunk (>64KB, multiple chunks)
+    - test_handle_open_frame_removes_stream_after_body_read (cleanup)
+  - 3 existing relay-side tests verify DATA frame streaming:
+    - test_proxy_post_body (body as DATA frames, not in OPEN metadata)
+    - test_proxy_large_upload_streams_body (>64KB, multiple frames)
+    - test_proxy_get_no_body_sends_sentinel (GET sends only sentinel)
+files_changed:
+  - relay/app/routers/mount_proxy.py
+  - agent/proxy.py
+  - agent/connection.py
+  - tests/agent/test_proxy.py
+  - tests/relay/test_mount_proxy.py
+  - tests/relay/conftest.py
