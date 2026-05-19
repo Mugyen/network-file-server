@@ -162,13 +162,26 @@ def create_relay_app(config_path: Path | None = None) -> FastAPI:
     from relay.app.routers.auth import router as auth_router
     from relay.app.routers.health import router as health_router
     from relay.app.routers.landing import router as landing_router
+    from relay.app.routers.access_requests import router as access_requests_router
     from relay.app.routers.mount_proxy import router as mount_proxy_router
+    from relay.app.routers.pages import router as pages_router
     from relay.app.routers.user_storage import router as user_storage_router
+
+    # Serve the client bundle's assets at the relay root for account pages.
+    client_assets = Path(__file__).resolve().parent.parent.parent / "client" / "dist" / "assets"
+    if client_assets.exists() and client_assets.is_dir():
+        application.mount(
+            "/assets",
+            StaticFiles(directory=str(client_assets)),
+            name="client-assets",
+        )
 
     application.include_router(health_router)
     application.include_router(landing_router)
+    application.include_router(pages_router)
     application.include_router(auth_router)
     application.include_router(admin_router)
+    application.include_router(access_requests_router)
     application.include_router(user_storage_router)
     application.include_router(agent_ws_router)
     application.include_router(mount_proxy_router)

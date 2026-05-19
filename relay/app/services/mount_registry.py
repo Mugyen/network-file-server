@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from accounts import AccessMode, Role, SubjectType
-from relay.app.enums import MountStatus
+from relay.app.enums import AccessRequestStatus, MountStatus
 from relay.app.exceptions import MountExpiredError, MountNotFoundError, MountOfflineError
 
 if TYPE_CHECKING:
@@ -36,6 +36,17 @@ class MountPolicy:
     access_mode: AccessMode
     has_password: bool
     entries: tuple[PolicyEntry, ...]
+
+
+@dataclass(frozen=True)
+class AccessRequest:
+    """A user's request to be allowlisted on a restricted mount."""
+
+    id: int
+    code: str
+    user_id: int
+    status: AccessRequestStatus
+    created_at: float
 
 
 def generate_mount_code() -> str:

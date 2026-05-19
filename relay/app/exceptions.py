@@ -31,6 +31,14 @@ class MountExpiredError(Exception):
         super().__init__(f"Mount '{code}' has expired")
 
 
+class AccessRequestNotFoundError(Exception):
+    """Raised when an access-request id is not present."""
+
+    def __init__(self, request_id: int) -> None:
+        self.request_id = request_id
+        super().__init__(f"No access request with id {request_id}")
+
+
 class InvalidSessionError(Exception):
     """Raised when a relay session cookie is missing, malformed, or expired."""
 

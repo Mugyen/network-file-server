@@ -14,9 +14,19 @@ from typing import TYPE_CHECKING
 import aiosqlite
 
 from accounts import AccessMode, Role, SubjectType
-from relay.app.enums import MountStatus
-from relay.app.exceptions import MountExpiredError, MountNotFoundError, MountOfflineError
-from relay.app.services.mount_registry import MountPolicy, MountRecord, PolicyEntry
+from relay.app.enums import AccessRequestStatus, MountStatus
+from relay.app.exceptions import (
+    AccessRequestNotFoundError,
+    MountExpiredError,
+    MountNotFoundError,
+    MountOfflineError,
+)
+from relay.app.services.mount_registry import (
+    AccessRequest,
+    MountPolicy,
+    MountRecord,
+    PolicyEntry,
+)
 
 if TYPE_CHECKING:
     from tunnel.connection import TunnelConnection
@@ -52,6 +62,17 @@ CREATE TABLE IF NOT EXISTS mount_policy (
 )
 """
 
+_CREATE_ACCESS_REQUESTS_SQL = """
+CREATE TABLE IF NOT EXISTS access_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at REAL NOT NULL,
+    UNIQUE (code, user_id)
+)
+"""
+
 # Columns added after the initial v1.2 schema; migrated on existing DBs.
 _MIGRATION_COLUMNS: dict[str, str] = {
     "owner_user_id": "ALTER TABLE mounts ADD COLUMN owner_user_id INTEGER",
@@ -76,6 +97,16 @@ class ReclaimResult:
     """Result of a successful mount reclaim."""
 
     remaining_ttl: int
+
+
+def _row_to_access_request(row: tuple) -> AccessRequest:
+    return AccessRequest(
+        id=row[0],
+        code=row[1],
+        user_id=row[2],
+        status=AccessRequestStatus(row[3]),
+        created_at=row[4],
+    )
 
 
 class SqliteMountRegistry:
@@ -107,6 +138,7 @@ class SqliteMountRegistry:
         await db.execute(_CREATE_IP_INDEX_SQL)
         await db.execute(_CREATE_STATUS_INDEX_SQL)
         await db.execute(_CREATE_POLICY_TABLE_SQL)
+        await db.execute(_CREATE_ACCESS_REQUESTS_SQL)
 
         # Migrate pre-v1.3 databases: add owner/access columns if missing.
         async with db.execute("PRAGMA table_info(mounts)") as cursor:
@@ -466,6 +498,112 @@ class SqliteMountRegistry:
             has_password=bool(has_password),
             entries=entries,
         )
+
+    async def add_policy_entry(
+        self,
+        code: str,
+        subject_type: SubjectType,
+        subject_id: int,
+        role: Role,
+    ) -> None:
+        """Add/replace a single allowlist entry (does not touch owner/mode).
+
+        Raises:
+            MountNotFoundError: if the mount code is not registered.
+        """
+        async with self._db.execute(
+            "SELECT 1 FROM mounts WHERE code = ?", (code,)
+        ) as cursor:
+            if await cursor.fetchone() is None:
+                raise MountNotFoundError(code)
+        await self._db.execute(
+            "INSERT OR REPLACE INTO mount_policy "
+            "(code, subject_type, subject_id, role) VALUES (?, ?, ?, ?)",
+            (code, subject_type.value, subject_id, role.value),
+        )
+        await self._db.commit()
+
+    async def create_access_request(
+        self, code: str, user_id: int
+    ) -> AccessRequest:
+        """Create a pending access request, or return the existing one.
+
+        Deduped on (code, user_id) so a user cannot spam duplicate
+        pending requests.
+        """
+        now = time.time()
+        await self._db.execute(
+            "INSERT OR IGNORE INTO access_requests "
+            "(code, user_id, status, created_at) VALUES (?, ?, ?, ?)",
+            (code, user_id, AccessRequestStatus.PENDING.value, now),
+        )
+        await self._db.commit()
+        async with self._db.execute(
+            "SELECT id, code, user_id, status, created_at "
+            "FROM access_requests WHERE code = ? AND user_id = ?",
+            (code, user_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return _row_to_access_request(row)
+
+    async def get_access_request(self, request_id: int) -> AccessRequest:
+        """Return an access request. Raises AccessRequestNotFoundError."""
+        async with self._db.execute(
+            "SELECT id, code, user_id, status, created_at "
+            "FROM access_requests WHERE id = ?",
+            (request_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            raise AccessRequestNotFoundError(request_id)
+        return _row_to_access_request(row)
+
+    async def list_all_access_requests(self) -> list[AccessRequest]:
+        async with self._db.execute(
+            "SELECT id, code, user_id, status, created_at "
+            "FROM access_requests ORDER BY id DESC"
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [_row_to_access_request(r) for r in rows]
+
+    async def list_access_requests_for_user(
+        self, user_id: int
+    ) -> list[AccessRequest]:
+        async with self._db.execute(
+            "SELECT id, code, user_id, status, created_at "
+            "FROM access_requests WHERE user_id = ? ORDER BY id DESC",
+            (user_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [_row_to_access_request(r) for r in rows]
+
+    async def list_access_requests_for_owner(
+        self, owner_user_id: int
+    ) -> list[AccessRequest]:
+        """Requests targeting mounts owned by ``owner_user_id``."""
+        async with self._db.execute(
+            "SELECT r.id, r.code, r.user_id, r.status, r.created_at "
+            "FROM access_requests r JOIN mounts m ON m.code = r.code "
+            "WHERE m.owner_user_id = ? ORDER BY r.id DESC",
+            (owner_user_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [_row_to_access_request(r) for r in rows]
+
+    async def resolve_access_request(
+        self, request_id: int, status: AccessRequestStatus
+    ) -> None:
+        """Set an access request's terminal status.
+
+        Raises AccessRequestNotFoundError if the id is unknown.
+        """
+        cursor = await self._db.execute(
+            "UPDATE access_requests SET status = ? WHERE id = ?",
+            (status.value, request_id),
+        )
+        if cursor.rowcount == 0:
+            raise AccessRequestNotFoundError(request_id)
+        await self._db.commit()
 
     async def close(self) -> None:
         """Close the aiosqlite connection."""
