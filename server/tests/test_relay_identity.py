@@ -65,11 +65,29 @@ async def test_mount_mode_read_role_blocks_write(folder):
     assert r.status_code == 403
 
 
-async def test_mount_mode_receive_role_blocks_browse(folder):
+async def test_mount_mode_receive_role_browse_is_scoped_not_blocked(folder):
+    # RECEIVE may browse, but the listing is scoped to the user's own
+    # uploads (empty here — nothing uploaded by this user).
     app = _app(folder, password=False, read_only=False, receive=False, mount=True)
     async with await _client(app) as c:
-        r = await c.get("/api/files", headers={"x-wfs-role": "receive"})
-    assert r.status_code == 403
+        r = await c.get(
+            "/api/files",
+            headers={"x-wfs-role": "receive", "x-wfs-user": "nobody"},
+        )
+    assert r.status_code == 200
+    assert r.json()["entries"] == []
+
+
+async def test_mount_mode_receive_role_blocks_destructive(folder):
+    app = _app(folder, password=False, read_only=False, receive=False, mount=True)
+    async with await _client(app) as c:
+        r = await c.delete(
+            "/api/files",
+            params={},
+            headers={"x-wfs-role": "receive", "x-wfs-user": "nobody"},
+        )
+    # DELETE has require_full_access -> RECEIVE blocked (403/422 if no body).
+    assert r.status_code in (403, 422)
 
 
 async def test_lan_mode_ignores_spoofed_role_header(folder):

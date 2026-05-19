@@ -219,3 +219,7 @@ Added relay/app/services/access_policy.py (authorize + identity_from_cookies) im
 ## 2026-05-18: Trusted relay identity propagation + per-request server role (v1.3 phase 6 core)
 
 Relay mount_proxy now strips inbound X-WFS-* and injects authoritative X-WFS-User/Role/Auth-Bypass for allowlisted users (HTTP + WS). New server/app/services/relay_identity.py gates trust on relay-served mode (mount_code set) so LAN clients cannot spoof. auth_middleware honors X-WFS-Auth-Bypass (relay-served only); mode_guard derives per-request role from X-WFS-Role with global read_only/receive fallback; server-info exposes current_user/current_role/access_mode. 19 new tests incl. LAN spoof regressions; full suite 821 green. NOTE: RECEIVE currently = upload-only (existing receive semantics); the "see own uploads" refinement is still outstanding.
+
+## 2026-05-19: RECEIVE role = upload + see own uploads (v1.3 phase 6 completion)
+
+Added server/app/services/upload_index.py (JSON sidecar mapping rel_path->uploader, reuses persistence util). mode_guard: require_write_access now allows RECEIVE (upload), require_full_access still blocks RECEIVE (destructive ops), new require_browse_access + receive_scope_user. files.py records uploader on upload and scopes list/download/preview to the RECEIVE user's own files (search returns empty for RECEIVE; sidecar hidden). 8 new tests; full suite 830 green.
