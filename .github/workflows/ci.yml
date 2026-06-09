@@ -11,7 +11,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8
+      # setup-uv publishes no floating "v8" major tag (unlike v7 and earlier) —
+      # pin the exact release.
+      - uses: astral-sh/setup-uv@v8.2.0
         with:
           python-version: "3.11"
       - name: Sync dependencies
@@ -51,7 +53,9 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8
+      # setup-uv publishes no floating "v8" major tag (unlike v7 and earlier) —
+      # pin the exact release.
+      - uses: astral-sh/setup-uv@v8.2.0
         with:
           python-version: "3.11"
       - uses: actions/setup-node@v6
