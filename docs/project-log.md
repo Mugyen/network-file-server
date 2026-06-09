@@ -311,3 +311,7 @@ F4: apiDeleteNoBody added; shares/clipboard raw-fetch workarounds removed. F5: c
 ## 2026-06-10: Remediation phase 8 — test-coverage rebalancing
 
 Added tests/integration/test_full_path.py — real relay (uvicorn) + real agent over a real WebSocket via build_mount_app, exercising browse/upload/download/WS-bridging end to end (module-scoped stack; teardown bounds + straggler sweep). Added tests/tunnel/test_stream_iter.py — read_stream_iter drain-after-close/cancellation/interleaving + randomized framing round-trips and corruption rejection (8 tests). Production fix surfaced by the integration work: agent receive loops now cancel in-flight handler tasks when shut down by cancellation (previously could hang agent shutdown). Client units (89) and core-flow Playwright specs were delivered in phase 7. Final: 902 pytest + 89 vitest + 9 Playwright, ruff/mypy/eslint/tsc clean.
+
+## 2026-06-10: CI fixes — npm peer-dep conflict + SPA 404s without client build
+
+Aligned @vitest/coverage-v8 to ^3.2.4 (matching vitest 3.x; 4.0.18 broke `npm ci` with ERESOLVE). Extracted relay's SPA placeholder shell into shared/spa.py and made the server's SPA catch-all always register — serving the placeholder when client/dist is absent (CI backend job), fixing test_unauthenticated_spa_serves_html and test_dropbox_serves_file_browser 404s. +7 tests (909 pytest).

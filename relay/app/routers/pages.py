@@ -2,52 +2,39 @@
 
 Serves the existing client bundle's index.html at relay-root routes
 (/login, /signup, /admin, /403). Assets are mounted at /assets by the
-app factory. When the bundle is absent (dev/test), a minimal placeholder
-is returned so the routes still resolve.
+app factory. When the bundle is absent (dev/test), the shared placeholder
+shell is returned so the routes still resolve (see ``shared.spa``).
 """
 
-from pathlib import Path
+from fastapi import APIRouter, Response
 
-from fastapi import APIRouter
-from fastapi.responses import FileResponse, HTMLResponse
+from shared.paths import repo_root
+from shared.spa import spa_shell_response
 
 router = APIRouter(tags=["pages"])
 
-_CLIENT_DIST = Path(__file__).resolve().parents[3] / "client" / "dist"
-_INDEX = _CLIENT_DIST / "index.html"
-
-_PLACEHOLDER = (
-    "<!doctype html><html><head><meta charset='utf-8'>"
-    "<title>Network File Server</title></head>"
-    "<body><div id='root'></div>"
-    "<script type='module' src='/assets/index.js'></script>"
-    "</body></html>"
-)
-
-_PAGE_PATHS = ("/login", "/signup", "/admin", "/403")
+_INDEX = repo_root() / "client" / "dist" / "index.html"
 
 
-def _shell():
-    if _INDEX.exists():
-        return FileResponse(str(_INDEX), media_type="text/html")
-    return HTMLResponse(_PLACEHOLDER)
+def _shell() -> Response:
+    return spa_shell_response(_INDEX)
 
 
 @router.get("/login")
-async def login_page():
+async def login_page() -> Response:
     return _shell()
 
 
 @router.get("/signup")
-async def signup_page():
+async def signup_page() -> Response:
     return _shell()
 
 
 @router.get("/admin")
-async def admin_page():
+async def admin_page() -> Response:
     return _shell()
 
 
 @router.get("/403")
-async def forbidden_page():
+async def forbidden_page() -> Response:
     return _shell()

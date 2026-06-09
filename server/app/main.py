@@ -12,7 +12,7 @@ Routes access services via ``server.app.dependencies`` with ``Depends``.
 import logging
 import secrets
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -35,6 +35,7 @@ from server.app.services.file_request_service import FileRequestService
 from server.app.services.share_service import ShareLinkService
 from server.app.services.sqlite_store import get_state_store
 from shared.paths import repo_root
+from shared.spa import spa_shell_response
 
 logger = logging.getLogger("server.app")
 
@@ -45,7 +46,8 @@ def create_app(config: ServerConfig) -> FastAPI:
     - Attaches config and all services to ``app.state``.
     - Adds CORSMiddleware with wildcard origins for LAN access.
     - Adds AuthMiddleware when a password hash is configured.
-    - Mounts SPA static files if client/dist exists (production mode).
+    - Serves the SPA via a catch-all route: the built client/dist bundle when
+      present, else a placeholder shell (``shared.spa``).
     """
     if not isinstance(config, ServerConfig):
         raise ValueError(f"config must be a ServerConfig, got {type(config)!r}")
@@ -117,26 +119,27 @@ def create_app(config: ServerConfig) -> FastAPI:
             content={"detail": "Access denied"},
         )
 
-    # SPA catch-all: mount static files if client/dist exists.
+    # SPA catch-all: serve the built client bundle when present; fall back to
+    # the shared placeholder shell when client/dist is absent (dev/CI without
+    # a client build) so SPA routes resolve with 200 rather than 404.
     client_dist = repo_root() / "client" / "dist"
-    if client_dist.exists() and client_dist.is_dir():
-        assets_dir = client_dist / "assets"
-        if assets_dir.exists():
-            application.mount(
-                "/assets",
-                StaticFiles(directory=str(assets_dir)),
-                name="assets",
-            )
+    assets_dir = client_dist / "assets"
+    if assets_dir.is_dir():
+        application.mount(
+            "/assets",
+            StaticFiles(directory=str(assets_dir)),
+            name="assets",
+        )
 
-        index_html = client_dist / "index.html"
+    index_html = client_dist / "index.html"
 
-        @application.get("/{path:path}")
-        def spa_catch_all(path: str) -> FileResponse:
-            """Serve SPA index.html for all non-API routes."""
-            # Check if the requested path maps to a static file
-            static_file = client_dist / path
-            if static_file.exists() and static_file.is_file():
-                return FileResponse(str(static_file))
-            return FileResponse(str(index_html))
+    @application.get("/{path:path}")
+    def spa_catch_all(path: str) -> Response:
+        """Serve SPA index.html (or the placeholder shell) for non-API routes."""
+        # Check if the requested path maps to a static file in the bundle
+        static_file = client_dist / path
+        if static_file.is_file():
+            return FileResponse(str(static_file))
+        return spa_shell_response(index_html)
 
     return application
