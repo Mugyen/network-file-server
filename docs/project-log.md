@@ -319,3 +319,7 @@ Aligned @vitest/coverage-v8 to ^3.2.4 (matching vitest 3.x; 4.0.18 broke `npm ci
 ## 2026-06-10: CI — bump deprecated Node 20 actions
 
 checkout v4→v6, setup-node v4→v6, setup-uv v5→v8 (Node 24-native; GitHub forces Node 24 runtimes from 2026-06-16). Job-level node-version: 20 unchanged.
+
+## 2026-06-10: Architecture remediation plan
+
+Added docs/architecture-remediation-plan.md — 11-phase plan from the architecture review (exception handling, singleton removal, async sqlite, tunnel hardening, dropbox unification, signed identity, client codegen/state layer/tests).
