@@ -315,3 +315,7 @@ Added tests/integration/test_full_path.py — real relay (uvicorn) + real agent 
 ## 2026-06-10: CI fixes — npm peer-dep conflict + SPA 404s without client build
 
 Aligned @vitest/coverage-v8 to ^3.2.4 (matching vitest 3.x; 4.0.18 broke `npm ci` with ERESOLVE). Extracted relay's SPA placeholder shell into shared/spa.py and made the server's SPA catch-all always register — serving the placeholder when client/dist is absent (CI backend job), fixing test_unauthenticated_spa_serves_html and test_dropbox_serves_file_browser 404s. +7 tests (909 pytest).
+
+## 2026-06-10: CI — bump deprecated Node 20 actions
+
+checkout v4→v6, setup-node v4→v6, setup-uv v5→v8 (Node 24-native; GitHub forces Node 24 runtimes from 2026-06-16). Job-level node-version: 20 unchanged.
