@@ -7,7 +7,6 @@ at the endpoint level.
 from fastapi import Request
 
 from accounts import Role
-from server.app.config import get_server_config
 from server.app.exceptions import AccessDeniedError, ReadOnlyError
 from server.app.services.relay_identity import trusted_role, trusted_user
 
@@ -21,12 +20,13 @@ def require_write_access(request: Request) -> None:
 
     Use as: dependencies=[Depends(require_write_access)] on write endpoints.
     """
-    role = trusted_role(request.headers)
+    config = request.app.state.config
+    role = trusted_role(config, request.headers)
     if role is not None:
         if role is Role.READ:
             raise ReadOnlyError("write operation")
         return
-    if get_server_config().read_only:
+    if config.read_only:
         raise ReadOnlyError("write operation")
 
 
@@ -40,12 +40,13 @@ def require_full_access(request: Request) -> None:
     Use as: dependencies=[Depends(require_full_access)] on endpoints
     that should not be accessible in receive mode.
     """
-    role = trusted_role(request.headers)
+    config = request.app.state.config
+    role = trusted_role(config, request.headers)
     if role is not None:
         if role is Role.RECEIVE:
             raise AccessDeniedError("Access denied in receive mode")
         return
-    if get_server_config().receive:
+    if config.receive:
         raise AccessDeniedError("Access denied in receive mode")
 
 
@@ -59,10 +60,11 @@ def require_browse_access(request: Request) -> None:
 
     Use on list/download/preview/search/zip endpoints.
     """
-    role = trusted_role(request.headers)
+    config = request.app.state.config
+    role = trusted_role(config, request.headers)
     if role is not None:
         return
-    if get_server_config().receive:
+    if config.receive:
         raise AccessDeniedError("Access denied in receive mode")
 
 
@@ -72,6 +74,7 @@ def receive_scope_user(request: Request) -> str | None:
     Returns the trusted username only when the relay role is RECEIVE;
     callers filter list/download/preview/search/zip to these uploads.
     """
-    if trusted_role(request.headers) is not Role.RECEIVE:
+    config = request.app.state.config
+    if trusted_role(config, request.headers) is not Role.RECEIVE:
         return None
-    return trusted_user(request.headers)
+    return trusted_user(config, request.headers)

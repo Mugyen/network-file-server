@@ -10,17 +10,27 @@ bridging messages bidirectionally between the relay tunnel and the local app.
 
 import asyncio
 import json
+import logging
 import uuid
 from typing import Any
 
 import httpx
 import httpx_ws
 from httpx_ws.transport import ASGIWebSocketTransport
+from wsproto.events import BytesMessage, CloseConnection, TextMessage
 
 from agent.display import print_request_line
 from tunnel.connection import TunnelConnection
 from tunnel.constants import MAX_PAYLOAD_BYTES
 from tunnel.exceptions import StreamNotFoundError
+from tunnel.ws_payload import (
+    WsMessageKind,
+    decode_ws_message,
+    encode_binary_message,
+    encode_text_message,
+)
+
+logger = logging.getLogger("agent.proxy")
 
 
 async def handle_open_frame(
@@ -150,15 +160,32 @@ async def handle_ws_open_frame(
             ) as local_ws:
 
                 async def relay_to_local() -> None:
-                    """Forward WS_DATA frames from relay to the local WebSocket."""
+                    """Forward WS_DATA frames from relay to the local WebSocket.
+
+                    Payloads carry a kind marker (see tunnel.ws_payload) so text
+                    and binary messages are mirrored faithfully.
+                    """
                     async for chunk in conn.read_stream_iter(ws_id):
-                        await local_ws.send_text(chunk.decode("utf-8"))
+                        kind, data = decode_ws_message(chunk)
+                        if kind is WsMessageKind.TEXT:
+                            await local_ws.send_text(data.decode("utf-8"))
+                        else:
+                            await local_ws.send_bytes(data)
 
                 async def local_to_relay() -> None:
-                    """Forward local WebSocket messages to relay as WS_DATA frames."""
+                    """Forward local WebSocket messages to relay as WS_DATA frames.
+
+                    Uses the raw event API so both text and binary frames are
+                    bridged; a CloseConnection event ends the task.
+                    """
                     while True:
-                        message = await local_ws.receive_text()
-                        await conn.send_ws_data(ws_id, message.encode("utf-8"))
+                        event = await local_ws.receive()
+                        if isinstance(event, TextMessage):
+                            await conn.send_ws_data(ws_id, encode_text_message(event.data))
+                        elif isinstance(event, BytesMessage):
+                            await conn.send_ws_data(ws_id, encode_binary_message(event.data))
+                        elif isinstance(event, CloseConnection):
+                            return
 
                 relay_task = asyncio.create_task(relay_to_local())
                 local_task = asyncio.create_task(local_to_relay())
@@ -169,21 +196,43 @@ async def handle_ws_open_frame(
                         return_when=asyncio.FIRST_COMPLETED,
                     )
                     for task in done:
-                        if task.exception() is not None:
-                            pass  # Suppress — stream errors are normal on disconnect
+                        exc = task.exception()
+                        if exc is not None:
+                            # Disconnect races are normal here, but they must
+                            # be visible — a silently dead bridge looks like a
+                            # hung WebSocket to the user.
+                            logger.debug(
+                                "WS bridge task ended with error: ws_id=%s path=%s error=%r",
+                                ws_id,
+                                path,
+                                exc,
+                            )
                     for task in pending:
                         task.cancel()
                         try:
                             await task
-                        except (asyncio.CancelledError, Exception):
-                            pass
+                        except asyncio.CancelledError:
+                            pass  # Expected — we just cancelled it.
+                        except Exception:
+                            logger.exception(
+                                "WS bridge task raised during cancellation: ws_id=%s path=%s",
+                                ws_id,
+                                path,
+                            )
                 finally:
                     conn.remove_stream(ws_id)
 
     except Exception:
-        pass
+        logger.exception(
+            "WS bridge failed: ws_id=%s path=%s — closing stream", ws_id, path
+        )
     finally:
         try:
             await conn.send_ws_close(ws_id)
-        except Exception:
-            pass
+        except Exception as exc:
+            # The tunnel itself may already be gone; nothing left to close.
+            logger.debug(
+                "Could not send WS_CLOSE (tunnel already down?): ws_id=%s error=%r",
+                ws_id,
+                exc,
+            )

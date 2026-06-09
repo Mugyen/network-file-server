@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { CloudUpload, Check } from "lucide-react";
 import { useUpload } from "../hooks/useUpload.ts";
 import { useDragDrop } from "../hooks/useDragDrop.ts";
-import { useTheme, ThemeMode } from "../hooks/useTheme.ts";
+import { useTheme, cycleThemeMode } from "../hooks/useTheme.ts";
 import { useToast } from "../hooks/useToast.ts";
 import { UploadStatus } from "../types/upload.ts";
 import ThemeToggle from "./ThemeToggle.tsx";
@@ -34,25 +34,13 @@ function formatFileSize(bytes: number): string {
 }
 
 /** Cycle order for theme toggle: SYSTEM -> DARK -> LIGHT -> SYSTEM */
-function cycleThemeMode(current: ThemeMode): ThemeMode {
-  switch (current) {
-    case ThemeMode.SYSTEM:
-      return ThemeMode.DARK;
-    case ThemeMode.DARK:
-      return ThemeMode.LIGHT;
-    case ThemeMode.LIGHT:
-      return ThemeMode.SYSTEM;
-  }
-}
-
 function DropBoxPage({ hostname }: DropBoxPageProps) {
   const [completedFiles, setCompletedFiles] = useState<CompletedFile[]>([]);
+  /** Upload IDs already recorded in completedFiles. */
+  const [recordedIds, setRecordedIds] = useState<ReadonlySet<string>>(new Set());
   const theme = useTheme();
   const toast = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  /** Track which upload IDs we have already recorded as completed. */
-  const recordedIdsRef = useRef<Set<string>>(new Set());
 
   const handleUploadComplete = useCallback(async (): Promise<void> => {
     // No-op: we track completed files via upload state monitoring below
@@ -62,18 +50,22 @@ function DropBoxPage({ hostname }: DropBoxPageProps) {
   const upload = useUpload("", handleUploadComplete);
   const { isDragging, dragHandlers } = useDragDrop(upload.uploadFiles);
 
-  // Monitor upload state to detect newly completed files
-  useEffect(() => {
-    for (const u of upload.uploads) {
-      if (u.status === UploadStatus.DONE && !recordedIdsRef.current.has(u.id)) {
-        recordedIdsRef.current.add(u.id);
-        setCompletedFiles((prev) => [
-          ...prev,
-          { name: u.file.name, size: formatFileSize(u.file.size) },
-        ]);
-      }
-    }
-  }, [upload.uploads]);
+  // Record newly completed uploads by adjusting state during render
+  // (https://react.dev/learn/you-might-not-need-an-effect) instead of
+  // calling setState synchronously inside an effect.
+  const newlyDone = upload.uploads.filter(
+    (u) => u.status === UploadStatus.DONE && !recordedIds.has(u.id),
+  );
+  if (newlyDone.length > 0) {
+    setRecordedIds(new Set([...recordedIds, ...newlyDone.map((u) => u.id)]));
+    setCompletedFiles([
+      ...completedFiles,
+      ...newlyDone.map((u) => ({
+        name: u.file.name,
+        size: formatFileSize(u.file.size),
+      })),
+    ]);
+  }
 
   function handleChooseFiles(): void {
     fileInputRef.current?.click();

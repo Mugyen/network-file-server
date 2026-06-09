@@ -3,6 +3,7 @@ import { uploadWithProgress, ApiError } from "../api/client.ts";
 import {
   ConflictAction,
   UploadStatus,
+  UploadTTL,
   type UploadFileState,
 } from "../types/upload.ts";
 
@@ -32,8 +33,8 @@ interface UseUploadResult {
   isUploading: boolean;
   collapsed: boolean;
   toggleCollapsed: () => void;
-  fileTtl: number;
-  setFileTtl: (ttl: number) => void;
+  fileTtl: UploadTTL;
+  setFileTtl: (ttl: UploadTTL) => void;
 }
 
 /**
@@ -46,7 +47,7 @@ export function useUpload(
 ): UseUploadResult {
   const [uploads, setUploads] = useState<UploadFileState[]>([]);
   const [collapsed, setCollapsed] = useState<boolean>(false);
-  const [fileTtl, setFileTtl] = useState<number>(86400);
+  const [fileTtl, setFileTtl] = useState<UploadTTL>(UploadTTL.ONE_DAY);
   const activeCount = useRef<number>(0);
   /** IDs currently being processed — prevents duplicate processUpload calls
    *  caused by React StrictMode double-firing effects. */
@@ -108,7 +109,9 @@ export function useUpload(
         activeCount.current -= 1;
       }
     },
-    [currentPath, onUploadComplete, updateUpload],
+    // fileTtl is a real dependency: queued uploads must be sent with the TTL
+    // selected at send time, not a stale closure from an earlier render.
+    [currentPath, fileTtl, onUploadComplete, updateUpload],
   );
 
   /**

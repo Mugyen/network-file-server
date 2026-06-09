@@ -8,13 +8,13 @@ import re
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from server.app.config import ServerConfig, set_server_config
+from server.app.config import ServerConfig
+from server.app.main import create_app
 
 
 @pytest.fixture
 def info_app(tmp_path: "Path") -> "FastAPI":  # type: ignore[name-defined]  # noqa: F821
     """Create a FastAPI app configured for server-info testing."""
-    from pathlib import Path
 
     config = ServerConfig(
         shared_folder=tmp_path,
@@ -23,13 +23,9 @@ def info_app(tmp_path: "Path") -> "FastAPI":  # type: ignore[name-defined]  # no
         read_only=False,
         receive=False,
         mount_code=None,
-            relay_url=None,
+        relay_url=None,
     )
-    set_server_config(config)
-
-    from server.app.main import create_app
-
-    return create_app()
+    return create_app(config)
 
 
 @pytest.fixture

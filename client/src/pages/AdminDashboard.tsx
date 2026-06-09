@@ -1,62 +1,29 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Loader2 } from "lucide-react";
-import { accounts, AccountApiError } from "../api/accounts.ts";
-
-type User = { id: number; username: string; email: string | null; is_active: boolean };
-type Group = { id: number; name: string };
-type Req = {
-  id: number;
-  code: string;
-  user_id: number;
-  username: string | null;
-  status: string;
-};
+import { AccountApiError } from "../api/accounts.ts";
+import {
+  GroupMemberType,
+  MountRole,
+  RequestAction,
+  useAdmin,
+} from "../hooks/useAdmin.ts";
+import type { AdminGroup } from "../hooks/useAdmin.ts";
 
 export default function AdminDashboard() {
-  const [ready, setReady] = useState(false);
-  const [denied, setDenied] = useState(false);
-  const [users, setUsers] = useState<User[]>([]);
-  const [groups, setGroups] = useState<Group[]>([]);
-  const [requests, setRequests] = useState<Req[]>([]);
+  const {
+    ready,
+    denied,
+    users,
+    groups,
+    requests,
+    notice,
+    setUserActive,
+    createGroup,
+    deleteGroup,
+    addGroupMember,
+    resolveRequest,
+  } = useAdmin();
   const [newGroup, setNewGroup] = useState("");
-  const [notice, setNotice] = useState<string | null>(null);
-
-  async function refresh(): Promise<void> {
-    setUsers(await accounts.listUsers());
-    setGroups(await accounts.listGroups());
-    setRequests(await accounts.listRequests());
-  }
-
-  useEffect(() => {
-    void (async () => {
-      try {
-        const me = await accounts.me();
-        if (!me.is_admin) {
-          setDenied(true);
-          return;
-        }
-        await refresh();
-      } catch (err) {
-        if (err instanceof AccountApiError && err.status === 401) {
-          window.location.assign("/login?next=/admin");
-          return;
-        }
-        setDenied(true);
-      } finally {
-        setReady(true);
-      }
-    })();
-  }, []);
-
-  async function guarded(fn: () => Promise<void>): Promise<void> {
-    try {
-      await fn();
-      await refresh();
-      setNotice(null);
-    } catch (err) {
-      setNotice(err instanceof AccountApiError ? err.message : "Action failed");
-    }
-  }
 
   if (!ready)
     return (
@@ -106,10 +73,10 @@ export default function AdminDashboard() {
                       <button
                         className="px-2 py-1 rounded bg-green-600 text-white"
                         onClick={() =>
-                          void guarded(() =>
-                            accounts
-                              .resolveRequest(r.id, "approve", "read")
-                              .then(() => undefined),
+                          void resolveRequest(
+                            r.id,
+                            RequestAction.APPROVE,
+                            MountRole.READ,
                           )
                         }
                       >
@@ -118,10 +85,10 @@ export default function AdminDashboard() {
                       <button
                         className="px-2 py-1 rounded bg-green-700 text-white"
                         onClick={() =>
-                          void guarded(() =>
-                            accounts
-                              .resolveRequest(r.id, "approve", "write")
-                              .then(() => undefined),
+                          void resolveRequest(
+                            r.id,
+                            RequestAction.APPROVE,
+                            MountRole.WRITE,
                           )
                         }
                       >
@@ -130,11 +97,7 @@ export default function AdminDashboard() {
                       <button
                         className="px-2 py-1 rounded bg-red-600 text-white"
                         onClick={() =>
-                          void guarded(() =>
-                            accounts
-                              .resolveRequest(r.id, "deny", null)
-                              .then(() => undefined),
-                          )
+                          void resolveRequest(r.id, RequestAction.DENY, null)
                         }
                       >
                         Deny
@@ -164,13 +127,7 @@ export default function AdminDashboard() {
                 </span>
                 <button
                   className="px-2 py-1 rounded bg-gray-200 dark:bg-gray-700"
-                  onClick={() =>
-                    void guarded(() =>
-                      accounts
-                        .setUserActive(u.id, !u.is_active)
-                        .then(() => undefined),
-                    )
-                  }
+                  onClick={() => void setUserActive(u.id, !u.is_active)}
                 >
                   {u.is_active ? "Disable" : "Enable"}
                 </button>
@@ -194,9 +151,8 @@ export default function AdminDashboard() {
               disabled={!newGroup}
               className="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm disabled:opacity-50"
               onClick={() =>
-                void guarded(async () => {
-                  await accounts.createGroup(newGroup);
-                  setNewGroup("");
+                void createGroup(newGroup).then((created) => {
+                  if (created) setNewGroup("");
                 })
               }
             >
@@ -205,7 +161,12 @@ export default function AdminDashboard() {
           </div>
           <ul className="space-y-2">
             {groups.map((g) => (
-              <GroupRow key={g.id} group={g} onChange={() => void guarded(async () => {})} />
+              <GroupRow
+                key={g.id}
+                group={g}
+                deleteGroup={deleteGroup}
+                addGroupMember={addGroupMember}
+              />
             ))}
           </ul>
         </section>
@@ -216,21 +177,26 @@ export default function AdminDashboard() {
 
 function GroupRow({
   group,
-  onChange,
+  deleteGroup,
+  addGroupMember,
 }: {
-  group: Group;
-  onChange: () => void;
+  group: AdminGroup;
+  deleteGroup: (groupId: number) => Promise<void>;
+  addGroupMember: (
+    groupId: number,
+    memberType: GroupMemberType,
+    memberRef: string,
+  ) => Promise<void>;
 }) {
   const [ref, setRef] = useState("");
-  const [type, setType] = useState<"user" | "group">("user");
+  const [type, setType] = useState<GroupMemberType>(GroupMemberType.USER);
   const [msg, setMsg] = useState<string | null>(null);
 
   async function add(): Promise<void> {
     try {
-      await accounts.addGroupMember(group.id, type, ref);
+      await addGroupMember(group.id, type, ref);
       setRef("");
       setMsg("Added");
-      onChange();
     } catch (err) {
       setMsg(err instanceof AccountApiError ? err.message : "Failed");
     }
@@ -242,9 +208,7 @@ function GroupRow({
         <strong>{group.name}</strong>
         <button
           className="px-2 py-1 rounded bg-red-100 text-red-700"
-          onClick={() =>
-            void accounts.deleteGroup(group.id).then(onChange)
-          }
+          onClick={() => void deleteGroup(group.id)}
         >
           Delete
         </button>
@@ -252,11 +216,11 @@ function GroupRow({
       <div className="flex gap-2 mt-1">
         <select
           value={type}
-          onChange={(e) => setType(e.target.value as "user" | "group")}
+          onChange={(e) => setType(e.target.value as GroupMemberType)}
           className="rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-2 py-1 text-xs"
         >
-          <option value="user">user</option>
-          <option value="group">group</option>
+          <option value={GroupMemberType.USER}>user</option>
+          <option value={GroupMemberType.GROUP}>group</option>
         </select>
         <input
           className="flex-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-2 py-1 text-xs"

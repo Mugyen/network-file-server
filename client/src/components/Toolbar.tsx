@@ -1,20 +1,20 @@
 import { Upload, FolderPlus, FileQuestion } from "lucide-react";
 import { useRef } from "react";
+import { UPLOAD_TTL_LABELS, UPLOAD_TTL_OPTIONS, UploadTTL } from "../types/upload.ts";
 
 interface ToolbarProps {
   onUploadClick: (files: FileList) => void;
   onNewFolder: () => void;
   onRequestFile: () => void;
-  currentPath: string;
-  fileTtl: number;
-  onFileTtlChange: (ttl: number) => void;
+  fileTtl: UploadTTL;
+  onFileTtlChange: (ttl: UploadTTL) => void;
 }
 
 /**
  * Toolbar with Upload button (opens hidden file input) and
  * New Folder button (triggers create folder dialog in parent).
  */
-function Toolbar({ onUploadClick, onNewFolder, onRequestFile, currentPath: _currentPath, fileTtl, onFileTtlChange }: ToolbarProps) {
+function Toolbar({ onUploadClick, onNewFolder, onRequestFile, fileTtl, onFileTtlChange }: ToolbarProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   function handleUploadButtonClick(): void {
@@ -43,15 +43,15 @@ function Toolbar({ onUploadClick, onNewFolder, onRequestFile, currentPath: _curr
 
       <select
         value={String(fileTtl)}
-        onChange={(e) => onFileTtlChange(Number(e.target.value))}
+        onChange={(e) => onFileTtlChange(Number(e.target.value) as UploadTTL)}
         className="rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-700 dark:bg-gray-800 dark:border-gray-600 dark:text-gray-300"
         title="File expiry"
       >
-        <option value="3600">1 hour</option>
-        <option value="21600">6 hours</option>
-        <option value="86400">1 day</option>
-        <option value="604800">7 days</option>
-        <option value="0">Never</option>
+        {UPLOAD_TTL_OPTIONS.map((ttl) => (
+          <option key={ttl} value={String(ttl)}>
+            {UPLOAD_TTL_LABELS[ttl]}
+          </option>
+        ))}
       </select>
 
       <input

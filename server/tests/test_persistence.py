@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 import pytest
-import pytest_asyncio
 
 from server.app.services.persistence import read_json, write_json_atomic
 

@@ -1,7 +1,9 @@
 """Server configuration module.
 
-Provides ServerConfig for holding validated server settings,
-and module-level get/set functions for global config access.
+Provides ServerConfig for holding validated server settings. The config is
+attached to the FastAPI app (``app.state.config``) by ``create_app`` —
+there is deliberately no module-level config global, so multiple app
+instances can coexist in one process (LAN server + relay drop box, tests).
 """
 
 import argparse
@@ -66,23 +68,6 @@ def create_default_config(shared_folder: Path, port: int) -> ServerConfig:
         mount_code=None,
         relay_url=None,
     )
-
-
-_config: ServerConfig | None = None
-
-
-def get_server_config() -> ServerConfig:
-    """Return the current server config. Raises RuntimeError if not set."""
-    global _config
-    if _config is None:
-        raise RuntimeError("Server config has not been set. Call set_server_config() first.")
-    return _config
-
-
-def set_server_config(config: ServerConfig) -> None:
-    """Set the global server config."""
-    global _config
-    _config = config
 
 
 def create_config_from_args(args: argparse.Namespace) -> ServerConfig:

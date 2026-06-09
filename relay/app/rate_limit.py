@@ -6,7 +6,6 @@ back to request.client.host.
 """
 
 import logging
-import re
 from pathlib import Path
 
 from slowapi import Limiter

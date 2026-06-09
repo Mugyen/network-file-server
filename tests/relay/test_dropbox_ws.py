@@ -75,7 +75,7 @@ async def test_dropbox_ws_bridge_connects(dropbox_relay_app) -> None:
             f"http://test/m/{config.dropbox_code}/ws?device_name=TestDevice",
             httpx.AsyncClient(transport=transport),
             keepalive_ping_interval_seconds=None,
-        ) as ws:
+        ) as _ws:
             # If we reach here, the connection was NOT immediately closed.
             # The bridge kept it open, proving the fix works.
             pass

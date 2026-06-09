@@ -4,24 +4,23 @@ Provides POST /api/auth/login for password verification and session cookie manag
 and POST /api/auth/logout for clearing the session cookie.
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from server.app.config import get_server_config
 from server.app.models.schemas import LoginRequest
-from server.app.services.auth_service import get_token_service, verify_password
+from server.app.services.auth_service import verify_password
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
 @router.post("/login")
-def login(request: LoginRequest) -> JSONResponse:
+def login(http_request: Request, request: LoginRequest) -> JSONResponse:
     """Verify password and set session cookie on success.
 
     Returns 200 with {"status": "ok"} and sets httpOnly session cookie.
     Returns 401 with {"detail": "Invalid password"} on failure.
     """
-    config = get_server_config()
+    config = http_request.app.state.config
 
     if config.password_hash is None:
         raise HTTPException(status_code=400, detail="Password not configured")
@@ -32,7 +31,7 @@ def login(request: LoginRequest) -> JSONResponse:
     if not verify_password(request.password, config.password_hash):
         raise HTTPException(status_code=401, detail="Invalid password")
 
-    token_service = get_token_service()
+    token_service = http_request.app.state.token_service
     token = token_service.create_token()
 
     cookie_path = f"/m/{config.mount_code}/" if config.mount_code is not None else "/"
@@ -49,13 +48,13 @@ def login(request: LoginRequest) -> JSONResponse:
 
 
 @router.post("/logout")
-def logout() -> JSONResponse:
+def logout(http_request: Request) -> JSONResponse:
     """Clear the session cookie.
 
     Returns 200 with {"status": "ok"} and expires the session cookie.
     Cookie path is scoped to /m/{mount_code}/ for remote mounts, or / for LAN mode.
     """
-    config = get_server_config()
+    config = http_request.app.state.config
     cookie_path = f"/m/{config.mount_code}/" if config.mount_code is not None else "/"
 
     response = JSONResponse(content={"status": "ok"})

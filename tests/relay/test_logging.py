@@ -4,7 +4,6 @@ import json
 import logging
 import sys
 
-import pytest
 
 from relay.app.logging import CloudJsonFormatter, RelayEnv, configure_logging
 

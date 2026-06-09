@@ -1,7 +1,5 @@
 """Tests for file TTL database, sweep, and boot-time cleanup."""
 
-import os
-import time
 from pathlib import Path
 
 import aiosqlite

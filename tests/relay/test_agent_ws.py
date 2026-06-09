@@ -12,8 +12,7 @@ from httpx_ws import aconnect_ws
 from httpx_ws.transport import ASGIWebSocketTransport
 
 from relay.app.main import create_relay_app
-from relay.app.services.mount_registry import get_registry, set_registry
-from relay.app.services.sqlite_registry import SqliteMountRegistry
+from relay.app.services.mount_registry import get_registry
 from tests.relay.conftest import MockTunnelConnection, _setup_in_memory_registry
 
 

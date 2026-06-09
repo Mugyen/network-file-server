@@ -1,6 +1,5 @@
 """Tests for FileRequestService and file-requests REST endpoints."""
 
-import asyncio
 from pathlib import Path
 
 import pytest
@@ -124,32 +123,23 @@ async def test_list_excludes_dismissed(service: FileRequestService) -> None:
 
 @pytest_asyncio.fixture
 async def client(tmp_path: Path) -> AsyncClient:
-    """Create test client with isolated data dir."""
-    from server.app.config import create_default_config, set_server_config
+    """Create test client with isolated data dir.
+
+    ``create_app`` builds the FileRequestService at
+    ``app.state.file_request_service`` using a per-test data dir
+    (``shared_folder.parent / ".wfs_data"``) — no patching needed.
+    """
+    from server.app.config import create_default_config
+    from server.app.main import create_app
 
     shared = tmp_path / "shared"
     shared.mkdir()
-    set_server_config(create_default_config(shared_folder=shared, port=8000))
-
-    # Patch the service factory to use tmp_path -- also reset the module singleton
-    import server.app.services.file_request_service as frs_mod
-    import server.app.routers.file_requests as fr_router_mod
-    original_factory = frs_mod.get_file_request_service
-    test_service = FileRequestService(tmp_path / "frs_data")
-    patched_factory = lambda: test_service  # type: ignore[assignment]  # noqa: E731
-    frs_mod.get_file_request_service = patched_factory  # type: ignore[assignment]
-    fr_router_mod.get_file_request_service = patched_factory  # type: ignore[assignment]
-
-    from server.app.main import create_app
-    app = create_app()
+    app = create_app(create_default_config(shared_folder=shared, port=8000))
     # Remove SPA catch-all that interferes with test routing
     app.routes[:] = [r for r in app.routes if not (hasattr(r, "path") and getattr(r, "path", "") == "/{path:path}")]
     transport = ASGITransport(app=app)  # type: ignore[arg-type]
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
-
-    frs_mod.get_file_request_service = original_factory
-    fr_router_mod.get_file_request_service = original_factory
 
 
 @pytest.mark.asyncio

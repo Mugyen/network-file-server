@@ -2,14 +2,35 @@
 
 Uses itsdangerous URLSafeTimedSerializer with a dedicated salt to produce
 signed tokens that embed the shared file path and expire after a chosen TTL.
+When a data directory is provided, active links are also persisted in SQLite
+so they survive restarts.
 """
 
+import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Callable
 
-from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
+from itsdangerous import BadSignature, SignatureExpired, TimestampSigner, URLSafeTimedSerializer
 
 from server.app.models.enums import ShareTTL
+from server.app.services.sqlite_store import ShareLinkRow, get_state_store
+
+
+class _ClockedTimestampSigner(TimestampSigner):
+    """TimestampSigner with an injectable clock.
+
+    itsdangerous reads the wall clock internally for both signing and
+    max_age checks; routing it through ``now_fn`` gives tests a seam to
+    exercise expiry without mutating service internals.
+    """
+
+    now_fn: Callable[[], float] = time.time
+
+    def get_timestamp(self) -> int:
+        return int(type(self).now_fn())
 
 
 @dataclass(frozen=True)
@@ -50,30 +71,63 @@ class ShareLinkService:
     """Creates, validates, revokes, and lists expiring share links.
 
     Tokens are signed with itsdangerous using a dedicated salt separate
-    from auth session tokens. Active links are stored in-memory.
+    from auth session tokens. Active links are tracked in-memory and
+    persisted in SQLite when a data directory is available.
     """
 
     SALT = "share-link"
 
-    def __init__(self, secret_key: str) -> None:
-        self._serializer = URLSafeTimedSerializer(secret_key)
+    def __init__(
+        self,
+        secret_key: str,
+        data_dir: Path | None = None,
+        now_fn: Callable[[], float] = time.time,
+    ) -> None:
+        # Per-instance signer class so each service can have its own clock
+        # (the signer is instantiated by itsdangerous per operation).
+        signer_cls = type("_Signer", (_ClockedTimestampSigner,), {"now_fn": staticmethod(now_fn)})
+        self._now_fn = now_fn
+        self._serializer = URLSafeTimedSerializer(secret_key, signer=signer_cls)
+        # Guards _active_links: routes may run on multiple threads (sync
+        # routes use the threadpool). Same pattern as ServerStateStore.
+        self._lock = threading.RLock()
         self._active_links: dict[str, ShareLinkRecord] = {}
+        self._store = get_state_store(data_dir) if data_dir is not None else None
+        if self._store is not None:
+            for row in self._store.list_share_links():
+                self._active_links[row.token] = ShareLinkRecord(
+                    token=row.token,
+                    file_path=row.file_path,
+                    created_at=datetime.fromisoformat(row.created_at),
+                    ttl_seconds=row.ttl_seconds,
+                )
 
-    def create_link(self, file_path: str, ttl: ShareTTL) -> str:
-        """Create a new share link token for the given file path.
+    def create_link(self, file_path: str, ttl: ShareTTL) -> ShareLinkRecord:
+        """Create a new share link for the given file path.
 
-        Returns the signed token string. Registers the link in the active registry.
+        Returns the full ShareLinkRecord (token, path, created_at, ttl) so
+        callers never reach into the service's internal registry.
         """
         token: str = self._serializer.dumps({"path": file_path}, salt=self.SALT)
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.fromtimestamp(self._now_fn(), tz=timezone.utc)
         record = ShareLinkRecord(
             token=token,
             file_path=file_path,
             created_at=now,
             ttl_seconds=int(ttl),
         )
-        self._active_links[token] = record
-        return token
+        with self._lock:
+            self._active_links[token] = record
+            if self._store is not None:
+                self._store.upsert_share_link(
+                    ShareLinkRow(
+                        token=token,
+                        file_path=file_path,
+                        created_at=now.isoformat(),
+                        ttl_seconds=int(ttl),
+                    )
+                )
+        return record
 
     def validate_token(self, token: str) -> str:
         """Validate a share link token and return the embedded file path.
@@ -82,17 +136,24 @@ class ShareLinkService:
         Raises ShareLinkExpiredError if the token has expired.
         Raises BadSignature if the token is tampered or invalid.
         """
-        if token not in self._active_links:
-            raise ShareLinkRevokedError(token)
+        with self._lock:
+            if token not in self._active_links:
+                raise ShareLinkRevokedError(token)
+            record = self._active_links[token]
 
-        record = self._active_links[token]
         try:
             data: dict[str, str] = self._serializer.loads(
                 token, salt=self.SALT, max_age=record.ttl_seconds
             )
         except SignatureExpired:
             # Clean up expired entry
-            del self._active_links[token]
+            with self._lock:
+                self._active_links.pop(token, None)
+                if self._store is not None:
+                    try:
+                        self._store.delete_share_link(token)
+                    except KeyError:
+                        pass  # Already removed from SQLite — nothing to clean.
             raise ShareLinkExpiredError(token)
 
         return data["path"]
@@ -102,9 +163,15 @@ class ShareLinkService:
 
         Raises ShareLinkNotFoundError if the token is not in the registry.
         """
-        if token not in self._active_links:
-            raise ShareLinkNotFoundError(token)
-        del self._active_links[token]
+        with self._lock:
+            if token not in self._active_links:
+                raise ShareLinkNotFoundError(token)
+            del self._active_links[token]
+            if self._store is not None:
+                try:
+                    self._store.delete_share_link(token)
+                except KeyError:
+                    pass  # Already removed from SQLite — nothing to clean.
 
     def list_active_links(self) -> list[ShareLinkRecord]:
         """Return all non-expired active share links.
@@ -114,7 +181,10 @@ class ShareLinkService:
         active: list[ShareLinkRecord] = []
         expired_tokens: list[str] = []
 
-        for token, record in self._active_links.items():
+        with self._lock:
+            snapshot = list(self._active_links.items())
+
+        for token, record in snapshot:
             try:
                 self._serializer.loads(
                     token, salt=self.SALT, max_age=record.ttl_seconds
@@ -125,25 +195,14 @@ class ShareLinkService:
             except BadSignature:
                 expired_tokens.append(token)
 
-        for token in expired_tokens:
-            del self._active_links[token]
+        with self._lock:
+            for token in expired_tokens:
+                self._active_links.pop(token, None)
+                if self._store is not None:
+                    try:
+                        self._store.delete_share_link(token)
+                    except KeyError:
+                        pass  # Already removed from SQLite — nothing to clean.
 
         return active
 
-
-_share_service: ShareLinkService | None = None
-
-
-def get_share_service() -> ShareLinkService:
-    """Return the current ShareLinkService. Raises RuntimeError if not set."""
-    if _share_service is None:
-        raise RuntimeError(
-            "ShareLinkService has not been set. Call set_share_service() first."
-        )
-    return _share_service
-
-
-def set_share_service(service: ShareLinkService) -> None:
-    """Set the global ShareLinkService instance."""
-    global _share_service
-    _share_service = service

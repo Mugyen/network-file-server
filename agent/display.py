@@ -1,14 +1,10 @@
-"""Terminal display functions for the agent CLI.
-
-Prints mount status, request activity, and reconnection state to stdout.
-Reuses generate_ascii_qr from server.app.services.qr_service.
-"""
+"""Terminal display functions for the agent CLI."""
 
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
-from server.app.services.network_service import detect_primary_lan_ip
-from server.app.services.qr_service import generate_ascii_qr
+from shared.network import detect_primary_lan_ip
+from shared.qr import generate_ascii_qr
 
 # Hostnames that resolve to the local machine and won't work from other devices.
 _LOCAL_HOSTS: frozenset[str] = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})

@@ -4,6 +4,7 @@ Provides endpoints for listing, uploading, downloading, renaming,
 deleting files, creating folders, batch ZIP download, search, and preview.
 """
 
+import asyncio
 import mimetypes
 from typing import Any
 from urllib.parse import quote
@@ -13,7 +14,6 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, Header, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
-from server.app.config import get_server_config
 from server.app.exceptions import (
     FileConflictError,
     InvalidFileNameError,
@@ -36,7 +36,6 @@ from server.app.middleware.mode_guard import (
 from server.app.services import upload_index
 from server.app.services.relay_identity import trusted_user
 from server.app.models.enums import ToastType
-from server.app.services.connection_manager import manager
 from server.app.services.file_service import (
     create_folder,
     delete_paths,
@@ -85,16 +84,12 @@ async def get_files(request: Request, path: str = Query("")) -> dict:
     Empty string means root of the shared folder.
     Enriches each file entry with expires_at (ISO timestamp or null).
     """
-    config = get_server_config()
+    config = request.app.state.config
     try:
-        listing = list_directory(config.shared_folder, path)
+        # Offloaded: iterdir+stat block, and this loop also carries tunnel
+        # traffic when the agent runs the server in-process.
+        listing = await asyncio.to_thread(list_directory, config.shared_folder, path)
         result = listing.model_dump()
-
-        # Never expose the uploader-index sidecar.
-        index_name = upload_index.index_filename()
-        result["entries"] = [
-            e for e in result.get("entries", []) if e.get("name") != index_name
-        ]
 
         # RECEIVE role: show only files this user uploaded (hide
         # directories and everyone else's / pre-existing files).
@@ -111,26 +106,22 @@ async def get_files(request: Request, path: str = Query("")) -> dict:
                     filtered.append(e)
             result["entries"] = filtered
 
-        # Enrich file entries with TTL expiry timestamps
-        try:
-            from relay.app.services.file_ttl_db import get_file_ttl_db
-
-            if config.mount_code is not None:
-                file_ttl_db = get_file_ttl_db()
-                ttl_records = await file_ttl_db.get_ttl_for_mount(config.mount_code)
-                ttl_map: dict[str, str] = {}
-                for file_path, expires_at in ttl_records:
-                    ttl_map[file_path] = datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat()
-                for entry in result.get("entries", []):
-                    # Build relative path from listing directory + filename
-                    name = entry.get("name", "")
-                    file_path_key = f"{path}/{name}".lstrip("/") if path else name
-                    entry["expires_at"] = ttl_map.get(file_path_key, None)
-            else:
-                for entry in result.get("entries", []):
-                    entry["expires_at"] = None
-        except (RuntimeError, ImportError):
-            # Standalone mode -- no TTL tracking
+        # Enrich file entries with TTL expiry timestamps. The provider is
+        # injected by whoever hosts this app in-process (relay drop box);
+        # standalone mode has none and the feature is absent.
+        ttl_provider = request.app.state.file_ttl_provider
+        if config.mount_code is not None and ttl_provider is not None:
+            ttl_records = await ttl_provider.get_ttl_for_mount(config.mount_code)
+            ttl_map: dict[str, str] = {}
+            for file_path, expires_at in ttl_records:
+                ttl_map[file_path] = datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat()
+            for entry in result.get("entries", []):
+                # Build relative path from listing directory + filename
+                name = entry.get("name", "")
+                file_path_key = f"{path}/{name}".lstrip("/") if path else name
+                entry["expires_at"] = ttl_map.get(file_path_key, None)
+        else:
+            # Standalone mode (no provider) or LAN serving — no TTLs.
             for entry in result.get("entries", []):
                 entry["expires_at"] = None
 
@@ -157,7 +148,7 @@ async def upload_files(
     controls behavior when file already exists: overwrite, rename, or skip.
     Broadcasts toast to WebSocket clients after successful upload.
     """
-    config = get_server_config()
+    config = request.app.state.config
     try:
         results = []
         for file in files:
@@ -168,7 +159,7 @@ async def upload_files(
 
         # Record the uploader (trusted relay identity) so RECEIVE users
         # can later see their own uploads.
-        uploader = trusted_user(request.headers)
+        uploader = trusted_user(config, request.headers)
         if uploader is not None:
             for r in results:
                 name = r.get("name", "")
@@ -178,20 +169,18 @@ async def upload_files(
                         config.shared_folder, rel, uploader
                     )
 
-        # Record file TTL for each uploaded file (when running under relay)
+        # Record file TTL for each uploaded file (when a provider is injected)
         effective_ttl = ttl if ttl is not None else 86400  # Default 1 day
         if effective_ttl > 0 and config.mount_code is not None:
-            try:
-                from relay.app.services.file_ttl_db import get_file_ttl_db
-                file_ttl_db = get_file_ttl_db()
+            # None = standalone mode (no provider injected) — nothing to record.
+            ttl_provider = request.app.state.file_ttl_provider
+            if ttl_provider is not None:
                 for r in results:
                     # Build relative path from upload directory + filename
                     name = r.get("name", "")
                     if name:
                         file_path = f"{path}/{name}".lstrip("/") if path else name
-                        await file_ttl_db.record_file_ttl(config.mount_code, file_path, effective_ttl)
-            except (RuntimeError, ImportError):
-                pass  # Not running under relay (standalone server mode)
+                        await ttl_provider.record_file_ttl(config.mount_code, file_path, effective_ttl)
 
         # Broadcast upload toast to WS clients
         file_count = len(results)
@@ -205,9 +194,9 @@ async def upload_files(
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         if x_device_id is not None:
-            await manager.broadcast(toast_msg, x_device_id)
+            await request.app.state.manager.broadcast(toast_msg, x_device_id)
         else:
-            await manager.broadcast_all(toast_msg)
+            await request.app.state.manager.broadcast_all(toast_msg)
 
         return results
     except PathTraversalError as exc:
@@ -225,7 +214,7 @@ async def download_single_file(request: Request, path: str = Query(...)) -> Any:
     Returns FileResponse with Content-Disposition: attachment.
     Uses filename*=UTF-8'' encoding for unicode support.
     """
-    config = get_server_config()
+    config = request.app.state.config
     scope_user = receive_scope_user(request)
     if scope_user is not None and not await upload_index.is_owned_by(
         config.shared_folder, path, scope_user
@@ -259,7 +248,7 @@ async def download_zip(request: Request, body: DownloadZipRequest) -> Any:
     Accepts a JSON body with paths list. Uses zipstream-ng for
     memory-efficient streaming without buffering the full archive.
     """
-    config = get_server_config()
+    config = request.app.state.config
     scope_user = receive_scope_user(request)
     if scope_user is not None:
         for p in body.paths:
@@ -283,13 +272,13 @@ async def download_zip(request: Request, body: DownloadZipRequest) -> Any:
 
 
 @router.patch("/files/rename", response_model=None, dependencies=[Depends(require_write_access), Depends(require_full_access)])
-def rename_file(request: RenameRequest) -> Any:
+def rename_file(http_request: Request, request: RenameRequest) -> Any:
     """Rename a file or directory.
 
     Accepts JSON body with path (original) and new_name.
     Returns the new relative path.
     """
-    config = get_server_config()
+    config = http_request.app.state.config
     try:
         new_path = rename_path(config.shared_folder, request.path, request.new_name)
         return {"path": new_path}
@@ -304,13 +293,13 @@ def rename_file(request: RenameRequest) -> Any:
 
 
 @router.delete("/files", response_model=None, dependencies=[Depends(require_write_access), Depends(require_full_access)])
-def delete_files(request: DeleteRequest) -> Any:
+def delete_files(http_request: Request, request: DeleteRequest) -> Any:
     """Delete one or more files or directories.
 
     Accepts JSON body with paths list.
     Returns the list of deleted paths.
     """
-    config = get_server_config()
+    config = http_request.app.state.config
     try:
         deleted = delete_paths(config.shared_folder, request.paths)
         return {"deleted": deleted}
@@ -321,13 +310,13 @@ def delete_files(request: DeleteRequest) -> Any:
 
 
 @router.post("/folders", status_code=201, response_model=None, dependencies=[Depends(require_write_access), Depends(require_full_access)])
-def create_new_folder(request: CreateFolderRequest) -> Any:
+def create_new_folder(http_request: Request, request: CreateFolderRequest) -> Any:
     """Create a new folder.
 
     Accepts JSON body with parent_path and name.
     Returns the new folder's relative path.
     """
-    config = get_server_config()
+    config = http_request.app.state.config
     try:
         new_path = create_folder(
             config.shared_folder, request.parent_path, request.name
@@ -344,7 +333,7 @@ def create_new_folder(request: CreateFolderRequest) -> Any:
 
 
 @router.get("/files/search", response_model=None, dependencies=[Depends(require_browse_access)])
-def search_files_endpoint(
+def search_files_endpoint(  # sync on purpose: FastAPI runs `def` routes in its threadpool, keeping the rglob walk off the event loop
     request: Request,
     q: str = Query(...),
     path: str = Query(""),
@@ -358,7 +347,7 @@ def search_files_endpoint(
     RECEIVE-scoped users get no search results (search results lack the
     full path needed to safely scope to own uploads).
     """
-    config = get_server_config()
+    config = request.app.state.config
     if receive_scope_user(request) is not None:
         return SearchResult(query=q, path=path, entries=[]).model_dump()
     try:
@@ -383,7 +372,7 @@ async def preview_file(
     correct Content-Type from mimetypes. Starlette FileResponse
     handles Range requests (206 Partial Content) automatically.
     """
-    config = get_server_config()
+    config = request.app.state.config
     scope_user = receive_scope_user(request)
     if scope_user is not None and not await upload_index.is_owned_by(
         config.shared_folder, path, scope_user

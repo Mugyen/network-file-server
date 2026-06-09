@@ -2,6 +2,7 @@ import type { ConflictAction } from "../types/upload.ts";
 import type { UploadResult } from "../types/upload.ts";
 import { getDeviceName } from "../types/websocket.ts";
 import { getApiBase } from "../utils/remoteMount.ts";
+import { API_ROUTES } from "./endpoints.ts";
 
 const API_BASE = getApiBase();
 
@@ -79,6 +80,19 @@ export async function apiDelete<T>(path: string, body: unknown): Promise<T> {
 }
 
 /**
+ * DELETE without a request body, tolerating empty responses (204 or no
+ * content). Use for endpoints whose success reply carries no JSON —
+ * apiDelete above is for JSON-in/JSON-out deletes.
+ */
+export async function apiDeleteNoBody(path: string): Promise<void> {
+  const response = await fetch(`${API_BASE}${path}`, { method: "DELETE" });
+  if (!response.ok) {
+    const text = await response.text();
+    handleRelayError(response.status, text);
+  }
+}
+
+/**
  * Upload a single file using XMLHttpRequest for upload progress tracking.
  * fetch() does not support upload progress events -- XHR is required.
  *
@@ -117,7 +131,7 @@ export function uploadWithProgress(
       reject(new Error("Upload failed: network error"));
     });
 
-    let url = `${API_BASE}/files/upload?path=${encodeURIComponent(targetPath)}&ttl=${String(ttl)}`;
+    let url = `${API_BASE}${API_ROUTES.filesUpload}?path=${encodeURIComponent(targetPath)}&ttl=${String(ttl)}`;
     if (conflictResolution !== null) {
       url += `&conflict_resolution=${encodeURIComponent(conflictResolution)}`;
     }

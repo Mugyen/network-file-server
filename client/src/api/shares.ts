@@ -1,6 +1,5 @@
-import { ApiError } from "./client.ts";
-import { apiPost, apiFetch } from "./client.ts";
-import { getApiBase } from "../utils/remoteMount.ts";
+import { apiDeleteNoBody, apiFetch, apiPost } from "./client.ts";
+import { API_ROUTES } from "./endpoints.ts";
 
 /** Shape of a share link returned by the backend. */
 export interface ShareLinkInfo {
@@ -44,7 +43,7 @@ export const TTL_OPTIONS: ShareTTL[] = [
  * POST /api/shares with { file_path, ttl }.
  */
 export function createShareLink(filePath: string, ttl: ShareTTL): Promise<ShareLinkInfo> {
-  return apiPost<ShareLinkInfo>("/shares", { file_path: filePath, ttl });
+  return apiPost<ShareLinkInfo>(API_ROUTES.shares, { file_path: filePath, ttl });
 }
 
 /**
@@ -52,22 +51,13 @@ export function createShareLink(filePath: string, ttl: ShareTTL): Promise<ShareL
  * GET /api/shares.
  */
 export function listShareLinks(): Promise<ShareLinkInfo[]> {
-  return apiFetch<ShareLinkInfo[]>("/shares");
+  return apiFetch<ShareLinkInfo[]>(API_ROUTES.shares);
 }
 
 /**
  * Revoke a share link by token.
  * DELETE /api/shares/{token}. Returns 204 with no body.
- *
- * Uses fetch directly because the generic apiDelete expects a JSON body
- * and parses a JSON response, but this endpoint uses neither.
  */
-export async function revokeShareLink(token: string): Promise<void> {
-  const response = await fetch(`${getApiBase()}/shares/${encodeURIComponent(token)}`, {
-    method: "DELETE",
-  });
-  if (!response.ok) {
-    const body = await response.text();
-    throw new ApiError(response.status, body);
-  }
+export function revokeShareLink(token: string): Promise<void> {
+  return apiDeleteNoBody(`${API_ROUTES.shares}/${encodeURIComponent(token)}`);
 }

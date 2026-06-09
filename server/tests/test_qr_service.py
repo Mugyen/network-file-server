@@ -5,7 +5,7 @@ Tests ASCII QR (terminal) and SVG QR (web) generation.
 
 import pytest
 
-from server.app.services.qr_service import generate_ascii_qr, generate_svg_qr
+from shared.qr import generate_ascii_qr, generate_svg_qr
 
 
 class TestAsciiQr:

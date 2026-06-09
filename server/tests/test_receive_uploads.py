@@ -6,24 +6,21 @@ from pathlib import Path
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from server.app.config import ServerConfig, set_server_config
+from server.app.config import ServerConfig
+from server.app.main import create_app
 
 
 def _mount_app(folder: Path):
-    set_server_config(
-        ServerConfig(
-            shared_folder=folder,
-            port=8000,
-            password_hash=None,
-            read_only=False,
-            receive=False,
-            mount_code="ABC123",
-            relay_url="https://relay.example.com",
-        )
+    config = ServerConfig(
+        shared_folder=folder,
+        port=8000,
+        password_hash=None,
+        read_only=False,
+        receive=False,
+        mount_code="ABC123",
+        relay_url="https://relay.example.com",
     )
-    from server.app.main import create_app
-
-    return create_app()
+    return create_app(config)
 
 
 async def _client(app):
@@ -38,8 +35,12 @@ def _recv(user: str) -> dict:
 
 @pytest.fixture
 def folder(tmp_path: Path) -> Path:
-    (tmp_path / "preexisting.txt").write_text("old")
-    return tmp_path
+    # Subdirectory of tmp_path so the upload-index DB at
+    # shared_folder.parent / ".wfs_data" is unique per test.
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "preexisting.txt").write_text("old")
+    return shared
 
 
 async def _upload(client, name: str, headers: dict):
@@ -137,7 +138,7 @@ async def test_receive_blocked_from_destructive_ops(folder):
     assert r.status_code == 403
 
 
-async def test_index_sidecar_hidden_from_listing(folder):
+async def test_receive_state_store_hidden_from_listing(folder):
     app = _mount_app(folder)
     async with await _client(app) as c:
         await _upload(c, "alice1.txt", _recv("alice"))
@@ -146,4 +147,6 @@ async def test_index_sidecar_hidden_from_listing(folder):
             headers={"x-wfs-role": "write", "x-wfs-user": "admin"},
         )
     names = {e["name"] for e in r.json()["entries"]}
-    assert ".wfs_upload_index.json" not in names
+    assert "alice1.txt" in names
+    assert "preexisting.txt" in names
+    assert all(not name.startswith(".wfs_") for name in names)

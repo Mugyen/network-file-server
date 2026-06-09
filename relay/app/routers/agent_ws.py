@@ -56,7 +56,10 @@ async def _handle_agent_control_for_mount(msg: dict, mount_code: str) -> None:
             await file_ttl_db.delete_expired_for_mount(code)
             logger.info("Processed %s for mount=%s", msg_type, code)
         except RuntimeError:
-            pass  # FileTtlDb not initialized -- no-op
+            # FileTtlDb not initialized (relay running without TTL tracking).
+            logger.debug(
+                "Ignoring %s for mount=%s — FileTtlDb not initialized", msg_type, mount_code
+            )
 
 
 # Module-level rate limiter for mount registration.
@@ -87,6 +90,13 @@ async def _read_agent_auth(conn: TunnelConnection, websocket: WebSocket):
     try:
         msg = await conn.receive_control()
     except Exception:
+        # A client that can't complete the handshake is likely not an agent
+        # at all (port scanner, wrong protocol) — log and reject.
+        logger.warning(
+            "Agent handshake failed before agent_auth frame: client=%s",
+            websocket.client.host if websocket.client else "unknown",
+            exc_info=True,
+        )
         await websocket.close(code=1008)
         return None
 
@@ -349,7 +359,11 @@ async def agent_websocket(
                     "files": [{"path": fp, "expired_at": exp} for fp, exp in expired],
                 })
         except RuntimeError:
-            pass  # FileTtlDb not initialized
+            # FileTtlDb not initialized (relay running without TTL tracking).
+            logger.debug(
+                "Skipping expired-files prompt for mount=%s — FileTtlDb not initialized",
+                assigned_code,
+            )
 
     async def _on_agent_control(msg: dict) -> None:
         """Handle application-specific control messages from the agent.
@@ -372,4 +386,5 @@ async def agent_websocket(
         try:
             await registry.mark_offline(assigned_code)
         except MountNotFoundError:
-            pass
+            # Mount already deregistered (e.g. explicitly removed) — fine.
+            logger.debug("mark_offline skipped — mount %s already gone", assigned_code)

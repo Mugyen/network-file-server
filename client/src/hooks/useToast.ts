@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import type { ToastMessage, WSToastPayload } from "../types/websocket.ts";
+import { ToastType } from "../types/websocket.ts";
 
 /** Maximum number of visible toasts at once. */
 const MAX_VISIBLE = 3;
@@ -20,6 +21,7 @@ interface UseToastResult {
   visibleToasts: ToastMessage[];
   overflowCount: number;
   addToast: (payload: WSToastPayload) => void;
+  addErrorToast: (message: string) => void;
   dismissToast: (id: string) => void;
 }
 
@@ -62,8 +64,22 @@ export function useToast(): UseToastResult {
     [dismissToast],
   );
 
+  /** Surface a failed local operation as a toast (client-originated, not WS). */
+  const addErrorToast = useCallback(
+    (message: string): void => {
+      addToast({
+        type: "toast",
+        toast_type: ToastType.ERROR,
+        message,
+        device_name: "",
+        timestamp: new Date().toISOString(),
+      });
+    },
+    [addToast],
+  );
+
   const visibleToasts = toasts.slice(-MAX_VISIBLE);
   const overflowCount = Math.max(0, toasts.length - MAX_VISIBLE);
 
-  return { toasts, visibleToasts, overflowCount, addToast, dismissToast };
+  return { toasts, visibleToasts, overflowCount, addToast, addErrorToast, dismissToast };
 }

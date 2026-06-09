@@ -9,6 +9,18 @@ export const ThemeMode = {
 
 export type ThemeMode = (typeof ThemeMode)[keyof typeof ThemeMode];
 
+/** Next mode in the toggle cycle: system → dark → light → system. */
+export function cycleThemeMode(current: ThemeMode): ThemeMode {
+  switch (current) {
+    case ThemeMode.SYSTEM:
+      return ThemeMode.DARK;
+    case ThemeMode.DARK:
+      return ThemeMode.LIGHT;
+    case ThemeMode.LIGHT:
+      return ThemeMode.SYSTEM;
+  }
+}
+
 const STORAGE_KEY = "theme";
 
 interface ThemeState {

@@ -1,0 +1,16 @@
+export const API_ROUTES = {
+  authLogin: "/auth/login",
+  authLogout: "/auth/logout",
+  clipboard: "/clipboard",
+  fileRequests: "/file-requests",
+  files: "/files",
+  filesDownload: "/files/download",
+  filesDownloadZip: "/files/download-zip",
+  filesPreview: "/files/preview",
+  filesUpload: "/files/upload",
+  filesRename: "/files/rename",
+  filesSearch: "/files/search",
+  folders: "/folders",
+  shares: "/shares",
+  serverInfo: "/server-info",
+} as const;

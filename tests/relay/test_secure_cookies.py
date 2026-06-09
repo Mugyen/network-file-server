@@ -5,7 +5,6 @@ when the request arrives via HTTPS (X-Forwarded-Proto: https), and does
 nothing when the request is plain HTTP.
 """
 
-import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.responses import Response

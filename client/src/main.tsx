@@ -2,6 +2,7 @@ import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./index.css";
 import App from "./App.tsx";
+import ErrorBoundary from "./components/ErrorBoundary.tsx";
 import LoginPage from "./components/LoginPage.tsx";
 import DropBoxPage from "./components/DropBoxPage.tsx";
 import RelayLoginPage from "./pages/LoginPage.tsx";
@@ -9,6 +10,7 @@ import SignupPage from "./pages/SignupPage.tsx";
 import AdminDashboard from "./pages/AdminDashboard.tsx";
 import Forbidden403 from "./pages/Forbidden403.tsx";
 import { fetchServerInfo } from "./api/serverInfo.ts";
+import { API_ROUTES } from "./api/endpoints.ts";
 import type { ServerMode } from "./types/serverMode.ts";
 import { getApiBase } from "./utils/remoteMount.ts";
 import { Loader2 } from "lucide-react";
@@ -23,7 +25,7 @@ function Root() {
       try {
         // Relay account-gate detection: a RESTRICTED, password-less mount
         // 302s to /login (or 401s for XHR). Detect and route to login.
-        const probe = await fetch(`${getApiBase()}/server-info`, {
+        const probe = await fetch(`${getApiBase()}${API_ROUTES.serverInfo}`, {
           credentials: "include",
           redirect: "manual",
         });
@@ -46,7 +48,7 @@ function Root() {
           setIsAuthenticated(true);
         } else {
           // Probe a gated endpoint to check if session cookie is still valid
-          const probe = await fetch(`${getApiBase()}/files`, { credentials: "include" });
+          const probe = await fetch(`${getApiBase()}${API_ROUTES.files}`, { credentials: "include" });
           if (probe.ok) {
             setIsAuthenticated(true);
           }
@@ -78,8 +80,17 @@ function Root() {
     );
   }
 
-  // serverMode is guaranteed non-null here
-  const mode = serverMode!;
+  // Explicit narrowing instead of a non-null assertion: if the loading and
+  // error branches above ever change, this fails visibly rather than lying
+  // to the type checker.
+  if (serverMode === null) {
+    return (
+      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center">
+        <p className="text-red-600 dark:text-red-400">Failed to determine server mode</p>
+      </div>
+    );
+  }
+  const mode = serverMode;
 
   // Password gate
   if (mode.passwordRequired && !isAuthenticated) {
@@ -99,11 +110,35 @@ function Root() {
  *  mount/SPA flow runs. */
 function pickRoot() {
   const path = window.location.pathname;
-  if (path === "/login") return <RelayLoginPage />;
-  if (path === "/signup") return <SignupPage />;
-  if (path === "/admin") return <AdminDashboard />;
-  if (path === "/403") return <Forbidden403 />;
-  return <Root />;
+  if (path === "/login")
+    return (
+      <ErrorBoundary label="login">
+        <RelayLoginPage />
+      </ErrorBoundary>
+    );
+  if (path === "/signup")
+    return (
+      <ErrorBoundary label="signup">
+        <SignupPage />
+      </ErrorBoundary>
+    );
+  if (path === "/admin")
+    return (
+      <ErrorBoundary label="admin">
+        <AdminDashboard />
+      </ErrorBoundary>
+    );
+  if (path === "/403")
+    return (
+      <ErrorBoundary label="403">
+        <Forbidden403 />
+      </ErrorBoundary>
+    );
+  return (
+    <ErrorBoundary label="root">
+      <Root />
+    </ErrorBoundary>
+  );
 }
 
 createRoot(document.getElementById("root")!).render(

@@ -37,6 +37,14 @@ class AccountStore(ABC):
         """Return the user. Raises UserNotFoundError if absent."""
 
     @abstractmethod
+    async def get_users_by_ids(self, user_ids: list[int]) -> dict[int, User]:
+        """Return users keyed by id, in one query (batch lookup).
+
+        IDs with no matching user are simply absent from the result —
+        callers decide whether a missing user is an error.
+        """
+
+    @abstractmethod
     async def set_user_active(self, user_id: int, is_active: bool) -> None:
         """Enable/disable a user. Raises UserNotFoundError if absent."""
 

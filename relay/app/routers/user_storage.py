@@ -5,15 +5,17 @@ user's isolated directory as the base, so storage logic is not
 re-implemented.
 """
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
-from server.app.exceptions import FileConflictError, PathTraversalError
-from server.app.models.enums import ConflictResolution
-from server.app.models.schemas import DeleteRequest
-from server.app.services.file_service import (
+from server import (
+    ConflictResolution,
+    DeleteRequest,
+    FileConflictError,
+    PathTraversalError,
     delete_paths,
     download_file,
     list_directory,
@@ -35,8 +37,9 @@ router = APIRouter(prefix="/me", tags=["user-storage"])
 async def get_quota(
     identity: SessionIdentity = Depends(get_current_identity),
 ) -> dict[str, int]:
+    # usage_bytes walks the whole user dir — keep it off the event loop.
     return {
-        "usage": usage_bytes(identity.user_id),
+        "usage": await asyncio.to_thread(usage_bytes, identity.user_id),
         "quota": await quota_bytes(identity.user_id),
     }
 
@@ -48,7 +51,8 @@ async def list_files(
 ) -> Any:
     base = user_dir(identity.user_id)
     try:
-        return list_directory(base, path).model_dump()
+        listing = await asyncio.to_thread(list_directory, base, path)
+        return listing.model_dump()
     except PathTraversalError as exc:
         return JSONResponse(status_code=403, content={"error": str(exc)})
     except FileNotFoundError as exc:
@@ -69,7 +73,7 @@ async def upload(
     # Content-Length slightly over-counts via multipart overhead, which
     # is conservative — fine for a quota guard).
     quota = await quota_bytes(identity.user_id)
-    current = usage_bytes(identity.user_id)
+    current = await asyncio.to_thread(usage_bytes, identity.user_id)
     declared = int(request.headers.get("content-length", "0"))
     if declared and current + declared > quota:
         return JSONResponse(
@@ -92,8 +96,9 @@ async def upload(
 
     # Post-write safety net (no/under-reported Content-Length): if the
     # write pushed the user over quota, roll back what we just wrote.
-    if usage_bytes(identity.user_id) > quota:
-        delete_paths(
+    if await asyncio.to_thread(usage_bytes, identity.user_id) > quota:
+        await asyncio.to_thread(
+            delete_paths,
             base,
             [f"{path}/{n}".lstrip("/") if path else n for n in written],
         )
@@ -128,7 +133,7 @@ async def delete(
 ) -> Any:
     base = user_dir(identity.user_id)
     try:
-        deleted = delete_paths(base, body.paths)
+        deleted = await asyncio.to_thread(delete_paths, base, body.paths)
     except PathTraversalError as exc:
         return JSONResponse(status_code=403, content={"error": str(exc)})
     except FileNotFoundError as exc:

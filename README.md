@@ -105,10 +105,19 @@ Set `RELAY_DB_PATH=/path/to/mounts.db` to override SQLite mount registry locatio
 ## Test
 
 ```bash
-scripts/test.sh                 # full suite (relay + server + agent + accounts)
-scripts/test.sh tests/accounts  # a subset
-scripts/e2e.sh                  # Playwright auth e2e (spins up a throwaway relay+mounts)
+uv sync --group dev          # install pytest/ruff/mypy/pytest-asyncio for local runs
+scripts/test.sh                 # full check: ruff + mypy + pytest + client lint + vitest
+scripts/test.sh tests/accounts  # a pytest subset (skips lint/typecheck/client)
+scripts/e2e.sh                  # Playwright e2e: auth + core flows (throwaway relay + mounts)
 scripts/e2e.sh -g signup        # one e2e test (args pass through to playwright)
+```
+
+CI (`.github/workflows/ci.yml`) runs the same checks on push/PR; e2e via manual dispatch.
+
+If you want to invoke pytest directly, run it through uv after syncing the dev group:
+
+```bash
+uv run --group dev python -m pytest
 ```
 
 `scripts/e2e.sh` needs Playwright Chromium (`scripts/install_setup.sh` installs it).

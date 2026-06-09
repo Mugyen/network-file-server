@@ -10,8 +10,7 @@ from typing import Any
 
 from httpx import ASGITransport, AsyncClient
 
-from server.app.config import ServerConfig, set_server_config
-from server.app.main import create_app
+from server import ServerConfig, create_app
 
 _dropbox_client: AsyncClient | None = None
 _dropbox_app: Any = None
@@ -43,8 +42,7 @@ async def init_dropbox(data_dir: Path, dropbox_code: str) -> AsyncClient:
         mount_code=dropbox_code,
         relay_url=None,
     )
-    set_server_config(config)
-    server_app = create_app()
+    server_app = create_app(config)
     set_dropbox_app(server_app)
     transport = ASGITransport(app=server_app)
     client = AsyncClient(transport=transport, base_url="http://dropbox")

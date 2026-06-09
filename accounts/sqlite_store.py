@@ -1,13 +1,14 @@
 """SQLite-backed :class:`AccountStore` implementation.
 
 Mirrors the lifecycle conventions of the relay's ``SqliteMountRegistry``
-(async ``create()`` factory, ``PRAGMA journal_mode=DELETE``,
+(async ``create()`` factory, ``PRAGMA journal_mode=WAL``,
 ``CREATE TABLE IF NOT EXISTS``, explicit ``close()``).
 """
 
 import logging
 import time
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 
@@ -27,6 +28,19 @@ from accounts.resolve import resolve_user_groups
 from accounts.store import AccountStore
 
 logger = logging.getLogger(__name__)
+
+
+def _inserted_rowid(cursor: aiosqlite.Cursor) -> int:
+    """Return the rowid of a just-executed INSERT.
+
+    sqlite3 types lastrowid as Optional because it is None before any INSERT;
+    after a successful INSERT it is always set, so None here means a broken
+    invariant worth failing loudly on.
+    """
+    rowid = cursor.lastrowid
+    if rowid is None:
+        raise RuntimeError("INSERT produced no rowid — sqlite invariant violated")
+    return rowid
 
 _CREATE_USERS_SQL = """
 CREATE TABLE IF NOT EXISTS users (
@@ -89,7 +103,8 @@ class SqliteAccountStore(AccountStore):
         is_new_db = db_path == ":memory:" or not Path(db_path).exists()
 
         db = await aiosqlite.connect(db_path)
-        await db.execute("PRAGMA journal_mode=DELETE")
+        # WAL allows concurrent readers during writes (signup/login bursts).
+        await db.execute("PRAGMA journal_mode=WAL")
         await db.execute(_CREATE_USERS_SQL)
         await db.execute(_CREATE_GROUPS_SQL)
         await db.execute(_CREATE_MEMBERSHIPS_SQL)
@@ -133,7 +148,7 @@ class SqliteAccountStore(AccountStore):
         await self._db.commit()
 
         return User(
-            id=cursor.lastrowid,
+            id=_inserted_rowid(cursor),
             username=normalized,
             email=email,
             password_hash=bytes(password_hash),
@@ -162,6 +177,24 @@ class SqliteAccountStore(AccountStore):
         if row is None:
             raise UserNotFoundError(user_id)
         return self._row_to_user(row)
+
+    async def get_users_by_ids(self, user_ids: list[int]) -> dict[int, User]:
+        if not isinstance(user_ids, list) or not all(
+            isinstance(uid, int) for uid in user_ids
+        ):
+            raise ValueError("user_ids must be a list of ints")
+        unique_ids = sorted(set(user_ids))
+        if len(unique_ids) == 0:
+            return {}
+        placeholders = ",".join("?" * len(unique_ids))
+        async with self._db.execute(
+            "SELECT id, username, email, password_hash, created_at, is_active "
+            f"FROM users WHERE id IN ({placeholders})",
+            unique_ids,
+        ) as cursor:
+            rows = await cursor.fetchall()
+        users = [self._row_to_user(row) for row in rows]
+        return {user.id: user for user in users}
 
     async def set_user_active(self, user_id: int, is_active: bool) -> None:
         cursor = await self._db.execute(
@@ -202,7 +235,7 @@ class SqliteAccountStore(AccountStore):
             # Convert the storage uniqueness error into the domain exception.
             raise GroupNameTakenError(normalized) from exc
         await self._db.commit()
-        return Group(id=cursor.lastrowid, name=normalized, created_at=created_at)
+        return Group(id=_inserted_rowid(cursor), name=normalized, created_at=created_at)
 
     async def get_group_by_id(self, group_id: int) -> Group:
         async with self._db.execute(
@@ -363,7 +396,7 @@ class SqliteAccountStore(AccountStore):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _row_to_user(row: tuple) -> User:
+    def _row_to_user(row: aiosqlite.Row | tuple[Any, ...]) -> User:
         return User(
             id=row[0],
             username=row[1],

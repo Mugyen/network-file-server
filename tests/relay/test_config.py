@@ -1,7 +1,6 @@
 """Tests for relay config module — YAML loading, env var overrides, validation."""
 
 import os
-import time
 from pathlib import Path
 from unittest.mock import patch
 

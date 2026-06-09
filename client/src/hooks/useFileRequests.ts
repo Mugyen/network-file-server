@@ -3,6 +3,10 @@ import type { FileRequest } from "../types/fileRequests.ts";
 import { RequestStatus } from "../types/fileRequests.ts";
 import { WSMessageType } from "../types/websocket.ts";
 import {
+  isFileRequestPayload,
+  isRequestDismissedPayload,
+} from "../utils/wsGuards.ts";
+import {
   fetchFileRequests,
   createFileRequest,
   fulfillFileRequest,
@@ -22,11 +26,13 @@ interface UseFileRequestsResult {
 
 /**
  * Hook for managing file requests with WebSocket real-time sync.
- * Uses deviceName as deviceId (stored in localStorage, stable per device).
+ * Identity (ownership, dismissal rights) is keyed on the stable deviceId;
+ * deviceName is presentational only.
  */
 export function useFileRequests(
   addMessageHandler: (type: string, handler: (data: unknown) => void) => void,
   removeMessageHandler: (type: string) => void,
+  deviceId: string,
   deviceName: string,
   onFileUploaded: () => void,
 ): UseFileRequestsResult {
@@ -35,6 +41,8 @@ export function useFileRequests(
   const [fulfillProgress, setFulfillProgress] = useState<Map<string, number>>(
     () => new Map(),
   );
+  const deviceIdRef = useRef<string>(deviceId);
+  deviceIdRef.current = deviceId;
   const deviceNameRef = useRef<string>(deviceName);
   deviceNameRef.current = deviceName;
 
@@ -44,8 +52,9 @@ export function useFileRequests(
       try {
         const data = await fetchFileRequests();
         setRequests(data);
-      } catch {
-        // Silently fail on initial load -- requests will sync via WS
+      } catch (err: unknown) {
+        // Background load — requests will sync via WS, but log the failure.
+        console.error("Failed to load file requests:", err);
       }
     }
     void load();
@@ -54,19 +63,31 @@ export function useFileRequests(
   // Register WS handlers
   useEffect(() => {
     addMessageHandler(WSMessageType.REQUEST_CREATED, (data: unknown) => {
-      const msg = data as { request: FileRequest };
+      if (!isFileRequestPayload(data)) {
+        console.error("Malformed WS message", WSMessageType.REQUEST_CREATED, data);
+        return;
+      }
+      const msg = data;
       setRequests((prev) => [msg.request, ...prev]);
     });
 
     addMessageHandler(WSMessageType.REQUEST_FULFILLED, (data: unknown) => {
-      const msg = data as { request: FileRequest };
+      if (!isFileRequestPayload(data)) {
+        console.error("Malformed WS message", WSMessageType.REQUEST_FULFILLED, data);
+        return;
+      }
+      const msg = data;
       setRequests((prev) =>
         prev.map((r) => (r.id === msg.request.id ? msg.request : r)),
       );
     });
 
     addMessageHandler(WSMessageType.REQUEST_DISMISSED, (data: unknown) => {
-      const msg = data as { request_id: string };
+      if (!isRequestDismissedPayload(data)) {
+        console.error("Malformed WS message", WSMessageType.REQUEST_DISMISSED, data);
+        return;
+      }
+      const msg = data;
       setRequests((prev) => prev.filter((r) => r.id !== msg.request_id));
     });
 
@@ -83,8 +104,11 @@ export function useFileRequests(
 
   const submitRequest = useCallback(
     async (description: string): Promise<void> => {
-      const name = deviceNameRef.current;
-      const request = await createFileRequest(description, name, name);
+      const request = await createFileRequest(
+        description,
+        deviceIdRef.current,
+        deviceNameRef.current,
+      );
       setRequests((prev) => [request, ...prev]);
       setShowForm(false);
     },
@@ -130,8 +154,7 @@ export function useFileRequests(
 
   const dismissRequest = useCallback(
     async (requestId: string): Promise<void> => {
-      const name = deviceNameRef.current;
-      await dismissFileRequest(requestId, name);
+      await dismissFileRequest(requestId, deviceIdRef.current);
       setRequests((prev) => prev.filter((r) => r.id !== requestId));
     },
     [],
@@ -139,7 +162,7 @@ export function useFileRequests(
 
   const isMyRequest = useCallback(
     (request: FileRequest): boolean => {
-      return request.requester_device_id === deviceNameRef.current;
+      return request.requester_device_id === deviceIdRef.current;
     },
     [],
   );

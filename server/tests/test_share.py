@@ -1,32 +1,37 @@
 """Integration tests for share router endpoints."""
 
 import secrets
-import time
 from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from server.app.config import ServerConfig, set_server_config
+from server.app.config import ServerConfig
+from server.app.main import create_app
 from server.app.models.enums import ShareTTL
-from server.app.services.auth_service import (
-    AuthTokenService,
-    hash_password,
-    set_token_service,
-)
-from server.app.services.share_service import (
-    ShareLinkRecord,
-    ShareLinkService,
-    set_share_service,
-)
+from server.app.services.auth_service import hash_password
+from server.app.services.share_service import ShareLinkService
+from server.tests.conftest import AdvanceableClock
 
 
 # --- Fixtures ---
 
 
 @pytest.fixture
-def configured_app_with_shares(tmp_shared_folder: Path) -> "FastAPI":  # type: ignore[name-defined]  # noqa: F821
-    """Create a FastAPI app with ShareLinkService initialized (no password)."""
+def share_clock() -> AdvanceableClock:
+    """Controllable clock injected into the share service for expiry tests."""
+    return AdvanceableClock()
+
+
+@pytest.fixture
+def configured_app_with_shares(
+    tmp_shared_folder: Path, share_clock: AdvanceableClock
+) -> "FastAPI":  # type: ignore[name-defined]  # noqa: F821
+    """Create a FastAPI app (no password) with a clock-controlled share service.
+
+    ``create_app`` wires its own ShareLinkService; we swap in one built on the
+    test clock (the public ``now_fn`` seam) so tests can fake link expiry.
+    """
     config = ServerConfig(
         shared_folder=tmp_shared_folder,
         port=8000,
@@ -34,17 +39,11 @@ def configured_app_with_shares(tmp_shared_folder: Path) -> "FastAPI":  # type: i
         read_only=False,
         receive=False,
         mount_code=None,
-            relay_url=None,
+        relay_url=None,
     )
-    set_server_config(config)
-
-    secret_key = secrets.token_hex(32)
-    service = ShareLinkService(secret_key)
-    set_share_service(service)
-
-    from server.app.main import create_app
-
-    return create_app()
+    app = create_app(config)
+    app.state.share_service = ShareLinkService(secrets.token_hex(32), now_fn=share_clock)
+    return app
 
 
 @pytest.fixture
@@ -59,7 +58,7 @@ async def share_client(
 
 @pytest.fixture
 def configured_app_shares_with_password(tmp_shared_folder: Path) -> "FastAPI":  # type: ignore[name-defined]  # noqa: F821
-    """Create a FastAPI app with password + ShareLinkService."""
+    """Create a FastAPI app with password + ShareLinkService (both built by create_app)."""
     password_hash = hash_password("test-password-123")
     config = ServerConfig(
         shared_folder=tmp_shared_folder,
@@ -68,20 +67,9 @@ def configured_app_shares_with_password(tmp_shared_folder: Path) -> "FastAPI":  
         read_only=False,
         receive=False,
         mount_code=None,
-            relay_url=None,
+        relay_url=None,
     )
-    set_server_config(config)
-
-    secret_key = secrets.token_hex(32)
-    auth_service = AuthTokenService(secret_key)
-    set_token_service(auth_service)
-
-    share_service = ShareLinkService(secret_key)
-    set_share_service(share_service)
-
-    from server.app.main import create_app
-
-    return create_app()
+    return create_app(config)
 
 
 @pytest.fixture
@@ -178,24 +166,17 @@ class TestShareDownloadPage:
         assert "test.txt" in resp.text
         assert "Download" in resp.text
 
-    async def test_expired_token_returns_expired_page(self, share_client: AsyncClient) -> None:
+    async def test_expired_token_returns_expired_page(
+        self, share_client: AsyncClient, share_clock: AdvanceableClock
+    ) -> None:
         create_resp = await share_client.post(
             "/api/shares",
             json={"file_path": "test.txt", "ttl": ShareTTL.FIFTEEN_MINUTES},
         )
         token = create_resp.json()["token"]
 
-        # Force expiry by manipulating the service record
-        from server.app.services.share_service import get_share_service
-        service = get_share_service()
-        record = service._active_links[token]
-        service._active_links[token] = ShareLinkRecord(
-            token=record.token,
-            file_path=record.file_path,
-            created_at=record.created_at,
-            ttl_seconds=1,
-        )
-        time.sleep(2)
+        # Force expiry through the share service's injected clock
+        share_clock.advance(int(ShareTTL.FIFTEEN_MINUTES) + 1)
 
         resp = await share_client.get(f"/share/{token}")
         assert resp.status_code == 200
@@ -250,24 +231,17 @@ class TestShareFileDownload:
         assert resp.status_code == 200
         assert resp.text == "hello world"
 
-    async def test_download_expired_returns_expired_page(self, share_client: AsyncClient) -> None:
+    async def test_download_expired_returns_expired_page(
+        self, share_client: AsyncClient, share_clock: AdvanceableClock
+    ) -> None:
         create_resp = await share_client.post(
             "/api/shares",
             json={"file_path": "test.txt", "ttl": ShareTTL.FIFTEEN_MINUTES},
         )
         token = create_resp.json()["token"]
 
-        # Force expiry
-        from server.app.services.share_service import get_share_service
-        service = get_share_service()
-        record = service._active_links[token]
-        service._active_links[token] = ShareLinkRecord(
-            token=record.token,
-            file_path=record.file_path,
-            created_at=record.created_at,
-            ttl_seconds=1,
-        )
-        time.sleep(2)
+        # Force expiry through the share service's injected clock
+        share_clock.advance(int(ShareTTL.FIFTEEN_MINUTES) + 1)
 
         resp = await share_client.get(f"/share/{token}/download")
         assert resp.status_code == 200
@@ -280,12 +254,13 @@ class TestShareFileDownload:
 
 class TestShareAuthBypass:
     async def test_share_page_accessible_without_session_cookie(
-        self, share_client_with_password: AsyncClient
+        self,
+        share_client_with_password: AsyncClient,
+        configured_app_shares_with_password: "FastAPI",  # type: ignore[name-defined]  # noqa: F821
     ) -> None:
         """Share link pages should be accessible without a session cookie on password-protected server."""
         # First create a share (need auth for API)
-        from server.app.services.auth_service import get_token_service
-        token_service = get_token_service()
+        token_service = configured_app_shares_with_password.state.token_service
         session_token = token_service.create_token()
 
         create_resp = await share_client_with_password.post(

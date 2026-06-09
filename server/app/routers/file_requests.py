@@ -3,27 +3,30 @@
 Provides endpoints for creating, listing, fulfilling, and dismissing file requests.
 """
 
+import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Header, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, Header, Request, UploadFile
 
 from server.app.middleware.mode_guard import require_full_access, require_write_access
 
-from server.app.config import get_server_config
-from server.app.models.enums import RequestStatus, ToastType, WSMessageType
+from server.app.dependencies import get_connection_manager, get_file_request_service
+from server.app.models.enums import ToastType, WSMessageType
 from server.app.models.schemas import CreateFileRequestPayload, FileRequest
-from server.app.services.connection_manager import manager
-from server.app.services.file_request_service import get_file_request_service
+from server.app.services.connection_manager import ConnectionManager
+from server.app.services.file_request_service import FileRequestService
 from server.app.services.file_service import upload_file
 
 router = APIRouter(prefix="/api/file-requests", tags=["file-requests"])
 
+logger = logging.getLogger("server.file_requests")
+
 
 @router.get("/", dependencies=[Depends(require_full_access)])
-async def list_file_requests() -> list[FileRequest]:
+async def list_file_requests(
+    service: FileRequestService = Depends(get_file_request_service),
+) -> list[FileRequest]:
     """Return all non-dismissed file requests."""
-    service = get_file_request_service()
     return await service.list_requests()
 
 
@@ -32,9 +35,10 @@ async def create_file_request(
     payload: CreateFileRequestPayload,
     x_device_id: str = Header(...),
     x_device_name: str = Header(...),
+    service: FileRequestService = Depends(get_file_request_service),
+    manager: ConnectionManager = Depends(get_connection_manager),
 ) -> FileRequest:
     """Create a new file request and broadcast to other devices."""
-    service = get_file_request_service()
     request = await service.create_request(
         payload.description, x_device_id, x_device_name
     )
@@ -61,13 +65,15 @@ async def create_file_request(
 
 @router.post("/{request_id}/fulfill", dependencies=[Depends(require_write_access), Depends(require_full_access)])
 async def fulfill_file_request(
+    http_request: Request,
     request_id: str,
     file: UploadFile,
     x_device_name: str = Header(...),
+    service: FileRequestService = Depends(get_file_request_service),
+    manager: ConnectionManager = Depends(get_connection_manager),
 ) -> FileRequest:
     """Fulfill a file request by uploading a file."""
-    service = get_file_request_service()
-    config = get_server_config()
+    config = http_request.app.state.config
 
     # Upload the file to the shared folder root
     upload_result = await upload_file(config.shared_folder, "", file, None)
@@ -95,7 +101,12 @@ async def fulfill_file_request(
     try:
         await manager.send_to(fulfilled.requester_device_id, toast_msg)
     except KeyError:
-        pass  # Requester disconnected -- no toast
+        # Requester is no longer connected — they'll see the fulfilled state
+        # on next load; only the live toast is lost.
+        logger.debug(
+            "Fulfillment toast not delivered — requester %s disconnected",
+            fulfilled.requester_device_id,
+        )
 
     return fulfilled
 
@@ -104,9 +115,10 @@ async def fulfill_file_request(
 async def dismiss_file_request(
     request_id: str,
     x_device_id: str = Header(...),
+    service: FileRequestService = Depends(get_file_request_service),
+    manager: ConnectionManager = Depends(get_connection_manager),
 ) -> dict:
     """Dismiss a file request. Only the requester can dismiss."""
-    service = get_file_request_service()
     await service.dismiss_request(request_id, x_device_id)
 
     # Broadcast request_dismissed to all connections

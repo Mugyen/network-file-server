@@ -17,10 +17,8 @@ standalone and relay-mounted deployments (relative resolution against
 correct root).
 """
 
-from fastapi import APIRouter, Depends, Header, UploadFile
+from fastapi import APIRouter, Depends, Header, Request, UploadFile
 from fastapi.responses import RedirectResponse
-
-from server.app.config import get_server_config
 from server.app.exceptions import PathTraversalError
 from server.app.middleware.mode_guard import require_write_access
 from server.app.models.enums import ConflictResolution
@@ -35,6 +33,7 @@ router = APIRouter(prefix="/api", tags=["share-target"])
     dependencies=[Depends(require_write_access)],
 )
 async def share_upload(
+    request: Request,
     files: list[UploadFile],
     x_device_name: str | None = Header(None),
 ) -> RedirectResponse:
@@ -62,7 +61,7 @@ async def share_upload(
     if len(files) == 0:
         raise ValueError("share-upload requires at least one file")
 
-    config = get_server_config()
+    config = request.app.state.config
 
     try:
         for upload in files:

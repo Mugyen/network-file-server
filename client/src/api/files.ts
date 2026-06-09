@@ -1,5 +1,6 @@
 import type { DirectoryListing, FileEntry } from "../types/files.ts";
 import { apiFetch, apiPost, apiPatch, apiDelete } from "./client.ts";
+import { API_ROUTES } from "./endpoints.ts";
 import { getApiBase } from "../utils/remoteMount.ts";
 
 /** Response shape from the /files/search endpoint. */
@@ -11,7 +12,7 @@ export interface SearchResult {
 
 export function fetchFiles(path: string): Promise<DirectoryListing> {
   return apiFetch<DirectoryListing>(
-    `/files?path=${encodeURIComponent(path)}`
+    `${API_ROUTES.files}?path=${encodeURIComponent(path)}`
   );
 }
 
@@ -21,7 +22,7 @@ export function fetchFiles(path: string): Promise<DirectoryListing> {
  */
 export function downloadFile(path: string): void {
   const a = document.createElement("a");
-  a.href = `${getApiBase()}/files/download?path=${encodeURIComponent(path)}`;
+  a.href = `${getApiBase()}${API_ROUTES.filesDownload}?path=${encodeURIComponent(path)}`;
   a.download = "";
   document.body.appendChild(a);
   a.click();
@@ -33,7 +34,7 @@ export function downloadFile(path: string): void {
  * POSTs selected paths to the server, receives a blob, triggers browser save.
  */
 export async function downloadAsZip(paths: string[]): Promise<void> {
-  const response = await fetch(`${getApiBase()}/files/download-zip`, {
+  const response = await fetch(`${getApiBase()}${API_ROUTES.filesDownloadZip}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ paths }),
@@ -57,14 +58,14 @@ export async function downloadAsZip(paths: string[]): Promise<void> {
  * Delete one or more files/folders by path.
  */
 export function deleteFiles(paths: string[]): Promise<{ deleted: string[] }> {
-  return apiDelete<{ deleted: string[] }>("/files", { paths });
+  return apiDelete<{ deleted: string[] }>(API_ROUTES.files, { paths });
 }
 
 /**
  * Rename a file or folder.
  */
 export function renameFile(path: string, newName: string): Promise<{ path: string }> {
-  return apiPatch<{ path: string }>("/files/rename", {
+  return apiPatch<{ path: string }>(API_ROUTES.filesRename, {
     path,
     new_name: newName,
   });
@@ -74,7 +75,7 @@ export function renameFile(path: string, newName: string): Promise<{ path: strin
  * Create a new folder inside parentPath.
  */
 export function createFolder(parentPath: string, name: string): Promise<{ path: string }> {
-  return apiPost<{ path: string }>("/folders", {
+  return apiPost<{ path: string }>(API_ROUTES.folders, {
     parent_path: parentPath,
     name,
   });
@@ -86,6 +87,6 @@ export function createFolder(parentPath: string, name: string): Promise<{ path: 
  */
 export function searchFiles(query: string, path: string): Promise<SearchResult> {
   return apiFetch<SearchResult>(
-    `/files/search?q=${encodeURIComponent(query)}&path=${encodeURIComponent(path)}`
+    `${API_ROUTES.filesSearch}?q=${encodeURIComponent(query)}&path=${encodeURIComponent(path)}`
   );
 }

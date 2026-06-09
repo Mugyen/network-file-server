@@ -3,7 +3,6 @@
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from server.app.services.auth_service import get_token_service
 from server.tests.conftest import TEST_PASSWORD
 
 
@@ -172,7 +171,7 @@ def test_websocket_with_valid_cookie_on_protected_server(
     """WebSocket /ws with valid cookie on password-protected server connects successfully."""
     from starlette.testclient import TestClient
 
-    token_service = get_token_service()
+    token_service = configured_app_with_password.state.token_service
     valid_token = token_service.create_token()
 
     client = TestClient(configured_app_with_password, cookies={"session": valid_token})

@@ -1,17 +1,12 @@
 """Tests for cookie path scoping in auth router based on mount_code."""
 
-import secrets
 from pathlib import Path
 
-import pytest
 from starlette.testclient import TestClient
 
-from server.app.config import ServerConfig, set_server_config
-from server.app.services.auth_service import (
-    AuthTokenService,
-    hash_password,
-    set_token_service,
-)
+from server.app.config import ServerConfig
+from server.app.main import create_app
+from server.app.services.auth_service import hash_password
 
 TEST_PASSWORD = "test-auth-cookie-password"
 
@@ -26,15 +21,9 @@ def _make_app(tmp_path: Path, mount_code: str | None) -> "object":
         read_only=False,
         receive=False,
         mount_code=mount_code,
-            relay_url=None,
+        relay_url=None,
     )
-    set_server_config(config)
-
-    secret_key = secrets.token_hex(32)
-    set_token_service(AuthTokenService(secret_key))
-
-    from server.app.main import create_app
-    return create_app()
+    return create_app(config)
 
 
 class TestLoginCookiePath:

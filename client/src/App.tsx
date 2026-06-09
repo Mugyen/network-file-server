@@ -1,150 +1,94 @@
-import { useCallback, useEffect, useState } from "react";
-import { ClipboardList, LogOut, Monitor, Share2 } from "lucide-react";
-import type { FileEntry } from "./types/files.ts";
-import { FileType } from "./types/files.ts";
-import { FileCategory, getFileCategory } from "./types/fileCategories.ts";
+import { useEffect, useState } from "react";
+import type { ReactElement } from "react";
 import type { ServerInfo as ServerInfoData } from "./types/serverInfo.ts";
-import type { WSToastPayload } from "./types/websocket.ts";
-import { WSMessageType, getDeviceName } from "./types/websocket.ts";
+import { WSMessageType, getDeviceId, getDeviceName } from "./types/websocket.ts";
 import type { ServerMode } from "./types/serverMode.ts";
-import {
-  fetchFiles,
-  downloadFile,
-  downloadAsZip,
-  deleteFiles,
-  renameFile,
-  createFolder,
-} from "./api/files.ts";
 import { fetchServerInfo } from "./api/serverInfo.ts";
-import { usePathNavigation } from "./hooks/usePathNavigation.ts";
-import { useUpload } from "./hooks/useUpload.ts";
 import { useWebSocket } from "./hooks/useWebSocket.ts";
-import { useToast } from "./hooks/useToast.ts";
-import { useDragDrop } from "./hooks/useDragDrop.ts";
-import { useFileSelection } from "./hooks/useFileSelection.ts";
-import { useSearch } from "./hooks/useSearch.ts";
-import { useSort } from "./hooks/useSort.ts";
-import { useTheme, ThemeMode } from "./hooks/useTheme.ts";
-import { usePreview } from "./hooks/usePreview.ts";
+import { useTheme, cycleThemeMode } from "./hooks/useTheme.ts";
 import { useClipboard } from "./hooks/useClipboard.ts";
 import { useFileRequests } from "./hooks/useFileRequests.ts";
 import { useMountStatus, MountStatus } from "./hooks/useMountStatus.ts";
-import FileList from "./components/FileList.tsx";
+import {
+  NotificationsProvider,
+  useNotifications,
+} from "./contexts/NotificationsContext.tsx";
+import { BrowseProvider, useBrowse } from "./contexts/BrowseContext.tsx";
+import { UploadProvider, useUploads } from "./contexts/UploadContext.tsx";
 import PreviewModal from "./components/PreviewModal.tsx";
-import Breadcrumbs from "./components/Breadcrumbs.tsx";
 import ServerInfoComponent from "./components/ServerInfo.tsx";
-import Toolbar from "./components/Toolbar.tsx";
-import BatchToolbar from "./components/BatchToolbar.tsx";
-import SearchBar from "./components/SearchBar.tsx";
-import FilterChips from "./components/FilterChips.tsx";
-import ThemeToggle from "./components/ThemeToggle.tsx";
-import ConnectionStatus, { ReconnectingBanner } from "./components/ConnectionStatus.tsx";
-import ToastContainer from "./components/ToastContainer.tsx";
+import { ReconnectingBanner } from "./components/ConnectionStatus.tsx";
 import { MountStatusOverlay } from "./components/MountStatusOverlay.tsx";
 import UploadOverlay from "./components/UploadOverlay.tsx";
-import UploadPanel from "./components/UploadPanel.tsx";
-import ConflictDialog from "./components/ConflictDialog.tsx";
-import ConfirmDialog from "./components/ConfirmDialog.tsx";
-import CreateFolderDialog from "./components/CreateFolderDialog.tsx";
 import ScratchpadPanel from "./components/ScratchpadPanel.tsx";
-import ShareLinksPanel from "./components/ShareLinksPanel.tsx";
-import DevicesPanel from "./components/DevicesPanel.tsx";
-import FileRequestForm from "./components/FileRequestForm.tsx";
-import FileRequestBanner from "./components/FileRequestBanner.tsx";
 import ModeBadges from "./components/ModeBadges.tsx";
+import FileBrowserSection from "./components/FileBrowserSection.tsx";
+import HeaderActions from "./components/HeaderActions.tsx";
+import UploadWidgets from "./components/UploadWidgets.tsx";
+import { isToastPayload } from "./utils/wsGuards.ts";
 import { isRemoteMount } from "./utils/remoteMount.ts";
 
-/** Cycle order for theme toggle: SYSTEM -> DARK -> LIGHT -> SYSTEM */
-function cycleThemeMode(current: ThemeMode): ThemeMode {
-  switch (current) {
-    case ThemeMode.SYSTEM:
-      return ThemeMode.DARK;
-    case ThemeMode.DARK:
-      return ThemeMode.LIGHT;
-    case ThemeMode.LIGHT:
-      return ThemeMode.SYSTEM;
-  }
-}
-
-/** Stable device name retrieved once from localStorage. */
+/** Stable device name (cosmetic) and device ID (identity), each persisted once. */
 const deviceName = getDeviceName();
+const deviceId = getDeviceId();
 
 interface AppProps {
   serverMode: ServerMode;
   onLogout: () => void;
 }
 
-function App({ serverMode, onLogout }: AppProps) {
+/**
+ * Inner app shell. Lives inside the providers so it can consume the
+ * notifications/browse/upload contexts; keeps the WS, mount-status,
+ * clipboard, and file-request wiring that spans those slices.
+ */
+function AppContent({ serverMode, onLogout }: AppProps): ReactElement {
   const isReadOnly = serverMode.readOnly;
 
-  const { currentPath, navigateTo } = usePathNavigation();
-  const ws = useWebSocket(deviceName);
-  const toast = useToast();
+  const ws = useWebSocket(deviceId, deviceName);
+  const toast = useNotifications();
+  const browse = useBrowse();
+  const uploads = useUploads();
   const mountStatus = useMountStatus();
-  const [files, setFiles] = useState<FileEntry[]>([]);
-  const [serverInfo, setServerInfo] = useState<ServerInfoData | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [error, setError] = useState<string | null>(null);
-  const [showShareLinks, setShowShareLinks] = useState<boolean>(false);
-  const [showDevices, setShowDevices] = useState<boolean>(false);
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState<boolean>(false);
-  const [showCreateFolder, setShowCreateFolder] = useState<boolean>(false);
-  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
-  // Search, sort, theme, preview hooks
-  const search = useSearch(currentPath);
-  const sort = useSort();
   const theme = useTheme();
-  const preview = usePreview(currentPath);
-  const clipboard = useClipboard(ws.addMessageHandler, ws.removeMessageHandler, ws.sendMessage);
-
-  // Category filter state
-  const [activeCategories, setActiveCategories] = useState<Set<FileCategory>>(
-    () => new Set([FileCategory.ALL]),
+  const [serverInfo, setServerInfo] = useState<ServerInfoData | null>(null);
+  // Stable callbacks from the context/hook slices (identities survive renders).
+  const { loadFiles, reportError } = browse;
+  const { onRecoveryRef, triggerPoll } = mountStatus;
+  const clipboard = useClipboard(
+    ws.addMessageHandler, ws.removeMessageHandler, ws.sendMessage, toast.addErrorToast,
   );
-
-  const loadFiles = useCallback(async (): Promise<void> => {
-    setLoading(true);
-    setError(null);
-    try {
-      const listing = await fetchFiles(currentPath);
-      setFiles(listing.entries);
-    } catch (err: unknown) {
-      const message =
-        err instanceof Error ? err.message : "Failed to load files";
-      setError(message);
-    } finally {
-      setLoading(false);
-    }
-  }, [currentPath]);
+  const fileRequests = useFileRequests(
+    ws.addMessageHandler, ws.removeMessageHandler, deviceId, deviceName, loadFiles,
+  );
 
   // Wire mount status recovery to file list refresh
-  mountStatus.onRecoveryRef.current = loadFiles;
-
-  const upload = useUpload(currentPath, loadFiles);
-  const { isDragging, dragHandlers } = useDragDrop(upload.uploadFiles);
-  const selection = useFileSelection(files);
-  const fileRequests = useFileRequests(
-    ws.addMessageHandler, ws.removeMessageHandler, deviceName, loadFiles,
-  );
+  useEffect(() => {
+    onRecoveryRef.current = loadFiles;
+  }, [onRecoveryRef, loadFiles]);
 
   // Trigger immediate status poll when WebSocket disconnects in remote mode
   useEffect(() => {
     if (!ws.isConnected && isRemoteMount()) {
-      mountStatus.triggerPoll();
+      triggerPoll();
     }
-  }, [ws.isConnected, mountStatus.triggerPoll]);
+  }, [ws.isConnected, triggerPoll]);
 
-  // Wire toast handler to WebSocket messages
+  // Wire toast handler to WebSocket messages (payload runtime-guarded)
   useEffect(() => {
     ws.addMessageHandler(WSMessageType.TOAST, (data: unknown) => {
-      toast.addToast(data as WSToastPayload);
+      if (!isToastPayload(data)) {
+        console.error("Malformed WS message", WSMessageType.TOAST, data);
+        return;
+      }
+      toast.addToast(data);
     });
     return () => {
       ws.removeMessageHandler(WSMessageType.TOAST);
     };
   }, [ws, toast]);
 
-  // Load server info once on mount
+  // Load server info once on mount (reportError is stable across renders)
   useEffect(() => {
     async function loadServerInfo(): Promise<void> {
       try {
@@ -153,177 +97,11 @@ function App({ serverMode, onLogout }: AppProps) {
       } catch (err: unknown) {
         const message =
           err instanceof Error ? err.message : "Failed to load server info";
-        setError(message);
+        reportError(message);
       }
     }
     void loadServerInfo();
-  }, []);
-
-  // Reload file listing when path changes
-  useEffect(() => {
-    void loadFiles();
-  }, [loadFiles]);
-
-  // --- Category filter ---
-
-  function toggleCategory(category: FileCategory): void {
-    if (category === FileCategory.ALL) {
-      setActiveCategories(new Set([FileCategory.ALL]));
-      return;
-    }
-
-    setActiveCategories((prev) => {
-      const next = new Set(prev);
-      next.delete(FileCategory.ALL);
-
-      if (next.has(category)) {
-        next.delete(category);
-      } else {
-        next.add(category);
-      }
-
-      // If nothing is selected, re-activate ALL
-      if (next.size === 0) {
-        next.add(FileCategory.ALL);
-      }
-      return next;
-    });
-  }
-
-  // --- File pipeline: search -> category filter -> sort ---
-
-  const filteredBySearch = search.filterFiles(files);
-  const filteredByCategory = activeCategories.has(FileCategory.ALL)
-    ? filteredBySearch
-    : filteredBySearch.filter(
-        (f) =>
-          f.type === FileType.DIRECTORY ||
-          activeCategories.has(getFileCategory(f.name)),
-      );
-  const sortedFiles = sort.sortFiles(filteredByCategory);
-
-  // --- Batch operations ---
-
-  function buildSelectedPaths(): string[] {
-    return Array.from(selection.selectedNames).map((name) =>
-      currentPath === "" ? name : currentPath + "/" + name,
-    );
-  }
-
-  async function handleBatchDownloadZip(): Promise<void> {
-    try {
-      await downloadAsZip(buildSelectedPaths());
-    } catch (err: unknown) {
-      const message =
-        err instanceof Error ? err.message : "ZIP download failed";
-      setError(message);
-    }
-  }
-
-  function handleBatchDeleteRequest(): void {
-    setDeleteTarget(null);
-    setShowDeleteConfirm(true);
-  }
-
-  async function handleBatchDeleteConfirm(): Promise<void> {
-    setShowDeleteConfirm(false);
-    try {
-      await deleteFiles(buildSelectedPaths());
-      selection.clearSelection();
-      await loadFiles();
-    } catch (err: unknown) {
-      const message =
-        err instanceof Error ? err.message : "Delete failed";
-      setError(message);
-    }
-  }
-
-  // --- Single-file operations ---
-
-  function handleSingleDeleteRequest(path: string): void {
-    setDeleteTarget(path);
-    setShowDeleteConfirm(true);
-  }
-
-  async function handleSingleDeleteConfirm(): Promise<void> {
-    setShowDeleteConfirm(false);
-    if (deleteTarget === null) {
-      return;
-    }
-    try {
-      await deleteFiles([deleteTarget]);
-      setDeleteTarget(null);
-      await loadFiles();
-    } catch (err: unknown) {
-      const message =
-        err instanceof Error ? err.message : "Delete failed";
-      setError(message);
-    }
-  }
-
-  function handleDeleteConfirm(): void {
-    if (deleteTarget !== null) {
-      void handleSingleDeleteConfirm();
-    } else {
-      void handleBatchDeleteConfirm();
-    }
-  }
-
-  function handleDeleteCancel(): void {
-    setShowDeleteConfirm(false);
-    setDeleteTarget(null);
-  }
-
-  async function handleRename(path: string, newName: string): Promise<void> {
-    try {
-      await renameFile(path, newName);
-      await loadFiles();
-    } catch (err: unknown) {
-      const message =
-        err instanceof Error ? err.message : "Rename failed";
-      setError(message);
-    }
-  }
-
-  function handleDownload(path: string): void {
-    downloadFile(path);
-  }
-
-  function handlePreview(file: FileEntry): void {
-    preview.openPreview(file);
-  }
-
-  // --- Create folder ---
-
-  function handleNewFolderRequest(): void {
-    setShowCreateFolder(true);
-  }
-
-  async function handleCreateFolder(name: string): Promise<void> {
-    setShowCreateFolder(false);
-    try {
-      await createFolder(currentPath, name);
-      await loadFiles();
-    } catch (err: unknown) {
-      const message =
-        err instanceof Error ? err.message : "Create folder failed";
-      setError(message);
-    }
-  }
-
-  function handleCreateFolderCancel(): void {
-    setShowCreateFolder(false);
-  }
-
-  // --- Delete confirm message ---
-
-  function getDeleteMessage(): string {
-    if (deleteTarget !== null) {
-      const name = deleteTarget.split("/").pop() ?? deleteTarget;
-      return `Are you sure you want to delete "${name}"? This action cannot be undone.`;
-    }
-    return `Are you sure you want to delete ${String(selection.selectedCount)} selected item(s)? This action cannot be undone.`;
-  }
+  }, [reportError]);
 
   // --- Theme toggle ---
 
@@ -334,9 +112,9 @@ function App({ serverMode, onLogout }: AppProps) {
   return (
     <div
       className="min-h-screen bg-gray-50 dark:bg-gray-900"
-      {...(isReadOnly ? {} : dragHandlers)}
+      {...(isReadOnly ? {} : uploads.dragHandlers)}
     >
-      {!isReadOnly && <UploadOverlay visible={isDragging} />}
+      {!isReadOnly && <UploadOverlay visible={uploads.isDragging} />}
 
       <header className="py-6">
         <div className="container mx-auto max-w-4xl px-4 flex items-center justify-between">
@@ -350,61 +128,19 @@ function App({ serverMode, onLogout }: AppProps) {
               remote={isRemoteMount()}
             />
           </div>
-          <div className="flex items-center gap-3">
-            <ConnectionStatus isConnected={ws.isConnected} deviceCount={ws.deviceCount} />
-            <button
-              type="button"
-              onClick={() => setShowDevices(true)}
-              className="relative p-1.5 rounded-md text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
-              aria-label="Connected devices"
-              title="Devices"
-            >
-              <Monitor className="w-5 h-5" />
-              {ws.devices.length > 0 && (
-                <span className="absolute -top-1 -right-1 min-w-[1.125rem] h-[1.125rem] flex items-center justify-center rounded-full bg-blue-500 text-white text-[10px] font-bold leading-none px-1">
-                  {String(ws.devices.length)}
-                </span>
-              )}
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowShareLinks(true)}
-              className="p-1.5 rounded-md text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
-              aria-label="Share links"
-              title="Share Links"
-            >
-              <Share2 className="w-5 h-5" />
-            </button>
-            <button
-              type="button"
-              onClick={clipboard.togglePanel}
-              className="relative p-1.5 rounded-md text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
-              aria-label="Toggle scratchpad"
-            >
-              <ClipboardList className="w-5 h-5" />
-              {clipboard.snippets.length > 0 && (
-                <span className="absolute top-0 right-0 w-2 h-2 bg-blue-500 rounded-full" />
-              )}
-            </button>
-            <ThemeToggle
-              mode={theme.mode}
-              isDark={theme.isDark}
-              onToggle={handleThemeToggle}
-            />
-            {serverMode.passwordRequired && (
-              <button
-                type="button"
-                onClick={() => {
-                  void import("./api/auth.ts").then((mod) => mod.logout()).then(onLogout);
-                }}
-                className="p-1.5 rounded-md text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700"
-                aria-label="Log out"
-                title="Log out"
-              >
-                <LogOut className="w-5 h-5" />
-              </button>
-            )}
-          </div>
+          <HeaderActions
+            isConnected={ws.isConnected}
+            deviceCount={ws.deviceCount}
+            devices={ws.devices}
+            myDeviceId={ws.myDeviceId}
+            onScratchpadToggle={clipboard.togglePanel}
+            snippetCount={clipboard.snippets.length}
+            themeMode={theme.mode}
+            isDark={theme.isDark}
+            onThemeToggle={handleThemeToggle}
+            passwordRequired={serverMode.passwordRequired}
+            onLogout={onLogout}
+          />
         </div>
       </header>
 
@@ -412,171 +148,26 @@ function App({ serverMode, onLogout }: AppProps) {
 
       <MountStatusOverlay status={isRemoteMount() ? mountStatus.status : MountStatus.ONLINE}>
       <main className="container mx-auto p-4 max-w-4xl">
-        {loading && (
+        {browse.loading && (
           <p className="text-center text-gray-500 dark:text-gray-400 py-8">Loading...</p>
         )}
 
-        {error !== null && (
-          <p className="text-center text-red-600 dark:text-red-400 py-4">{error}</p>
+        {browse.error !== null && (
+          <p className="text-center text-red-600 dark:text-red-400 py-4">{browse.error}</p>
         )}
 
-        {!loading && serverInfo !== null && currentPath === "" && (
+        {!browse.loading && serverInfo !== null && browse.currentPath === "" && (
           <div className="mb-8">
             <ServerInfoComponent info={serverInfo} />
           </div>
         )}
 
-        {!loading && (
-          <>
-            <Breadcrumbs currentPath={currentPath} onNavigate={navigateTo} />
-
-            <div className="mt-2">
-              <SearchBar
-                query={search.query}
-                onQueryChange={search.setQuery}
-                isSearching={search.isSearching}
-              />
-            </div>
-
-            <FilterChips
-              activeCategories={activeCategories}
-              onToggleCategory={toggleCategory}
-            />
-
-            {isReadOnly ? (
-              /* Read-only: show only download-zip batch toolbar when items selected */
-              selection.selectedCount > 0 ? (
-                <BatchToolbar
-                  selectedCount={selection.selectedCount}
-                  onDownloadZip={() => void handleBatchDownloadZip()}
-                  onDelete={handleBatchDeleteRequest}
-                  onClearSelection={selection.clearSelection}
-                  readOnly
-                />
-              ) : null
-            ) : (
-              /* Normal mode: full toolbar or batch toolbar */
-              selection.selectedCount > 0 ? (
-                <BatchToolbar
-                  selectedCount={selection.selectedCount}
-                  onDownloadZip={() => void handleBatchDownloadZip()}
-                  onDelete={handleBatchDeleteRequest}
-                  onClearSelection={selection.clearSelection}
-                />
-              ) : (
-                <Toolbar
-                  onUploadClick={upload.uploadFiles}
-                  onNewFolder={handleNewFolderRequest}
-                  onRequestFile={fileRequests.toggleForm}
-                  currentPath={currentPath}
-                  fileTtl={upload.fileTtl}
-                  onFileTtlChange={upload.setFileTtl}
-                />
-              )
-            )}
-
-            {!isReadOnly && fileRequests.showForm && (
-              <FileRequestForm
-                onSubmit={(desc) => void fileRequests.submitRequest(desc)}
-                onCancel={fileRequests.toggleForm}
-              />
-            )}
-
-            {!isReadOnly && fileRequests.requests.map((req) => (
-              <FileRequestBanner
-                key={req.id}
-                request={req}
-                isOwner={fileRequests.isMyRequest(req)}
-                fulfillProgress={fileRequests.fulfillProgress.get(req.id)}
-                onFulfill={(id, file) => void fileRequests.fulfillRequest(id, file)}
-                onDismiss={(id) => void fileRequests.dismissRequest(id)}
-                onDownload={handleDownload}
-              />
-            ))}
-
-            <FileList
-              files={sortedFiles}
-              currentPath={currentPath}
-              onNavigate={navigateTo}
-              selection={{
-                selectedNames: selection.selectedNames,
-                isAllSelected: selection.isAllSelected,
-                isIndeterminate: selection.isIndeterminate,
-                toggleSelect: selection.toggleSelect,
-                toggleSelectAll: selection.toggleSelectAll,
-              }}
-              onRename={handleRename}
-              onDelete={handleSingleDeleteRequest}
-              onDownload={handleDownload}
-              onPreview={handlePreview}
-              sortField={sort.field}
-              sortDirection={sort.direction}
-              onSort={sort.toggleSort}
-              readOnly={isReadOnly}
-            />
-          </>
-        )}
+        <FileBrowserSection readOnly={isReadOnly} fileRequests={fileRequests} />
       </main>
       </MountStatusOverlay>
 
-      {/* Upload panel -- floating bottom-right (hidden in read-only) */}
-      {!isReadOnly && (
-        <UploadPanel
-          uploads={upload.uploads}
-          collapsed={upload.collapsed}
-          onToggleCollapse={upload.toggleCollapsed}
-          onClearCompleted={upload.clearCompleted}
-          onRetry={upload.retryFailed}
-        />
-      )}
-
-      {/* Conflict dialog for uploads (hidden in read-only) */}
-      {!isReadOnly && upload.pendingConflict !== null && (
-        <ConflictDialog
-          fileName={upload.pendingConflict.file.name}
-          onResolve={upload.resolveConflict}
-        />
-      )}
-
-      {/* Delete confirmation modal (hidden in read-only) */}
-      {!isReadOnly && showDeleteConfirm && (
-        <ConfirmDialog
-          title="Confirm Delete"
-          message={getDeleteMessage()}
-          confirmLabel="Delete"
-          onConfirm={handleDeleteConfirm}
-          onCancel={handleDeleteCancel}
-        />
-      )}
-
-      {/* Create folder dialog (hidden in read-only) */}
-      {!isReadOnly && showCreateFolder && (
-        <CreateFolderDialog
-          onCreateFolder={(name) => void handleCreateFolder(name)}
-          onCancel={handleCreateFolderCancel}
-        />
-      )}
-
-      {/* Toast notifications */}
-      <ToastContainer
-        toasts={toast.visibleToasts}
-        overflowCount={toast.overflowCount}
-        onDismiss={toast.dismissToast}
-      />
-
-      {/* Devices panel */}
-      <DevicesPanel
-        isOpen={showDevices}
-        onClose={() => setShowDevices(false)}
-        devices={ws.devices}
-        myDeviceId={ws.myDeviceId}
-      />
-
-      {/* Share links panel */}
-      <ShareLinksPanel
-        isOpen={showShareLinks}
-        onClose={() => setShowShareLinks(false)}
-      />
+      {/* Upload panel + conflict dialog (hidden in read-only) */}
+      {!isReadOnly && <UploadWidgets />}
 
       {/* Scratchpad panel — read-only hides write actions */}
       <ScratchpadPanel
@@ -592,20 +183,33 @@ function App({ serverMode, onLogout }: AppProps) {
       />
 
       {/* File preview modal */}
-      {preview.previewFile !== null && (
+      {browse.preview.previewFile !== null && (
         <PreviewModal
-          file={preview.previewFile}
-          files={sortedFiles}
-          currentPath={currentPath}
-          textContent={preview.textContent}
-          isLoadingContent={preview.isLoadingContent}
-          contentError={preview.contentError}
+          file={browse.preview.previewFile}
+          files={browse.sortedFiles}
+          currentPath={browse.currentPath}
+          textContent={browse.preview.textContent}
+          isLoadingContent={browse.preview.isLoadingContent}
+          contentError={browse.preview.contentError}
           isDark={theme.isDark}
-          onClose={preview.closePreview}
-          onNavigateFile={preview.openPreview}
+          onClose={browse.preview.closePreview}
+          onNavigateFile={browse.preview.openPreview}
         />
       )}
     </div>
+  );
+}
+
+/** Composes the context providers around the app shell. */
+function App({ serverMode, onLogout }: AppProps): ReactElement {
+  return (
+    <NotificationsProvider>
+      <BrowseProvider>
+        <UploadProvider>
+          <AppContent serverMode={serverMode} onLogout={onLogout} />
+        </UploadProvider>
+      </BrowseProvider>
+    </NotificationsProvider>
   );
 }
 

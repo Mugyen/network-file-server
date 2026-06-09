@@ -14,7 +14,8 @@ export const WSMessageType = {
 
 export type WSMessageType = (typeof WSMessageType)[keyof typeof WSMessageType];
 
-/** Toast notification types matching server ToastType enum. */
+/** Toast notification types matching server ToastType enum.
+ * ERROR is client-only: used to surface failed local operations. */
 export const ToastType = {
   FILE_UPLOADED: "file_uploaded",
   FILE_EXPIRED: "file_expired",
@@ -22,6 +23,7 @@ export const ToastType = {
   DEVICE_DISCONNECTED: "device_disconnected",
   REQUEST_CREATED: "request_created",
   REQUEST_FULFILLED: "request_fulfilled",
+  ERROR: "error",
 } as const;
 
 export type ToastType = (typeof ToastType)[keyof typeof ToastType];
@@ -93,6 +95,7 @@ const ANIMALS = [
 ];
 
 const DEVICE_NAME_KEY = "wfs_device_name";
+const DEVICE_ID_KEY = "wfs_device_id";
 
 function generateDeviceName(): string {
   const adj = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)];
@@ -100,7 +103,11 @@ function generateDeviceName(): string {
   return `${adj} ${animal}`;
 }
 
-/** Get a stable device name from localStorage, generating one if absent. */
+/** Get a stable device name from localStorage, generating one if absent.
+ *
+ * The name is presentational only — never use it as an identity key.
+ * Identity lives in getDeviceId().
+ */
 export function getDeviceName(): string {
   const stored = localStorage.getItem(DEVICE_NAME_KEY);
   if (stored !== null) {
@@ -109,4 +116,19 @@ export function getDeviceName(): string {
   const name = generateDeviceName();
   localStorage.setItem(DEVICE_NAME_KEY, name);
   return name;
+}
+
+/** Get this browser's stable device ID, generating and persisting one if absent.
+ *
+ * Unlike the display name (which is cosmetic and may collide across devices),
+ * this UUID is the identity key for request ownership and targeted messages.
+ */
+export function getDeviceId(): string {
+  const stored = localStorage.getItem(DEVICE_ID_KEY);
+  if (stored !== null) {
+    return stored;
+  }
+  const id = crypto.randomUUID();
+  localStorage.setItem(DEVICE_ID_KEY, id);
+  return id;
 }

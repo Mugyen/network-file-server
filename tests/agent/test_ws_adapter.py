@@ -1,7 +1,7 @@
 """Tests for WebSocketClientAdapter — wraps websockets ClientConnection."""
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from tunnel.protocol import WebSocketProtocol
 

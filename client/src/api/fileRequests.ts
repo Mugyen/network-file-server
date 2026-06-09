@@ -1,12 +1,13 @@
 import type { FileRequest } from "../types/fileRequests.ts";
 import { ApiError } from "./client.ts";
+import { API_ROUTES } from "./endpoints.ts";
 import { getApiBase } from "../utils/remoteMount.ts";
 
 const API_BASE = getApiBase();
 
 /** Fetch all non-dismissed file requests. */
 export async function fetchFileRequests(): Promise<FileRequest[]> {
-  const response = await fetch(`${API_BASE}/file-requests/`);
+  const response = await fetch(`${API_BASE}${API_ROUTES.fileRequests}/`);
   if (!response.ok) {
     const body = await response.text();
     throw new ApiError(response.status, body);
@@ -21,7 +22,7 @@ export async function createFileRequest(
   deviceId: string,
   deviceName: string,
 ): Promise<FileRequest> {
-  const response = await fetch(`${API_BASE}/file-requests/`, {
+  const response = await fetch(`${API_BASE}${API_ROUTES.fileRequests}/`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -73,7 +74,7 @@ export function fulfillFileRequest(
       reject(new Error("Fulfill upload failed: network error"));
     });
 
-    xhr.open("POST", `${API_BASE}/file-requests/${requestId}/fulfill`);
+    xhr.open("POST", `${API_BASE}${API_ROUTES.fileRequests}/${requestId}/fulfill`);
     xhr.setRequestHeader("X-Device-Name", deviceName);
     xhr.send(formData);
   });
@@ -84,7 +85,7 @@ export async function dismissFileRequest(
   requestId: string,
   deviceId: string,
 ): Promise<{ status: string }> {
-  const response = await fetch(`${API_BASE}/file-requests/${requestId}`, {
+  const response = await fetch(`${API_BASE}${API_ROUTES.fileRequests}/${requestId}`, {
     method: "DELETE",
     headers: { "X-Device-Id": deviceId },
   });

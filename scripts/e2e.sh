@@ -10,6 +10,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 
+uv sync --group dev
+
 HOST=127.0.0.1
 PORT=8001
 BASE_URL="http://${HOST}:${PORT}"

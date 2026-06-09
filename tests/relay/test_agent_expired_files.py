@@ -2,7 +2,6 @@
 
 import time
 
-import aiosqlite
 import pytest
 
 from relay.app.services.file_ttl_db import FileTtlDb, set_file_ttl_db

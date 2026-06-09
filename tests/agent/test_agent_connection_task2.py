@@ -24,6 +24,7 @@ async def test_run_agent_loop_exits_cleanly_on_ttl_expiry(tmp_path: Path) -> Non
         password_hash: bytes | None,
         ttl_seconds: int | None,
         owner=None,
+        app_factory=None,
     ) -> str:
         nonlocal call_count
         call_count += 1
@@ -40,6 +41,7 @@ async def test_run_agent_loop_exits_cleanly_on_ttl_expiry(tmp_path: Path) -> Non
             password_hash=None,
             ttl_seconds=None,
             owner=None,
+            app_factory=lambda ctx: MagicMock(),
         )
 
     # Must exit after first call — no retry
@@ -61,6 +63,7 @@ async def test_run_agent_loop_still_retries_on_connection_error(tmp_path: Path) 
         password_hash: bytes | None,
         ttl_seconds: int | None,
         owner=None,
+        app_factory=None,
     ) -> str:
         nonlocal call_count
         call_count += 1
@@ -81,22 +84,24 @@ async def test_run_agent_loop_still_retries_on_connection_error(tmp_path: Path) 
             password_hash=None,
             ttl_seconds=None,
             owner=None,
+            app_factory=lambda ctx: MagicMock(),
         )
 
     assert call_count == 3
 
 
 @pytest.mark.asyncio
-async def test_connect_and_serve_sets_password_hash_in_config(tmp_path: Path) -> None:
-    """connect_and_serve passes password_hash to ServerConfig."""
-    import hashlib
+async def test_connect_and_serve_passes_context_to_app_factory(tmp_path: Path) -> None:
+    """connect_and_serve hands the app factory a MountAppContext carrying the
+    password hash, assigned mount code, folder, and relay URL."""
     from agent.connection import connect_and_serve
 
     assigned_code = "TESTCODE"
-    captured_config = {}
+    captured: dict = {}
 
-    def fake_set_server_config(config) -> None:
-        captured_config["config"] = config
+    def fake_app_factory(ctx) -> MagicMock:
+        captured["ctx"] = ctx
+        return MagicMock()
 
     mock_ws = MagicMock()
     mock_conn = MagicMock()
@@ -115,10 +120,6 @@ async def test_connect_and_serve_sets_password_hash_in_config(tmp_path: Path) ->
         patch("agent.connection.websockets_connect") as mock_connect,
         patch("agent.connection.WebSocketClientAdapter", return_value=MagicMock()),
         patch("agent.connection.TunnelConnection", return_value=mock_conn),
-        patch("agent.connection.set_server_config", side_effect=fake_set_server_config),
-        patch("agent.connection.set_token_service"),
-        patch("agent.connection.AuthTokenService"),
-        patch("agent.connection.create_app", return_value=MagicMock()),
         patch("agent.connection.print_mounted"),
         patch("agent.connection.print_connected_status"),
     ):
@@ -133,10 +134,36 @@ async def test_connect_and_serve_sets_password_hash_in_config(tmp_path: Path) ->
             password_hash=fake_hash,
             ttl_seconds=None,
             owner=None,
+            app_factory=fake_app_factory,
         )
 
-    assert captured_config["config"].password_hash == fake_hash
-    assert captured_config["config"].mount_code == assigned_code
+    ctx = captured["ctx"]
+    assert ctx.password_hash == fake_hash
+    assert ctx.mount_code == assigned_code
+    assert ctx.folder == tmp_path
+    assert ctx.relay_url == "https://relay.example.com"
+
+
+def test_build_mount_app_configures_server(tmp_path: Path) -> None:
+    """The CLI composition root's factory wires MountAppContext into the
+    server app's per-app config on app.state (the agent itself never
+    touches server state)."""
+    from agent.connection import MountAppContext
+    from server.app.cli import build_mount_app
+
+    ctx = MountAppContext(
+        folder=tmp_path,
+        password_hash=None,
+        mount_code="FACTORYCODE",
+        relay_url="https://relay.example.com",
+    )
+    app = build_mount_app(ctx)
+    assert app is not None
+
+    config = app.state.config
+    assert config.mount_code == "FACTORYCODE"
+    assert config.shared_folder == tmp_path
+    assert config.password_hash is None
 
 
 @pytest.mark.asyncio
@@ -171,10 +198,6 @@ async def test_connect_and_serve_ttl_raises_agent_expired_error(tmp_path: Path) 
         patch("agent.connection.websockets_connect") as mock_connect,
         patch("agent.connection.WebSocketClientAdapter", return_value=MagicMock()),
         patch("agent.connection.TunnelConnection", return_value=mock_conn),
-        patch("agent.connection.set_server_config"),
-        patch("agent.connection.set_token_service"),
-        patch("agent.connection.AuthTokenService"),
-        patch("agent.connection.create_app", return_value=MagicMock()),
         patch("agent.connection.print_mounted"),
         patch("agent.connection.print_connected_status"),
         patch("agent.connection._print_ttl_countdown", new_callable=AsyncMock),
@@ -191,4 +214,5 @@ async def test_connect_and_serve_ttl_raises_agent_expired_error(tmp_path: Path) 
                 password_hash=None,
                 ttl_seconds=0,  # expires immediately
                 owner=None,
+                app_factory=lambda ctx: MagicMock(),
             )

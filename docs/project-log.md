@@ -1,5 +1,9 @@
 # Project Log
 
+## 2026-06-08: Persistence overhaul to SQLite-backed server state
+
+Moved clipboard snippets, file requests, upload ownership tracking, and share-link persistence into `server_state.db` under `.wfs_data/`. Share secrets are now persisted too, so links survive restarts and the server no longer depends on the old JSON sidecar pattern for collaboration state. The remaining atomic JSON utility stays in place for legacy-compatible helpers, but the primary collaborative state now lives in SQLite.
+
 ## 2026-04-03: Phase 16 gap closure: Wire file TTL notifications
 
 Wired broadcast_fn into file TTL sweep (was None), bridged drop box WebSocket via ASGIWebSocketTransport (was closed immediately), added tunnel control handler for agent expired-files responses, and fixed stale config test assertion.
@@ -247,3 +251,63 @@ TunnelConnection._dispatch_frame is now async and awaits queue.put instead of pu
 ## 2026-05-19: Playwright auth e2e
 
 Added @playwright/test + client/playwright.config.ts + client/e2e/auth.spec.ts and scripts/e2e.sh, which boots a throwaway relay (temp DBs, RELAY_ADMIN_USERS=admin), seeds admin/alice/bob, brings up an open and an alice-owned restricted mount, then runs 5 specs: signup, login (+wrong password), open-mount guest access, restricted anonymous→/login?next= redirect, and restricted denial→/403 request→admin approval→access granted. Wired install_setup.sh (playwright install chromium), clean.sh, client/.gitignore, README. 5/5 green. Note: server-rendered forbidden.html does not link to the React /403 request-access UI — reachable only by direct navigation (UX gap, not a test failure).
+
+## 2026-06-09: Fable 5 codebase review
+
+Added docs/fable-5-codebase-review.md — full-codebase review (functionality/reusability map, strengths, weaknesses with file:line evidence) by Claude Fable 5. Top findings: ttl_warned never persisted (warnings re-fire), text-only WS bridge, close() missing from WebSocketProtocol, swallowed exceptions in tunnel glue, server⇄relay import cycle, blocking I/O in async handlers, no CI.
+
+## 2026-06-09: Fable 5 remediation plan
+
+Added docs/fable-5-remediation-plan.md — design doc addressing all 22 weaknesses from the Fable 5 review: per-item problem/why/solution/why entries (no code), an 8-phase plan of action (safety net → bugs → observability → concurrency → decoupling → DI → frontend → test rebalancing), dependency/risk register, per-phase verification, and an A1–G5 traceability table.
+
+## 2026-06-10: Remediation phase 1 — safety net
+
+Added .github/workflows/ci.yml (ruff + mypy + pytest backend job, tsc + vitest client job, manual-dispatch e2e job), [tool.ruff] + strict [tool.mypy] for tunnel/accounts/shared in pyproject, fixed all 94 ruff findings + 19 mypy findings (incl. adding close() to WebSocketProtocol), deleted dead root files (network_file_server.py, start_server.sh, main.py, requirements.txt, run.sh, run_relay.sh, run_mount_server.sh), extended scripts/test.sh with lint/typecheck/vitest, excluded e2e/ from vitest. Suite: 852 pytest + 11 vitest green.
+
+## 2026-06-10: Remediation phase 2 — correctness bugs A1–A4
+
+A1: ttl_warned now persisted via SqliteMountRegistry.mark_ttl_warned (re-registration resets it). A2: WS bridge carries binary+text via new tunnel/ws_payload codec (1-byte kind marker), applied to agent proxy, relay mount proxy, and dropbox bridge. A3: WebSocketProtocol gained close(); dead get_event_loop removed (done in phase 1's mypy pass). A4: stable UUID device identity (getDeviceId) separate from cosmetic display name — file-request ownership and /ws connection keying use it; multi-tab eviction guard added. Suite: 869 pytest + 17 vitest green.
+
+## 2026-06-10: Remediation phase 3 — observability
+
+Eliminated all silent exception swallows in tunnel glue: agent/proxy.py + mount_proxy.py WS bridges now log task errors (debug for expected disconnect races, exception for unexpected), agent_ws handshake failures log warnings with client IP, server create_app config swallows log warnings, websocket snippet_update rejections log warnings, mark_offline/FileTtlDb no-ops log debug, tunnel close teardown logs debug. Client: useClipboard mutations surface failures via new ERROR toast type (with optimistic-update rollback), background loads + search fallback log console.error. Suite: 870 pytest + 17 vitest green.
+
+## 2026-06-10: Remediation phase 4 — concurrency & performance
+
+D1: get_files list_directory + relay user_storage (list/delete/quota-walk/rollback) offloaded via asyncio.to_thread (sync `def` routes already threadpooled — annotated search route to prevent regressions). D2: WAL journal mode for relay registry + accounts store (matching server store); FileTtlDb gained create()/close() with its own WAL connection instead of sharing the registry's. G4: AccountStore.get_users_by_ids batch lookup kills access-request N+1. G5: ShareLinkService._active_links now lock-guarded (RLock, matching ServerStateStore). New tests: batch lookup (6), WAL/own-connection (3), event-loop-liveness smoke. Suite: 880 pytest + 17 vitest green.
+
+## 2026-06-10: Remediation phase 5 — decoupling
+
+C1: qr_service/network_service moved to shared/{qr,network}.py (agent/display.py no longer imports server). C2: agent gained MountAppContext + AppFactory — connect_and_serve/run_agent_loop/run_mount take an injected ASGI app factory; server/app/cli.py build_mount_app is the composition root (agent has zero server imports). C3: server owns FileTtlProvider protocol (server/app/services/file_ttl_provider.py); relay injects FileTtlDb at lifespan — server→relay import deleted, cycle broken. C4: server/__init__.py declares the public interface (create_app lazy via PEP 562); relay imports only `from server import ...`. New tests/test_import_boundaries.py enforces all directions via AST scan. Suite: 886 pytest + 17 vitest green.
+
+## 2026-06-10: tests/ migrated to per-app DI
+
+tests/{relay/test_dropbox.py,relay/test_phase4_concurrency.py,agent/test_agent_connection_task2.py} migrated off removed globals (set_server_config/get_server_config/set_file_ttl_provider) to create_app(config) + app.state injection (dropbox TTL provider via get_dropbox_app().state.file_ttl_provider). 522/523 green; 1 failure is a pre-existing production bug in server/app/routers/server_info.py (stale trusted_role/trusted_user call signature).
+
+## 2026-06-10: server/tests migrated to per-app DI
+
+server/tests/* (13 files incl. conftest) migrated off removed singletons (set_server_config/set_token_service/set_share_service/module-level manager/lazy service getters) to create_app(config) + app.state; share expiry tests now use the ShareLinkService now_fn clock seam instead of mutating _active_links. 352/364 green; the 12 failures are all the known production bug in server/app/routers/server_info.py (stale one-arg trusted_role/trusted_user calls).
+
+## 2026-06-10: Remediation phase 6 — dependency injection
+
+Retired the server's module-level singletons: create_app(config) now required-arg; config, token/share/clipboard/file-request services + ConnectionManager + file_ttl_provider all live on app.state; routers consume via server/app/dependencies.py Depends accessors; relay_identity/mode_guard/AuthMiddleware take config explicitly; removed import-time `app = create_app()` (CLI passes the app object to uvicorn); dropbox + agent factory build apps without touching globals; ShareLinkService.create_link returns the full record + now_fn clock seam (tests no longer poke _active_links). Sqlite store keyed-cache and relay lifespan singletons retained by design (single relay per process). New server/tests/test_multi_instance.py pins two-apps-one-process isolation + DI override seam. Suite: 891 pytest + 17 vitest + e2e 5/5 green.
+
+## 2026-06-10: Client hardening — WS guards, error boundaries, useAdmin
+
+Added src/utils/wsGuards.ts (hand-rolled runtime guards for all consumed WS payloads, applied in useWebSocket/useClipboard/useFileRequests with log-and-skip on malformed data), src/components/ErrorBoundary.tsx wrapping every pickRoot() target in main.tsx, and src/hooks/useAdmin.ts extracting AdminDashboard data/mutations/guarded-error state (refresh failures now surface as the notice). 60 new vitest tests; suite 77/77 green.
+
+## 2026-06-10: Client refactor — App.tsx god component split into contexts
+
+Split App.tsx (603 -> 216 lines) along hook boundaries into src/contexts/ NotificationsProvider (useToast + owns ToastContainer), BrowseProvider (listing/path/search/sort/filter/selection/preview + file-op handlers), and UploadProvider (useUpload + drag-drop, nested in Browse); dialog state moved down into new FileBrowserSection/HeaderActions/UploadWidgets components, and the WS toast handler now uses the isToastPayload runtime guard. 12 new vitest tests (consumer hooks throw outside providers + slice behavior); suite 89 vitest + 9 Playwright green, behavior unchanged.
+
+## 2026-06-10: Client lint clean — eslint gate re-enabled
+
+Fixed all 12 remaining eslint findings (react-hooks compiler rules: hoisted render-created icon components, converted setState-in-effect to adjust-state-during-render/derived-initial-state/promise continuations, connectRef for WS reconnect, fileTtl dep, ref-snapshot cleanup, removed unused Toolbar prop, entry-module react-refresh override) and re-enabled `npm run lint` in CI and scripts/test.sh. Gates green: lint 0 findings, tsc, 89 vitest, 9 Playwright.
+
+## 2026-06-10: Remediation phase 7 — frontend structure & trust boundaries
+
+F4: apiDeleteNoBody added; shares/clipboard raw-fetch workarounds removed. F5: cycleThemeMode deduped into useTheme; UploadTTL const object (Toolbar + useUpload typed); serverMode\! replaced with explicit narrowing; useAdmin hook extracted from AdminDashboard. F2: hand-rolled WS type guards (utils/wsGuards.ts, 47 tests) applied in useWebSocket/useClipboard/useFileRequests + App toast handler. F3: ErrorBoundary per pickRoot target. F1: App.tsx 603→216 lines via NotificationsProvider/BrowseProvider/UploadProvider + FileBrowserSection/HeaderActions/UploadWidgets; dialog state moved down. All 12 eslint findings fixed (incl. latent stale-TTL upload bug); lint re-enabled in CI + scripts/test.sh. New e2e/core-flows.spec.ts (browse/upload/preview/folders through real tunnel). Client: 89 vitest + 9 Playwright green.
+
+## 2026-06-10: Remediation phase 8 — test-coverage rebalancing
+
+Added tests/integration/test_full_path.py — real relay (uvicorn) + real agent over a real WebSocket via build_mount_app, exercising browse/upload/download/WS-bridging end to end (module-scoped stack; teardown bounds + straggler sweep). Added tests/tunnel/test_stream_iter.py — read_stream_iter drain-after-close/cancellation/interleaving + randomized framing round-trips and corruption rejection (8 tests). Production fix surfaced by the integration work: agent receive loops now cancel in-flight handler tasks when shut down by cancellation (previously could hang agent shutdown). Client units (89) and core-flow Playwright specs were delivered in phase 7. Final: 902 pytest + 89 vitest + 9 Playwright, ruff/mypy/eslint/tsc clean.

@@ -9,7 +9,7 @@ from http.cookies import SimpleCookie
 from typing import Any, Callable
 
 from server.app.services.auth_service import AuthTokenService
-from server.app.services.relay_identity import HEADER_AUTH_BYPASS, is_relay_served
+from server.app.services.relay_identity import HEADER_AUTH_BYPASS
 
 # Type aliases for ASGI
 Scope = dict[str, Any]
@@ -29,9 +29,12 @@ class AuthMiddleware:
     reliably reject WebSocket connections before upgrade.
     """
 
-    def __init__(self, app: ASGIApp, token_service: AuthTokenService) -> None:
+    def __init__(self, app: ASGIApp, token_service: AuthTokenService, relay_served: bool) -> None:
         self._app = app
         self._token_service = token_service
+        # Whether X-WFS-* bypass headers are trustworthy (relay strips and
+        # re-injects them only when this server is mounted via the relay).
+        self._relay_served = relay_served
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in ("http",):
@@ -61,7 +64,7 @@ class AuthMiddleware:
         bypass = headers.get(
             HEADER_AUTH_BYPASS.encode("latin-1"), b""
         ).decode("latin-1")
-        if bypass == "1" and is_relay_served():
+        if bypass == "1" and self._relay_served:
             await self._app(scope, receive, send)
             return
 

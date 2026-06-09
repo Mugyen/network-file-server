@@ -1,11 +1,8 @@
 """Tests for agent display functions."""
 
-import sys
-from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
 from agent.display import _resolve_lan_url
 
@@ -168,7 +165,7 @@ def test_print_request_line_format(capsys) -> None:
     from agent.display import print_request_line
     print_request_line(method="POST", path="/upload", status=201)
     captured = capsys.readouterr()
-    lines = [l for l in captured.out.splitlines() if l.strip()]
+    lines = [line for line in captured.out.splitlines() if line.strip()]
     assert len(lines) == 1
 
 

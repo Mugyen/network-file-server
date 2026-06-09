@@ -1,13 +1,15 @@
 """Tests for the auth service: password hashing, verification, and token management."""
 
+from pathlib import Path
+
 import bcrypt
 import pytest
 
+from server.app.config import ServerConfig, create_default_config
+from server.app.main import create_app
 from server.app.services.auth_service import (
     AuthTokenService,
-    get_token_service,
     hash_password,
-    set_token_service,
     verify_password,
 )
 
@@ -86,23 +88,47 @@ class TestAuthTokenService:
         assert service_b.validate_token(token_a) is False
 
 
-class TestTokenServiceGlobalAccess:
-    """Tests for module-level get/set token service functions."""
+class TestTokenServiceAppWiring:
+    """Tests for create_app wiring AuthTokenService onto app.state."""
 
-    def test_get_before_set_raises_runtime_error(self) -> None:
-        # Reset the module state
-        set_token_service.__module__  # ensure import
-        import server.app.services.auth_service as mod
+    def test_app_without_password_has_no_token_service(self, tmp_path: Path) -> None:
+        shared = tmp_path / "shared"
+        shared.mkdir()
+        app = create_app(create_default_config(shared_folder=shared, port=8000))
+        assert app.state.token_service is None
 
-        original = mod._token_service
-        mod._token_service = None
-        try:
-            with pytest.raises(RuntimeError):
-                get_token_service()
-        finally:
-            mod._token_service = original
+    def test_app_with_password_gets_working_token_service(self, tmp_path: Path) -> None:
+        shared = tmp_path / "shared"
+        shared.mkdir()
+        config = ServerConfig(
+            shared_folder=shared,
+            port=8000,
+            password_hash=hash_password("test-password-123"),
+            read_only=False,
+            receive=False,
+            mount_code=None,
+            relay_url=None,
+        )
+        app = create_app(config)
+        token_service = app.state.token_service
+        assert isinstance(token_service, AuthTokenService)
+        token = token_service.create_token()
+        assert token_service.validate_token(token) is True
 
-    def test_set_then_get_returns_same_instance(self) -> None:
-        service = AuthTokenService("test-key-for-global")
-        set_token_service(service)
-        assert get_token_service() is service
+    def test_each_app_gets_independent_token_service(self, tmp_path: Path) -> None:
+        """Tokens minted by one app instance are rejected by another (fresh secret)."""
+        shared = tmp_path / "shared"
+        shared.mkdir()
+        config = ServerConfig(
+            shared_folder=shared,
+            port=8000,
+            password_hash=hash_password("test-password-123"),
+            read_only=False,
+            receive=False,
+            mount_code=None,
+            relay_url=None,
+        )
+        app_a = create_app(config)
+        app_b = create_app(config)
+        token_a = app_a.state.token_service.create_token()
+        assert app_b.state.token_service.validate_token(token_a) is False

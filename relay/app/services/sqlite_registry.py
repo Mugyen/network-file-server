@@ -133,7 +133,10 @@ class SqliteMountRegistry:
         is_new_db = db_path == ":memory:" or not Path(db_path).exists()
 
         db = await aiosqlite.connect(db_path)
-        await db.execute("PRAGMA journal_mode=DELETE")
+        # WAL: registrations, TTL sweeps, and access-request writes run
+        # concurrently — rollback-journal mode serializes them behind an
+        # exclusive lock. (Matches the server's ServerStateStore.)
+        await db.execute("PRAGMA journal_mode=WAL")
         await db.execute(_CREATE_TABLE_SQL)
         await db.execute(_CREATE_IP_INDEX_SQL)
         await db.execute(_CREATE_STATUS_INDEX_SQL)
@@ -286,6 +289,24 @@ class SqliteMountRegistry:
         )
         await self._db.commit()
         self._connections.pop(code, None)
+
+    async def mark_ttl_warned(self, code: str) -> None:
+        """Persist that a TTL warning was sent for this mount.
+
+        The TTL sweep reads mounts fresh from SQLite each iteration, so the
+        warned flag must be persisted — otherwise every sweep re-warns every
+        mount inside the warning window. register() resets the flag to 0, so
+        a reconnecting mount earns a fresh warning for its new TTL.
+
+        Raises:
+            MountNotFoundError: If code does not exist.
+        """
+        cursor = await self._db.execute(
+            "UPDATE mounts SET ttl_warned = 1 WHERE code = ?", (code,)
+        )
+        if cursor.rowcount == 0:
+            raise MountNotFoundError(code)
+        await self._db.commit()
 
     async def has_mount(self, code: str) -> bool:
         """Return True if a record exists for the given code, regardless of status."""

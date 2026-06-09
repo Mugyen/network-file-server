@@ -10,13 +10,10 @@ import pytest
 from httpx import AsyncClient
 from httpx_ws import aconnect_ws
 from httpx_ws.transport import ASGIWebSocketTransport
-from starlette.testclient import TestClient
 
-from relay.app.config import set_config
 from relay.app.main import create_relay_app
 from relay.app.rate_limit import get_client_ip
-from relay.app.services.mount_registry import get_registry, set_registry
-from relay.app.services.sqlite_registry import SqliteMountRegistry
+from relay.app.services.mount_registry import get_registry
 from tests.relay.conftest import MockTunnelConnection, _setup_in_memory_registry
 
 
@@ -61,7 +58,6 @@ async def _register_mock_connection(code: str) -> MockTunnelConnection:
 def test_get_client_ip_from_x_forwarded_for() -> None:
     """get_client_ip extracts the first IP from X-Forwarded-For header."""
     from starlette.requests import Request
-    from starlette.datastructures import Headers
 
     scope = {
         "type": "http",

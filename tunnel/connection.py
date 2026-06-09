@@ -2,9 +2,10 @@
 
 import asyncio
 import json
+import logging
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Callable, Coroutine
+from typing import Any, AsyncIterator, Callable, Coroutine
 
 from tunnel.constants import MAX_STREAMS, QUEUE_DEPTH
 from tunnel.enums import FrameType
@@ -16,6 +17,8 @@ from tunnel.exceptions import (
 )
 from tunnel.frames import deserialize_frame, serialize_frame
 from tunnel.protocol import WebSocketProtocol
+
+logger = logging.getLogger("tunnel.connection")
 
 
 @dataclass
@@ -51,10 +54,10 @@ class TunnelConnection:
         """
         self._ws = ws
         self._streams: dict[uuid.UUID, StreamState] = {}
-        self._heartbeat_task: asyncio.Task | None = None
+        self._heartbeat_task: asyncio.Task[None] | None = None
         self._pong_event: asyncio.Event = asyncio.Event()
         self._closed: bool = False
-        self._control_handler: Callable[[dict], Coroutine[Any, Any, None]] | None = None
+        self._control_handler: Callable[[dict[str, Any]], Coroutine[Any, Any, None]] | None = None
 
     @property
     def is_closed(self) -> bool:
@@ -180,7 +183,7 @@ class TunnelConnection:
         frame = serialize_frame(FrameType.DATA, request_id, payload)
         await self._ws.send_bytes(frame)
 
-    async def send_open(self, request_id: uuid.UUID, metadata: dict) -> None:
+    async def send_open(self, request_id: uuid.UUID, metadata: dict[str, Any]) -> None:
         """Serialize and send an OPEN binary frame with JSON metadata payload.
 
         Args:
@@ -209,7 +212,7 @@ class TunnelConnection:
         frame = serialize_frame(FrameType.CANCEL, request_id, b"")
         await self._ws.send_bytes(frame)
 
-    async def send_ws_open(self, ws_id: uuid.UUID, metadata: dict) -> None:
+    async def send_ws_open(self, ws_id: uuid.UUID, metadata: dict[str, Any]) -> None:
         """Serialize and send a WS_OPEN binary frame with JSON metadata payload.
 
         Args:
@@ -243,7 +246,7 @@ class TunnelConnection:
     # Control messages — JSON text frames
     # ------------------------------------------------------------------
 
-    async def send_control(self, message: dict) -> None:
+    async def send_control(self, message: dict[str, Any]) -> None:
         """Validate and send a JSON control message as a text frame.
 
         Args:
@@ -258,7 +261,7 @@ class TunnelConnection:
             )
         await self._ws.send_text(json.dumps(message))
 
-    async def receive_control(self) -> dict:
+    async def receive_control(self) -> dict[str, Any]:
         """Receive a JSON control text frame and validate it has a 'type' key.
 
         Returns:
@@ -268,14 +271,14 @@ class TunnelConnection:
             TunnelError: When received JSON has no "type" key.
         """
         text = await self._ws.receive_text()
-        message: dict = json.loads(text)
+        message: dict[str, Any] = json.loads(text)
         if "type" not in message:
             raise TunnelError(
                 f"Received control message has no 'type' key, got keys: {list(message.keys())}"
             )
         return message
 
-    def set_control_handler(self, handler: Callable[[dict], Coroutine[Any, Any, None]]) -> None:
+    def set_control_handler(self, handler: Callable[[dict[str, Any]], Coroutine[Any, Any, None]]) -> None:
         """Register a callback for application-specific control messages.
 
         Called for any text frame message type not handled by the tunnel itself
@@ -304,11 +307,15 @@ class TunnelConnection:
             frame_dict = await self._ws.receive()
             if "bytes" in frame_dict:
                 raw = frame_dict["bytes"]
+                if not isinstance(raw, bytes):
+                    raise TunnelError(f"adapter returned non-bytes under 'bytes' key: {type(raw)!r}")
                 frame_type, request_id, payload = deserialize_frame(raw)
                 await self._dispatch_frame(frame_type, request_id, payload)
             elif "text" in frame_dict:
                 text = frame_dict["text"]
-                message: dict = json.loads(text)
+                if not isinstance(text, str):
+                    raise TunnelError(f"adapter returned non-str under 'text' key: {type(text)!r}")
+                message: dict[str, Any] = json.loads(text)
                 if message.get("type") == "pong":
                     self.handle_pong()
                 elif message.get("type") == "ping":
@@ -412,7 +419,7 @@ class TunnelConnection:
 
     async def read_stream_iter(
         self, request_id: uuid.UUID
-    ):
+    ) -> AsyncIterator[bytes]:
         """Async generator that yields frames from a stream until it is closed.
 
         Uses asyncio.wait on queue.get() and stream.closed.wait() so the generator
@@ -428,7 +435,6 @@ class TunnelConnection:
             StreamNotFoundError: When request_id has no registered stream.
         """
         state = self.get_stream(request_id)
-        loop = asyncio.get_event_loop()
 
         while True:
             get_task = asyncio.ensure_future(state.queue.get())
@@ -479,5 +485,6 @@ class TunnelConnection:
             self._heartbeat_task = None
         try:
             await self._ws.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            # The peer may have closed first; surface at debug for diagnosis.
+            logger.debug("WebSocket close during teardown failed: %r", exc)

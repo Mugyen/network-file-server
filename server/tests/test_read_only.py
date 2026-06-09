@@ -5,7 +5,6 @@ import io
 import pytest
 from httpx import AsyncClient
 from starlette.testclient import TestClient
-from starlette.websockets import WebSocketDisconnect
 
 
 @pytest.mark.anyio

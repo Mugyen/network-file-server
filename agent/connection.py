@@ -9,8 +9,9 @@ import functools
 import json
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 import httpx
 from httpx import ASGITransport
@@ -19,20 +20,36 @@ from websockets.exceptions import ConnectionClosed
 
 from accounts import AccessMode
 from agent.auth import AgentOwner, fetch_agent_token
-from agent.backoff import compute_backoff
-from agent.display import print_connected_status, print_mounted, print_reconnect_status
 from agent.exceptions import AgentAuthError, AgentExpiredError
 from agent.proxy import handle_open_frame, handle_ws_open_frame
 from agent.ws_adapter import WebSocketClientAdapter
-from server.app.config import ServerConfig, set_server_config
-from server.app.main import create_app
-from server.app.services.auth_service import AuthTokenService, set_token_service
+from shared.backoff import compute_backoff
+from agent.display import print_connected_status, print_mounted, print_reconnect_status
 from tunnel.connection import TunnelConnection
 from tunnel.enums import FrameType
 from tunnel.frames import deserialize_frame
 
 # Alias for patching in tests
 asyncio_sleep = asyncio.sleep
+
+
+@dataclass(frozen=True)
+class MountAppContext:
+    """Everything an app factory needs to build the local ASGI app for a mount.
+
+    The agent knows nothing about the application it tunnels — the CLI glue
+    layer supplies a factory that turns this context into an ASGI app. This
+    keeps the agent package free of server imports (it tunnels anything
+    that speaks ASGI).
+    """
+
+    folder: Path
+    password_hash: bytes | None
+    mount_code: str
+    relay_url: str
+
+
+AppFactory = Callable[[MountAppContext], Any]
 
 
 async def _agent_receive_loop(
@@ -79,8 +96,14 @@ async def _agent_receive_loop(
                 elif message.get("type") == "ping":
                     await conn.send_control({"type": "pong"})
     finally:
-        # Wait for in-flight tasks to complete before returning
+        # Drain in-flight handler tasks before returning. On cancellation
+        # (Ctrl+C / TTL teardown) cancel them first — a handler blocked on a
+        # body frame that will never arrive would otherwise hang the agent's
+        # shutdown forever.
         if pending_tasks:
+            if asyncio.current_task() is not None and asyncio.current_task().cancelling():
+                for task in pending_tasks:
+                    task.cancel()
             await asyncio.gather(*pending_tasks, return_exceptions=True)
 
 
@@ -137,8 +160,14 @@ async def _agent_receive_loop_with_metadata(
                 elif message.get("type") == "expired_files":
                     await _handle_expired_files(conn, message)
     finally:
-        # Wait for in-flight tasks to complete before returning
+        # Drain in-flight handler tasks before returning. On cancellation
+        # (Ctrl+C / TTL teardown) cancel them first — a handler blocked on a
+        # body frame that will never arrive would otherwise hang the agent's
+        # shutdown forever.
         if pending_tasks:
+            if asyncio.current_task() is not None and asyncio.current_task().cancelling():
+                for task in pending_tasks:
+                    task.cancel()
             await asyncio.gather(*pending_tasks, return_exceptions=True)
 
 
@@ -222,6 +251,7 @@ async def connect_and_serve(
     password_hash: bytes | None,
     ttl_seconds: int | None,
     owner: AgentOwner | None,
+    app_factory: AppFactory,
 ) -> str:
     """Connect to the relay WebSocket, register a mount, and serve requests.
 
@@ -240,6 +270,9 @@ async def connect_and_serve(
         preferred_code: Mount code to request on reconnect; None for first connect.
         password_hash:  bcrypt hash for protecting the remote mount; None for open access.
         ttl_seconds:    Auto-expire duration in seconds; None disables TTL.
+        app_factory:    Builds the local ASGI app from a MountAppContext once
+                        the mount code is assigned (dependency inversion — the
+                        agent has no knowledge of the server package).
 
     Returns:
         The assigned mount code (for use as preferred_code on next reconnect).
@@ -304,25 +337,16 @@ async def connect_and_serve(
         print_connected_status(reconnected=preferred_code is not None)
         print_mounted(relay_url, assigned_code, folder, name)
 
-        # Set up local ASGI app with mount_code and password_hash
-        import secrets as _secrets
-        config = ServerConfig(
-            shared_folder=folder,
-            port=0,
-            password_hash=password_hash,
-            read_only=False,
-            receive=False,
-            mount_code=assigned_code,
-            relay_url=relay_url,
+        # Build the local ASGI app via the injected factory — configuration
+        # (config globals, auth token service) is the factory's concern.
+        app = app_factory(
+            MountAppContext(
+                folder=folder,
+                password_hash=password_hash,
+                mount_code=assigned_code,
+                relay_url=relay_url,
+            )
         )
-        set_server_config(config)
-
-        # Set up AuthTokenService when password protection is enabled
-        if password_hash is not None:
-            secret_key = _secrets.token_hex(32)
-            set_token_service(AuthTokenService(secret_key))
-
-        app = create_app()
         transport = ASGITransport(app=app)
         asgi_client = httpx.AsyncClient(transport=transport, base_url="http://local")
 
@@ -364,6 +388,7 @@ async def run_agent_loop(
     password_hash: bytes | None,
     ttl_seconds: int | None,
     owner: AgentOwner | None,
+    app_factory: AppFactory,
 ) -> None:
     """Outer reconnect loop for the agent — retries with exponential backoff on disconnect.
 
@@ -383,6 +408,7 @@ async def run_agent_loop(
         name:          Human-readable name for the mount.
         password_hash: bcrypt hash for protecting the mount; None for open access.
         ttl_seconds:   Auto-expire duration in seconds; None disables TTL.
+        app_factory:   Builds the local ASGI app once a mount code is assigned.
     """
     attempt = 0
     last_code: str | None = None
@@ -390,7 +416,14 @@ async def run_agent_loop(
     while True:
         try:
             last_code = await connect_and_serve(
-                relay_url, folder, name, last_code, password_hash, ttl_seconds, owner
+                relay_url,
+                folder,
+                name,
+                last_code,
+                password_hash,
+                ttl_seconds,
+                owner,
+                app_factory,
             )
             # Clean disconnect — reset attempt counter
             attempt = 0

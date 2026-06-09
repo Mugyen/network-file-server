@@ -1,12 +1,11 @@
 """Tests for agent CLI argument parsing and server/app/cli.py mount subcommand."""
 
-import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from server.app.cli import _build_parser, _parse_args
+from server.app.cli import _parse_args
 
 
 class TestMountSubcommand:
@@ -82,7 +81,7 @@ class TestRunMount:
         )
 
         with pytest.raises(SystemExit):
-            run_mount(args)
+            run_mount(args, lambda ctx: MagicMock())
 
     def test_run_mount_validates_folder_is_directory(self, tmp_path: Path) -> None:
         """run_mount raises SystemExit when folder path is a file."""
@@ -101,7 +100,7 @@ class TestRunMount:
         )
 
         with pytest.raises(SystemExit):
-            run_mount(args)
+            run_mount(args, lambda ctx: MagicMock())
 
     def test_run_mount_defaults_name_to_folder_basename(self, tmp_path: Path) -> None:
         """run_mount uses folder basename as name when --name is not provided."""
@@ -122,7 +121,7 @@ class TestRunMount:
             return None
 
         with patch("agent.cli.asyncio_run", side_effect=close_coro_and_return_none) as mock_run:
-            run_mount(args)
+            run_mount(args, lambda ctx: MagicMock())
 
         # asyncio.run was called once
         assert mock_run.call_count == 1
@@ -131,7 +130,6 @@ class TestRunMount:
         """run_mount calls asyncio_run with the result of run_agent_loop."""
         from agent.cli import run_mount
         import argparse
-        import asyncio
 
         args = argparse.Namespace(
             folder=str(tmp_path),
@@ -147,8 +145,7 @@ class TestRunMount:
             return None
 
         with patch("agent.cli.asyncio_run", side_effect=close_coro_and_return_none) as mock_run:
-            run_mount(args)
+            run_mount(args, lambda ctx: MagicMock())
             assert mock_run.called
 
 
-from unittest.mock import MagicMock

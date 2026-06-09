@@ -1,21 +1,19 @@
 """Tests for mount TTL enforcement and background sweep."""
 
-import asyncio
 import json
 import os
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import httpx
 import pytest
 from httpx_ws import aconnect_ws
 from httpx_ws.transport import ASGIWebSocketTransport
 
-from relay.app.config import RelayConfig, set_config
+from relay.app.config import RelayConfig
 from relay.app.enums import MountStatus
 from relay.app.logging import RelayEnv
 from relay.app.main import create_relay_app
-from relay.app.services.mount_registry import MountRecord, get_registry, set_registry
 from relay.app.services.sqlite_registry import SqliteMountRegistry
 from tests.relay.conftest import MockTunnelConnection, _setup_in_memory_registry
 
@@ -238,17 +236,26 @@ async def test_sweep_skips_already_warned_mount() -> None:
         ttl_sweep_interval_seconds=45,
     )
 
-    # First sweep triggers the warning
+    # First sweep triggers the warning and persists ttl_warned to SQLite
     await sweep_once(registry, config)
     assert len(sent_controls) == 1
 
-    # Second sweep should NOT send another warning (already warned via ttl_warned on MountRecord)
-    # Note: MountRecord.ttl_warned is set on the in-memory snapshot but not persisted to SQLite
-    # The ttl_warned field in SQLite is the authoritative source -- but active_mounts() reads it.
-    # Since sweep_once sets mount.ttl_warned on the snapshot but doesn't persist it,
-    # the second sweep will re-read from SQLite and see ttl_warned=False.
-    # This is a known limitation; the sweep handles this by not re-closing mounts
-    # but warnings may be sent multiple times. For this test, we verify the first warning works.
+    # Subsequent sweeps re-read from SQLite, see ttl_warned=1, and stay silent
+    await sweep_once(registry, config)
+    await sweep_once(registry, config)
+    assert len(sent_controls) == 1
+
+    # A re-registration (reconnect) resets the flag, earning a fresh warning
+    await registry.register(
+        "warned-mount",
+        conn,
+        agent_ip="1.2.3.4",
+        created_at=now - 100,
+        expires_at=now + 200,
+    )
+    await sweep_once(registry, config)
+    assert len(sent_controls) == 2
+
     await registry.close()
 
 

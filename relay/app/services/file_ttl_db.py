@@ -1,8 +1,10 @@
 """File TTL database operations -- tracks per-file expiry metadata in SQLite.
 
-Uses the same aiosqlite connection as the mount registry to avoid
-multiple database handles. Records are created on upload and deleted
-by the background sweep when files expire.
+Holds its OWN aiosqlite connection (see create()) so TTL traffic does not
+serialize behind mount-registry operations on a shared handle. The file_ttl
+table has no joins against registry tables, so a separate connection is
+safe. Records are created on upload and deleted by the background sweep
+when files expire.
 """
 
 import time
@@ -30,6 +32,25 @@ class FileTtlDb:
 
     def __init__(self, db: aiosqlite.Connection) -> None:
         self._db = db
+
+    @classmethod
+    async def create(cls, db_path: str) -> "FileTtlDb":
+        """Open a dedicated WAL connection, initialise the table, return the db.
+
+        Production path — gives TTL traffic its own connection instead of
+        queueing behind the registry's.
+        """
+        if not isinstance(db_path, str) or len(db_path) == 0:
+            raise ValueError("db_path must be a non-empty string")
+        db = await aiosqlite.connect(db_path)
+        await db.execute("PRAGMA journal_mode=WAL")
+        instance = cls(db)
+        await instance.init_table()
+        return instance
+
+    async def close(self) -> None:
+        """Close the dedicated connection opened by create()."""
+        await self._db.close()
 
     async def init_table(self) -> None:
         """Create the file_ttl table and index if they don't exist."""

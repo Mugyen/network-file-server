@@ -5,40 +5,45 @@ share link recipients to view/download shared files without the React SPA.
 """
 
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from pathlib import Path
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.templating import Jinja2Templates
 from itsdangerous import BadSignature
 
-from server.app.config import get_server_config
-from server.app.models.enums import ShareTTL
+from server.app.config import ServerConfig
+from server.app.dependencies import get_config, get_share_service
 from server.app.models.schemas import CreateShareRequest, ShareLinkInfo
 from server.app.services.file_service import format_file_size, resolve_safe_path
 from server.app.services.share_service import (
     ShareLinkExpiredError,
     ShareLinkNotFoundError,
     ShareLinkRevokedError,
-    get_share_service,
+    ShareLinkService,
 )
+from shared.paths import repo_root
 
 router = APIRouter()
 
-# Resolve templates directory relative to project root
-_TEMPLATES_DIR = Path(__file__).resolve().parent.parent.parent.parent / "templates"
+# Resolve templates directory relative to repository root
+_TEMPLATES_DIR = repo_root() / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 
 
 @router.post("/api/shares", status_code=201, response_model=ShareLinkInfo)
-async def create_share_link(request: Request, body: CreateShareRequest) -> ShareLinkInfo:
+async def create_share_link(
+    request: Request,
+    body: CreateShareRequest,
+    config: ServerConfig = Depends(get_config),
+    service: ShareLinkService = Depends(get_share_service),
+) -> ShareLinkInfo:
     """Create a new share link for a file.
 
     Validates that the file exists in the shared folder before creating the link.
     Returns 404 if the file does not exist.
     """
-    config = get_server_config()
     try:
         resolve_safe_path(config.shared_folder, body.file_path)
     except FileNotFoundError:
@@ -48,17 +53,15 @@ async def create_share_link(request: Request, body: CreateShareRequest) -> Share
             media_type="application/json",
         )
 
-    service = get_share_service()
-    token = service.create_link(body.file_path, body.ttl)
-
-    record = service._active_links[token]
+    # create_link returns the full record — no reaching into internals.
+    record = service.create_link(body.file_path, body.ttl)
     file_name = Path(body.file_path).name
     created_at = record.created_at.isoformat()
     expires_at = (record.created_at + timedelta(seconds=record.ttl_seconds)).isoformat()
-    share_url = f"{request.base_url}share/{token}"
+    share_url = f"{request.base_url}share/{record.token}"
 
     return ShareLinkInfo(
-        token=token,
+        token=record.token,
         file_path=body.file_path,
         file_name=file_name,
         created_at=created_at,
@@ -69,9 +72,11 @@ async def create_share_link(request: Request, body: CreateShareRequest) -> Share
 
 
 @router.get("/api/shares", response_model=list[ShareLinkInfo])
-async def list_share_links(request: Request) -> list[ShareLinkInfo]:
+async def list_share_links(
+    request: Request,
+    service: ShareLinkService = Depends(get_share_service),
+) -> list[ShareLinkInfo]:
     """List all active (non-expired) share links."""
-    service = get_share_service()
     records = service.list_active_links()
     result: list[ShareLinkInfo] = []
     for record in records:
@@ -92,9 +97,11 @@ async def list_share_links(request: Request) -> list[ShareLinkInfo]:
 
 
 @router.delete("/api/shares/{token}", status_code=204)
-async def revoke_share_link(token: str) -> Response:
+async def revoke_share_link(
+    token: str,
+    service: ShareLinkService = Depends(get_share_service),
+) -> Response:
     """Revoke a share link by token. Returns 404 if not found."""
-    service = get_share_service()
     try:
         service.revoke_link(token)
     except ShareLinkNotFoundError:
@@ -107,13 +114,17 @@ async def revoke_share_link(token: str) -> Response:
 
 
 @router.get("/share/{token}", response_class=HTMLResponse)
-async def share_page(request: Request, token: str) -> Response:
+async def share_page(
+    request: Request,
+    token: str,
+    config: ServerConfig = Depends(get_config),
+    service: ShareLinkService = Depends(get_share_service),
+) -> Response:
     """Render the share download page for a valid token.
 
     Shows expired page for expired/revoked tokens.
     Shows unavailable page if the file was deleted after link creation.
     """
-    service = get_share_service()
     try:
         file_path = service.validate_token(token)
     except (ShareLinkExpiredError, ShareLinkRevokedError):
@@ -121,7 +132,6 @@ async def share_page(request: Request, token: str) -> Response:
     except BadSignature:
         return templates.TemplateResponse(request, "share_expired.html")
 
-    config = get_server_config()
     try:
         resolved = resolve_safe_path(config.shared_folder, file_path)
     except FileNotFoundError:
@@ -138,12 +148,16 @@ async def share_page(request: Request, token: str) -> Response:
 
 
 @router.get("/share/{token}/download")
-async def share_download(request: Request, token: str) -> Response:
+async def share_download(
+    request: Request,
+    token: str,
+    config: ServerConfig = Depends(get_config),
+    service: ShareLinkService = Depends(get_share_service),
+) -> Response:
     """Serve the actual file for download via a share link token.
 
     Returns expired page for expired/revoked tokens.
     """
-    service = get_share_service()
     try:
         file_path = service.validate_token(token)
     except (ShareLinkExpiredError, ShareLinkRevokedError):
@@ -151,7 +165,6 @@ async def share_download(request: Request, token: str) -> Response:
     except BadSignature:
         return templates.TemplateResponse(request, "share_expired.html")
 
-    config = get_server_config()
     try:
         resolved = resolve_safe_path(config.shared_folder, file_path)
     except FileNotFoundError:

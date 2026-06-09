@@ -10,10 +10,9 @@ from urllib.parse import urlparse
 
 from fastapi import APIRouter, Request
 
-from server.app.config import get_server_config
 from server.app.models.schemas import ServerInfo
-from server.app.services.network_service import detect_all_lan_ips, detect_primary_lan_ip
-from server.app.services.qr_service import generate_svg_qr
+from shared.network import detect_all_lan_ips, detect_primary_lan_ip
+from shared.qr import generate_svg_qr
 from server.app.services.relay_identity import trusted_role, trusted_user
 
 logger = logging.getLogger(__name__)
@@ -54,12 +53,12 @@ def get_server_info(request: Request) -> ServerInfo:
     If network detection fails, returns ip="unknown", url="unknown",
     empty qr_svg, and empty all_ips list.
     """
-    config = get_server_config()
+    config = request.app.state.config
     port = config.port
 
-    role = trusted_role(request.headers)
+    role = trusted_role(config, request.headers)
     current_role = role.value if role is not None else None
-    current_user = trusted_user(request.headers)
+    current_user = trusted_user(config, request.headers)
     access_mode = (
         request.headers.get("x-wfs-access-mode")
         if current_user is not None or current_role is not None

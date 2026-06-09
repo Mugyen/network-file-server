@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useCallback } from "react";
 import type { FileEntry } from "../types/files.ts";
 import { FileCategory, getFileCategory } from "../types/fileCategories.ts";
+import { API_ROUTES } from "../api/endpoints.ts";
 import { getApiBase } from "../utils/remoteMount.ts";
 
 /** Maximum file size in bytes for text content preview (500KB). */
@@ -50,10 +51,17 @@ export function usePreview(currentPath: string): PreviewState {
     setIsLoadingContent(false);
   }, []);
 
-  // Close preview when navigating to a different directory
-  useEffect(() => {
-    closePreview();
-  }, [currentPath, closePreview]);
+  // Close preview when navigating to a different directory, using the
+  // adjust-state-during-render pattern instead of a setState-in-effect
+  // (https://react.dev/learn/you-might-not-need-an-effect).
+  const [prevPath, setPrevPath] = useState<string>(currentPath);
+  if (currentPath !== prevPath) {
+    setPrevPath(currentPath);
+    setPreviewFile(null);
+    setTextContent(null);
+    setContentError(null);
+    setIsLoadingContent(false);
+  }
 
   const openPreview = useCallback(
     (file: FileEntry): void => {
@@ -75,7 +83,7 @@ export function usePreview(currentPath: string): PreviewState {
       }
 
       const fullPath = buildFullPath(currentPath, file.name);
-      const url = `${getApiBase()}/files/preview?path=${encodeURIComponent(fullPath)}`;
+      const url = `${getApiBase()}${API_ROUTES.filesPreview}?path=${encodeURIComponent(fullPath)}`;
 
       setIsLoadingContent(true);
 

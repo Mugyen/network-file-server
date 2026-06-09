@@ -1,6 +1,7 @@
 import { useEffect, useCallback } from "react";
 import type { FileEntry } from "../types/files.ts";
 import { FileCategory, getFileCategory } from "../types/fileCategories.ts";
+import { API_ROUTES } from "../api/endpoints.ts";
 import { getApiBase } from "../utils/remoteMount.ts";
 import { X, ExternalLink, Download, Loader2 } from "lucide-react";
 import ImagePreview from "./preview/ImagePreview.tsx";
@@ -58,8 +59,8 @@ function PreviewModal({
 }: PreviewModalProps) {
   const fullPath = buildFullPath(currentPath, file.name);
   const apiBase = getApiBase();
-  const previewUrl = `${apiBase}/files/preview?path=${encodeURIComponent(fullPath)}`;
-  const downloadUrl = `${apiBase}/files/download?path=${encodeURIComponent(fullPath)}`;
+  const previewUrl = `${apiBase}${API_ROUTES.filesPreview}?path=${encodeURIComponent(fullPath)}`;
+  const downloadUrl = `${apiBase}${API_ROUTES.filesDownload}?path=${encodeURIComponent(fullPath)}`;
   const category = getFileCategory(file.name);
 
   // Close on Escape key
@@ -138,7 +139,7 @@ function PreviewModal({
         }
 
         const imageFullPath = buildFullPath(currentPath, file.name);
-        const imageDownloadUrl = `${apiBase}/files/download?path=${encodeURIComponent(imageFullPath)}`;
+        const imageDownloadUrl = `${apiBase}${API_ROUTES.filesDownload}?path=${encodeURIComponent(imageFullPath)}`;
 
         return (
           <ImagePreview

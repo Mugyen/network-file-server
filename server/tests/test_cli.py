@@ -128,4 +128,4 @@ class TestRunWithDefaults:
         params = list(sig.parameters.values())
         assert len(params) == 1
         assert params[0].name == "folder"
-        assert params[0].annotation == str
+        assert params[0].annotation is str

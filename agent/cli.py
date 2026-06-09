@@ -11,15 +11,16 @@ import sys
 from pathlib import Path
 
 from accounts import AccessMode
+from accounts.exceptions import WeakPasswordError
+from accounts.passwords import hash_password
 from agent.auth import AgentOwner, parse_allow_entry
-from agent.connection import run_agent_loop
-from server.app.services.auth_service import hash_password
+from agent.connection import AppFactory, run_agent_loop
 
 # Alias for patching in tests
 asyncio_run = asyncio.run
 
 
-def run_mount(args: argparse.Namespace) -> None:
+def run_mount(args: argparse.Namespace, app_factory: AppFactory) -> None:
     """Execute the mount subcommand — connect to relay and serve local folder.
 
     Resolves folder path, validates it exists and is a directory, optionally
@@ -33,6 +34,9 @@ def run_mount(args: argparse.Namespace) -> None:
               - name (str | None): Optional display name; defaults to folder basename.
               - password (str | None): Optional password to protect the mount.
               - ttl_seconds (int | None): Optional TTL in seconds for auto-expiry.
+        app_factory: Builds the local ASGI app for the mount (supplied by the
+              composition root, e.g. server/app/cli.py — the agent package
+              itself has no dependency on any specific app).
 
     Raises:
         SystemExit(1): If folder does not exist, is not a directory, or password
@@ -54,7 +58,11 @@ def run_mount(args: argparse.Namespace) -> None:
         if len(args.password.encode("utf-8")) > 72:
             print("Error: Password must not exceed 72 bytes (bcrypt limit)")
             sys.exit(1)
-        password_hash = hash_password(args.password)
+        try:
+            password_hash = hash_password(args.password)
+        except WeakPasswordError as exc:
+            print(f"Error: {exc}")
+            sys.exit(1)
 
     ttl_seconds: int | None = args.ttl_seconds
 
@@ -67,7 +75,9 @@ def run_mount(args: argparse.Namespace) -> None:
 
     try:
         asyncio_run(
-            run_agent_loop(server_url, folder, name, password_hash, ttl_seconds, owner)
+            run_agent_loop(
+                server_url, folder, name, password_hash, ttl_seconds, owner, app_factory
+            )
         )
     except KeyboardInterrupt:
         print("Unmounting...")

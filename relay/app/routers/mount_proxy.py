@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response, Streamin
 import httpx
 import httpx_ws
 from httpx_ws.transport import ASGIWebSocketTransport
+from wsproto.events import BytesMessage, CloseConnection, TextMessage
 
 from relay.app.config import get_config
 from relay.app.exceptions import (
@@ -31,6 +32,12 @@ from relay.app.services.dropbox import get_dropbox_app, get_dropbox_client
 from relay.app.services.mount_registry import get_registry
 from tunnel.constants import FIRST_BYTE_TIMEOUT_S, MAX_PAYLOAD_BYTES
 from tunnel.exceptions import FirstByteTimeoutError
+from tunnel.ws_payload import (
+    WsMessageKind,
+    decode_ws_message,
+    encode_binary_message,
+    encode_text_message,
+)
 
 logger = logging.getLogger("relay.proxy")
 
@@ -337,32 +344,56 @@ async def proxy_websocket(websocket: WebSocket, code: str, path: str) -> None:
                 ) as local_ws:
 
                     async def browser_to_local() -> None:
-                        """Forward text messages from browser to local drop box app."""
-                        async for msg in websocket.iter_text():
-                            await local_ws.send_text(msg)
+                        """Forward browser messages (text or binary) to the drop box app."""
+                        while True:
+                            message = await websocket.receive()
+                            if message["type"] == "websocket.disconnect":
+                                return
+                            text = message.get("text")
+                            if text is not None:
+                                await local_ws.send_text(text)
+                                continue
+                            data = message.get("bytes")
+                            if data is not None:
+                                await local_ws.send_bytes(data)
 
                     async def local_to_browser() -> None:
-                        """Forward messages from local drop box app to browser."""
+                        """Forward drop box app messages to browser, mirroring frame kind."""
                         while True:
-                            msg = await local_ws.receive_text()
-                            await websocket.send_text(msg)
+                            event = await local_ws.receive()
+                            if isinstance(event, TextMessage):
+                                await websocket.send_text(event.data)
+                            elif isinstance(event, BytesMessage):
+                                await websocket.send_bytes(event.data)
+                            elif isinstance(event, CloseConnection):
+                                return
 
                     b2l = asyncio.create_task(browser_to_local())
                     l2b = asyncio.create_task(local_to_browser())
-                    try:
-                        done, pending = await asyncio.wait(
-                            {b2l, l2b}, return_when=asyncio.FIRST_COMPLETED,
-                        )
-                        for t in pending:
-                            t.cancel()
-                            try:
-                                await t
-                            except (asyncio.CancelledError, Exception):
-                                pass
-                    finally:
-                        pass
+                    done, pending = await asyncio.wait(
+                        {b2l, l2b}, return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    for t in done:
+                        exc = t.exception()
+                        if exc is not None:
+                            logger.debug(
+                                "Drop box WS bridge task ended with error: path=%s error=%r",
+                                path,
+                                exc,
+                            )
+                    for t in pending:
+                        t.cancel()
+                        try:
+                            await t
+                        except asyncio.CancelledError:
+                            pass  # Expected — we just cancelled it.
+                        except Exception:
+                            logger.exception(
+                                "Drop box WS bridge task raised during cancellation: path=%s",
+                                path,
+                            )
         except Exception:
-            pass
+            logger.exception("Drop box WS bridge failed: path=%s", path)
         return
 
     registry = get_registry()
@@ -409,14 +440,27 @@ async def proxy_websocket(websocket: WebSocket, code: str, path: str) -> None:
     )
 
     async def browser_to_agent() -> None:
-        """Forward text messages from browser to agent as WS_DATA frames."""
-        async for message in websocket.iter_text():
-            await conn.send_ws_data(ws_id, message.encode("utf-8"))
+        """Forward browser messages (text or binary) to agent as WS_DATA frames."""
+        while True:
+            message = await websocket.receive()
+            if message["type"] == "websocket.disconnect":
+                return
+            text = message.get("text")
+            if text is not None:
+                await conn.send_ws_data(ws_id, encode_text_message(text))
+                continue
+            data = message.get("bytes")
+            if data is not None:
+                await conn.send_ws_data(ws_id, encode_binary_message(data))
 
     async def agent_to_browser() -> None:
-        """Forward WS_DATA frames from agent to browser as text messages."""
+        """Forward WS_DATA frames from agent to browser, mirroring frame kind."""
         async for chunk in conn.read_stream_iter(ws_id):
-            await websocket.send_text(chunk.decode("utf-8"))
+            kind, data = decode_ws_message(chunk)
+            if kind is WsMessageKind.TEXT:
+                await websocket.send_text(data.decode("utf-8"))
+            else:
+                await websocket.send_bytes(data)
 
     browser_task = asyncio.create_task(browser_to_agent())
     agent_task = asyncio.create_task(agent_to_browser())
@@ -426,14 +470,35 @@ async def proxy_websocket(websocket: WebSocket, code: str, path: str) -> None:
             {browser_task, agent_task},
             return_when=asyncio.FIRST_COMPLETED,
         )
+        for task in done:
+            exc = task.exception()
+            if exc is not None:
+                logger.debug(
+                    "Mount WS bridge task ended with error: code=%s ws_id=%s error=%r",
+                    code,
+                    ws_id,
+                    exc,
+                )
         for task in pending:
             task.cancel()
             try:
                 await task
-            except (asyncio.CancelledError, Exception):
-                pass
+            except asyncio.CancelledError:
+                pass  # Expected — we just cancelled it.
+            except Exception:
+                logger.exception(
+                    "Mount WS bridge task raised during cancellation: code=%s ws_id=%s",
+                    code,
+                    ws_id,
+                )
     finally:
         try:
             await conn.send_ws_close(ws_id)
-        except Exception:
-            pass
+        except Exception as exc:
+            # The agent tunnel may already be gone; nothing left to close.
+            logger.debug(
+                "Could not send WS_CLOSE to agent (tunnel already down?): code=%s ws_id=%s error=%r",
+                code,
+                ws_id,
+                exc,
+            )

@@ -20,4 +20,13 @@ export default defineConfig([
       globals: globals.browser,
     },
   },
+  {
+    // main.tsx is the entry module: it renders the root and intentionally
+    // exports nothing, so React Fast Refresh can never apply to it and the
+    // only-export-components heuristic misfires.
+    files: ['src/main.tsx'],
+    rules: {
+      'react-refresh/only-export-components': 'off',
+    },
+  },
 ])

@@ -1,17 +1,13 @@
 """Trusted relay-identity headers: per-request role, auth-bypass, spoof boundary."""
 
-import secrets
 from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from server.app.config import ServerConfig, set_server_config
-from server.app.services.auth_service import (
-    AuthTokenService,
-    hash_password,
-    set_token_service,
-)
+from server.app.config import ServerConfig
+from server.app.main import create_app
+from server.app.services.auth_service import hash_password
 
 
 def _app(folder: Path, *, password: bool, read_only: bool, receive: bool, mount: bool):
@@ -24,12 +20,7 @@ def _app(folder: Path, *, password: bool, read_only: bool, receive: bool, mount:
         mount_code="ABC123" if mount else None,
         relay_url="https://relay.example.com" if mount else None,
     )
-    set_server_config(config)
-    if password:
-        set_token_service(AuthTokenService(secrets.token_hex(32)))
-    from server.app.main import create_app
-
-    return create_app()
+    return create_app(config)
 
 
 async def _client(app):
@@ -39,8 +30,12 @@ async def _client(app):
 
 @pytest.fixture
 def folder(tmp_path: Path) -> Path:
-    (tmp_path / "f.txt").write_text("hi")
-    return tmp_path
+    # Subdirectory of tmp_path so the app's data dir at
+    # shared_folder.parent / ".wfs_data" is unique per test.
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "f.txt").write_text("hi")
+    return shared
 
 
 async def test_mount_mode_write_role_allows_write(folder):

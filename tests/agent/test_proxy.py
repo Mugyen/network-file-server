@@ -3,19 +3,23 @@
 import asyncio
 import json
 import uuid
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
-import httpx_ws
 import pytest
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import Response, StreamingResponse
 from httpx import ASGITransport
-from httpx_ws.transport import ASGIWebSocketTransport
 
 from tunnel.connection import StreamState
 from tunnel.constants import MAX_PAYLOAD_BYTES
 from tunnel.exceptions import StreamNotFoundError
+from tunnel.ws_payload import (
+    WsMessageKind,
+    decode_ws_message,
+    encode_binary_message,
+    encode_text_message,
+)
 
 
 def make_test_app_with_body(body: bytes, status_code: int = 200) -> FastAPI:
@@ -456,8 +460,9 @@ async def test_handle_ws_open_frame_bridges_local_ws_messages_to_relay() -> None
     # Give the handler time to connect and set up the WS
     await asyncio.sleep(0.05)
 
-    # Push a message from relay to local WS (relay_to_local direction)
-    await conn._relay_to_local_queue.put(b"hello from relay")
+    # Push a message from relay to local WS (relay_to_local direction).
+    # WS_DATA payloads carry a kind marker (tunnel.ws_payload).
+    await conn._relay_to_local_queue.put(encode_text_message("hello from relay"))
     await asyncio.sleep(0.05)
 
     # The local WS echo handler should have sent "echo:hello from relay"
@@ -472,10 +477,52 @@ async def test_handle_ws_open_frame_bridges_local_ws_messages_to_relay() -> None
     except (asyncio.CancelledError, Exception):
         pass
 
-    # send_ws_data should have been called with the echo response
+    # send_ws_data should have been called with the encoded echo response
     assert conn.send_ws_data.call_count >= 1
-    all_payloads = [call[0][1] for call in conn.send_ws_data.call_args_list]
-    assert any(b"echo:hello from relay" in p for p in all_payloads)
+    decoded = [
+        decode_ws_message(call[0][1]) for call in conn.send_ws_data.call_args_list
+    ]
+    assert (WsMessageKind.TEXT, b"echo:hello from relay") in decoded
+
+
+@pytest.mark.asyncio
+async def test_handle_ws_open_frame_bridges_binary_messages() -> None:
+    """Binary WS messages survive the bridge in both directions."""
+    from agent.proxy import handle_ws_open_frame
+
+    binary_blob = bytes(range(256))  # not valid UTF-8 — would crash a text-only bridge
+
+    ws_app = FastAPI()
+
+    @ws_app.websocket("/ws")
+    async def ws_endpoint(websocket: WebSocket) -> None:
+        await websocket.accept()
+        data = await websocket.receive_bytes()
+        await websocket.send_bytes(data[::-1])
+
+    conn = make_ws_conn_mock()
+    ws_id = uuid.uuid4()
+    metadata = {"path": "/ws", "query": ""}
+
+    task = asyncio.create_task(handle_ws_open_frame(conn, ws_id, metadata, ws_app))
+    await asyncio.sleep(0.05)
+
+    await conn._relay_to_local_queue.put(encode_binary_message(binary_blob))
+    await asyncio.sleep(0.05)
+
+    await conn._relay_to_local_queue.put(None)
+    await asyncio.sleep(0.05)
+
+    task.cancel()
+    try:
+        await task
+    except (asyncio.CancelledError, Exception):
+        pass
+
+    decoded = [
+        decode_ws_message(call[0][1]) for call in conn.send_ws_data.call_args_list
+    ]
+    assert (WsMessageKind.BINARY, binary_blob[::-1]) in decoded
 
 
 @pytest.mark.asyncio

@@ -1,16 +1,14 @@
 """Tests for drop box service, reserved code protection, and proxy forwarding."""
 
 import time
-from pathlib import Path
 
 import httpx
 import pytest
 
 from relay.app.config import get_config
-from relay.app.services.dropbox import init_dropbox, set_dropbox_client
+from relay.app.services.dropbox import get_dropbox_app, init_dropbox, set_dropbox_client
 from relay.app.services.file_ttl_db import FileTtlDb, set_file_ttl_db
 from relay.app.services.mount_registry import get_registry
-from tests.relay.conftest import MockTunnelConnection, _setup_in_memory_registry
 
 
 # ---------------------------------------------------------------------------
@@ -78,14 +76,17 @@ async def dropbox_client(relay_app, tmp_path):
     config = get_config()
     registry = get_registry()
 
-    # Initialize file TTL tracking on the same SQLite connection
+    # Initialize file TTL tracking
     file_ttl_db = FileTtlDb(registry._db)
     await file_ttl_db.init_table()
     set_file_ttl_db(file_ttl_db)
 
-    # Initialize the drop box server app backed by tmp_path
+    # Initialize the drop box server app backed by tmp_path, then inject the
+    # TTL provider per-app via app.state (mirrors relay/app/main.py lifespan)
     client = await init_dropbox(tmp_path, config.dropbox_code)
     set_dropbox_client(client)
+    dropbox_app = get_dropbox_app()
+    dropbox_app.state.file_ttl_provider = file_ttl_db
 
     # Register drop box as a first-class mount
     await registry.register(
@@ -102,6 +103,7 @@ async def dropbox_client(relay_app, tmp_path):
 
     await client.aclose()
     set_dropbox_client(None)
+    dropbox_app.state.file_ttl_provider = None
     set_file_ttl_db(None)
 
 

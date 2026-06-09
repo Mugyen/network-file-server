@@ -26,6 +26,12 @@ from tunnel.exceptions import (
 )
 from tunnel.frames import deserialize_frame, serialize_frame
 from tunnel.protocol import WebSocketProtocol
+from tunnel.ws_payload import (
+    WsMessageKind,
+    decode_ws_message,
+    encode_binary_message,
+    encode_text_message,
+)
 
 __all__ = [
     # High-level connection
@@ -53,4 +59,9 @@ __all__ = [
     "serialize_frame",
     # Protocol interface
     "WebSocketProtocol",
+    # WS payload codec
+    "WsMessageKind",
+    "decode_ws_message",
+    "encode_binary_message",
+    "encode_text_message",
 ]

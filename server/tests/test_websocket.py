@@ -4,10 +4,10 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 from starlette.testclient import TestClient
 
-from server.app.config import create_default_config, set_server_config
+from server.app.config import create_default_config
 from server.app.main import create_app
 from server.app.models.enums import DeviceType
 from server.app.services.connection_manager import ConnectionManager, parse_device_type
@@ -15,9 +15,11 @@ from server.app.services.connection_manager import ConnectionManager, parse_devi
 
 def _create_configured_app() -> "FastAPI":  # type: ignore[name-defined]  # noqa: F821
     """Create a FastAPI app with minimal config for WS integration tests."""
-    tmpdir = tempfile.mkdtemp()
-    set_server_config(create_default_config(shared_folder=Path(tmpdir), port=8000))
-    return create_app()
+    # Shared folder is a subdirectory so the app's data dir
+    # (shared_folder.parent / ".wfs_data") stays inside the temp dir.
+    shared = Path(tempfile.mkdtemp()) / "shared"
+    shared.mkdir()
+    return create_app(create_default_config(shared_folder=shared, port=8000))
 
 
 # --- ConnectionManager unit tests ---
@@ -233,8 +235,9 @@ async def test_manager_disconnect_broadcasts_toast() -> None:
 def test_upload_broadcasts_toast_to_ws_clients() -> None:
     """File upload broadcasts file_uploaded toast to WS connections."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        set_server_config(create_default_config(shared_folder=Path(tmpdir), port=8000))
-        app = create_app()
+        shared = Path(tmpdir) / "shared"
+        shared.mkdir()
+        app = create_app(create_default_config(shared_folder=shared, port=8000))
         client = TestClient(app)
         with client.websocket_connect("/ws?device_name=Watcher") as ws:
             ws.receive_json()  # device_list
@@ -272,7 +275,7 @@ def test_device_connected_toast_includes_info() -> None:
     with client.websocket_connect("/ws?device_name=Alice") as ws1:
         ws1.receive_json()  # device_list
         ws1.receive_json()  # device_count
-        with client.websocket_connect("/ws?device_name=Bob") as ws2:
+        with client.websocket_connect("/ws?device_name=Bob") as _ws2:
             toast = ws1.receive_json()
             assert toast["type"] == "toast"
             assert toast["toast_type"] == "device_connected"
@@ -299,3 +302,80 @@ def test_device_disconnected_toast_includes_id() -> None:
         assert toast["type"] == "toast"
         assert toast["toast_type"] == "device_disconnected"
         assert "device_id" in toast
+
+
+def test_ws_stable_device_id_used_when_provided() -> None:
+    """A client-supplied device_id becomes the connection's identity key."""
+    app = _create_configured_app()
+    client = TestClient(app)
+    with client.websocket_connect(
+        "/ws?device_name=Alice&device_id=uuid-stable-123"
+    ) as ws:
+        device_list = ws.receive_json()
+        assert device_list["type"] == "device_list"
+        assert device_list["your_device_id"] == "uuid-stable-123"
+
+
+def test_ws_legacy_client_without_device_id_gets_generated_id() -> None:
+    """Clients that omit device_id keep the legacy name-timestamp identity."""
+    app = _create_configured_app()
+    client = TestClient(app)
+    with client.websocket_connect("/ws?device_name=Legacy") as ws:
+        device_list = ws.receive_json()
+        assert device_list["your_device_id"].startswith("Legacy-")
+
+
+def test_ws_newer_tab_survives_older_tab_disconnect() -> None:
+    """When two tabs share a stable device_id, closing the older tab must not
+    evict the newer tab's registration."""
+    app = _create_configured_app()
+    client = TestClient(app)
+    manager = app.state.manager
+
+    with client.websocket_connect("/ws?device_name=A&device_id=shared-id") as ws1:
+        ws1.receive_json()  # device_list
+        ws1.receive_json()  # device_count
+        with client.websocket_connect("/ws?device_name=A&device_id=shared-id") as ws2:
+            ws2.receive_json()  # device_list
+            # Close the OLDER tab (ws1) while the newer one stays open:
+            # exiting the inner `with` closes ws2 first, so instead close ws1
+            # explicitly here while ws2 is still connected.
+            ws1.close()
+            import time as _time
+
+            _time.sleep(0.1)
+            # The shared id must still be registered (ws2's socket)
+            assert "shared-id" in manager.active_connections
+
+
+@pytest.mark.asyncio
+async def test_manager_is_current_connection() -> None:
+    """is_current_connection distinguishes the registered socket from a stale one."""
+    mgr = ConnectionManager()
+    ws_old = AsyncMock()
+    ws_new = AsyncMock()
+    await mgr.connect(ws_old, "dev-1", "Alice", "1.1.1.1", "UA")
+    await mgr.connect(ws_new, "dev-1", "Alice", "1.1.1.1", "UA")
+    assert mgr.is_current_connection("dev-1", ws_new)
+    assert not mgr.is_current_connection("dev-1", ws_old)
+    assert not mgr.is_current_connection("missing", ws_new)
+
+
+def test_ws_invalid_snippet_update_is_logged_not_fatal(caplog) -> None:
+    """An invalid snippet_update is rejected with a warning log and the
+    connection keeps working (rule 11: no silent swallows)."""
+    import logging
+
+    app = _create_configured_app()
+    client = TestClient(app)
+    with client.websocket_connect("/ws?device_name=Tester") as ws:
+        ws.receive_json()  # device_list
+        ws.receive_json()  # device_count
+        with caplog.at_level(logging.WARNING, logger="server.ws"):
+            ws.send_json(
+                {"type": "snippet_update", "snippet_id": "missing", "content": "x"}
+            )
+            # The loop must survive the bad update: ping still answered
+            ws.send_json({"type": "ping"})
+            assert ws.receive_json() == {"type": "pong"}
+    assert any("Rejected snippet_update" in r.message for r in caplog.records)

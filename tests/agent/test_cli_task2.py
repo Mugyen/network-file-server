@@ -1,9 +1,8 @@
 """Tests for Task 2 — --password and --ttl flags in mount parser."""
 
-import argparse
 import pytest
 
-from server.app.cli import _build_mount_parser, _parse_args
+from server.app.cli import _parse_args
 
 
 class TestMountParserPasswordTTLFlags:

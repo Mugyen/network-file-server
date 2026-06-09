@@ -9,11 +9,8 @@ import httpx
 import pytest
 
 from relay.app.routers.mount_proxy import rewrite_html_asset_paths
-from relay.app.services.mount_registry import get_registry, set_registry
-from relay.app.enums import MountStatus
-from relay.app.services.sqlite_registry import SqliteMountRegistry
+from relay.app.services.mount_registry import get_registry
 from tests.relay.conftest import _setup_in_memory_registry
-from tunnel.enums import FrameType
 
 
 pytestmark = pytest.mark.anyio
@@ -118,7 +115,6 @@ async def test_proxy_post_body(registered_relay_client):
 async def test_proxy_large_upload_streams_body(relay_app):
     """POST with body >64KB sends body as multiple DATA frames, not in OPEN metadata."""
     from tests.relay.conftest import MockTunnelConnection
-    from relay.app.services.mount_registry import get_registry
     from tunnel.constants import MAX_PAYLOAD_BYTES
 
     transport = httpx.ASGITransport(app=relay_app)
@@ -196,7 +192,6 @@ async def test_proxy_offline(registered_relay_client):
 async def test_proxy_expired_page(relay_app):
     """Mount with EXPIRED status returns 410 with expired template."""
     from tests.relay.conftest import MockTunnelConnection
-    from relay.app.services.mount_registry import get_registry
 
     transport = httpx.ASGITransport(app=relay_app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -215,7 +210,6 @@ async def test_proxy_expired_page(relay_app):
 async def test_proxy_rewrites_html_asset_paths(relay_app):
     """HTML responses have absolute asset paths rewritten with mount prefix."""
     from tests.relay.conftest import MockTunnelConnection
-    from relay.app.services.mount_registry import get_registry
 
     html_body = (
         '<html><head>'
@@ -282,7 +276,6 @@ async def test_proxy_first_byte_timeout(relay_app):
     """When read_stream raises FirstByteTimeoutError, proxy returns 504."""
     from tests.relay.conftest import MockTunnelConnection
     from tunnel.exceptions import FirstByteTimeoutError
-    from relay.app.services.mount_registry import get_registry
 
     class TimeoutMockConnection(MockTunnelConnection):
         async def read_stream(self, request_id, timeout_s: float) -> bytes:
@@ -360,7 +353,7 @@ async def test_proxy_websocket_accepts_upgrade(relay_app):
     await registry.register("wscode", conn, agent_ip="127.0.0.1", created_at=time.time(), expires_at=None)
 
     async with ASGIWebSocketTransport(app=relay_app) as ws_transport:
-        async with aconnect_ws("ws://test/m/wscode/ws", httpx.AsyncClient(transport=ws_transport)) as ws:
+        async with aconnect_ws("ws://test/m/wscode/ws", httpx.AsyncClient(transport=ws_transport)) as _ws:
             # Connection opened successfully — just close it
             pass
     await registry.close()
@@ -376,7 +369,7 @@ async def test_proxy_websocket_sends_ws_open_frame(relay_app):
     await registry.register("wscode2", conn, agent_ip="127.0.0.1", created_at=time.time(), expires_at=None)
 
     async with ASGIWebSocketTransport(app=relay_app) as ws_transport:
-        async with aconnect_ws("ws://test/m/wscode2/ws?foo=bar", httpx.AsyncClient(transport=ws_transport)) as ws:
+        async with aconnect_ws("ws://test/m/wscode2/ws?foo=bar", httpx.AsyncClient(transport=ws_transport)) as _ws:
             pass
 
     assert len(conn.sent_ws_opens) == 1
@@ -396,7 +389,7 @@ async def test_proxy_websocket_sends_ws_close_on_disconnect(relay_app):
     await registry.register("wscode3", conn, agent_ip="127.0.0.1", created_at=time.time(), expires_at=None)
 
     async with ASGIWebSocketTransport(app=relay_app) as ws_transport:
-        async with aconnect_ws("ws://test/m/wscode3/ws", httpx.AsyncClient(transport=ws_transport)) as ws:
+        async with aconnect_ws("ws://test/m/wscode3/ws", httpx.AsyncClient(transport=ws_transport)) as _ws:
             pass
 
     assert len(conn.sent_ws_closes) == 1
@@ -404,9 +397,11 @@ async def test_proxy_websocket_sends_ws_close_on_disconnect(relay_app):
 
 
 async def test_proxy_websocket_forwards_browser_text_to_agent(relay_app):
-    """Browser text messages are forwarded to agent as WS_DATA."""
+    """Browser text messages are forwarded to agent as kind-marked WS_DATA."""
     from httpx_ws import aconnect_ws
     from httpx_ws.transport import ASGIWebSocketTransport
+
+    from tunnel.ws_payload import WsMessageKind, decode_ws_message
 
     registry = await _setup_in_memory_registry()
     conn = MockWSConnection()
@@ -418,9 +413,32 @@ async def test_proxy_websocket_forwards_browser_text_to_agent(relay_app):
             # Allow relay browser_to_agent task to process the message before disconnect
             await asyncio.sleep(0.05)
 
-    # The send_ws_data should have been called with the message
-    payloads = [payload for (_ws_id, payload) in conn.sent_ws_data]
-    assert b"hello from browser" in payloads
+    # The send_ws_data payloads carry a kind marker (tunnel.ws_payload)
+    decoded = [decode_ws_message(payload) for (_ws_id, payload) in conn.sent_ws_data]
+    assert (WsMessageKind.TEXT, b"hello from browser") in decoded
+    await registry.close()
+
+
+async def test_proxy_websocket_forwards_browser_binary_to_agent(relay_app):
+    """Browser binary messages are forwarded to agent with BINARY kind marker."""
+    from httpx_ws import aconnect_ws
+    from httpx_ws.transport import ASGIWebSocketTransport
+
+    from tunnel.ws_payload import WsMessageKind, decode_ws_message
+
+    binary_blob = bytes(range(256))  # not valid UTF-8
+
+    registry = await _setup_in_memory_registry()
+    conn = MockWSConnection()
+    await registry.register("wscode5", conn, agent_ip="127.0.0.1", created_at=time.time(), expires_at=None)
+
+    async with ASGIWebSocketTransport(app=relay_app) as ws_transport:
+        async with aconnect_ws("ws://test/m/wscode5/ws", httpx.AsyncClient(transport=ws_transport)) as ws:
+            await ws.send_bytes(binary_blob)
+            await asyncio.sleep(0.05)
+
+    decoded = [decode_ws_message(payload) for (_ws_id, payload) in conn.sent_ws_data]
+    assert (WsMessageKind.BINARY, binary_blob) in decoded
     await registry.close()
 
 

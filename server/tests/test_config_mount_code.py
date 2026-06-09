@@ -3,7 +3,6 @@
 import argparse
 from pathlib import Path
 
-import pytest
 
 from server.app.config import (
     ServerConfig,

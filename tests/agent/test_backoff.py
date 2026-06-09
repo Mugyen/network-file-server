@@ -1,6 +1,5 @@
 """Tests for compute_backoff — exponential backoff with jitter."""
 
-import math
 
 import pytest
 

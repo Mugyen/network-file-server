@@ -1,56 +1,79 @@
-import secrets
+import time
 from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from server.app.config import ServerConfig, set_server_config
-from server.app.services.auth_service import (
-    AuthTokenService,
-    hash_password,
-    set_token_service,
-)
+from server.app.config import ServerConfig
+from server.app.main import create_app
+from server.app.services.auth_service import AuthTokenService, hash_password
+
+
+class AdvanceableClock:
+    """Mutable clock for the ShareLinkService ``now_fn`` seam.
+
+    Lets tests fake the passage of time (e.g. share-link expiry) through the
+    public clock-injection API instead of mutating service internals.
+    """
+
+    def __init__(self) -> None:
+        self._now: float = time.time()
+
+    def __call__(self) -> float:
+        return self._now
+
+    def advance(self, seconds: float) -> None:
+        """Move the clock forward by the given number of seconds."""
+        if seconds < 0:
+            raise ValueError(f"seconds must be non-negative, got {seconds}")
+        self._now += seconds
 
 
 @pytest.fixture
 def tmp_shared_folder(tmp_path: Path) -> Path:
     """Create a temporary shared folder with sample files for testing.
 
+    The folder is a subdirectory of tmp_path so the app's data directory
+    (``shared_folder.parent / ".wfs_data"``) stays unique per test.
+
     Structure:
-        tmp_path/
+        shared/
             test.txt          (contains "hello world")
             subdir/
                 nested.txt    (contains "nested content")
             empty_dir/
     """
-    test_file = tmp_path / "test.txt"
+    shared = tmp_path / "shared"
+    shared.mkdir()
+
+    test_file = shared / "test.txt"
     test_file.write_text("hello world")
 
-    subdir = tmp_path / "subdir"
+    subdir = shared / "subdir"
     subdir.mkdir()
     nested_file = subdir / "nested.txt"
     nested_file.write_text("nested content")
 
-    empty_dir = tmp_path / "empty_dir"
+    empty_dir = shared / "empty_dir"
     empty_dir.mkdir()
 
     # Sample files for preview testing
     # Minimal valid PNG: magic bytes + IHDR chunk (enough for MIME detection by extension)
     png_magic = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
-    image_file = tmp_path / "image.png"
+    image_file = shared / "image.png"
     image_file.write_bytes(png_magic)
 
-    code_file = tmp_path / "code.py"
+    code_file = shared / "code.py"
     code_file.write_text('print("hello")')
 
-    doc_file = tmp_path / "doc.md"
+    doc_file = shared / "doc.md"
     doc_file.write_text("# Hello\n\nWorld")
 
     # Dummy video file (MIME detection uses extension, not content)
-    video_file = tmp_path / "video.mp4"
+    video_file = shared / "video.mp4"
     video_file.write_bytes(b"\x00" * 64)
 
-    return tmp_path
+    return shared
 
 
 @pytest.fixture
@@ -66,13 +89,9 @@ def configured_app(tmp_shared_folder: Path) -> "FastAPI":  # type: ignore[name-d
         read_only=False,
         receive=False,
         mount_code=None,
-            relay_url=None,
+        relay_url=None,
     )
-    set_server_config(config)
-
-    from server.app.main import create_app
-
-    return create_app()
+    return create_app(config)
 
 
 @pytest.fixture
@@ -96,7 +115,11 @@ def get_valid_session_cookie(token_service: AuthTokenService) -> str:
 
 @pytest.fixture
 def configured_app_with_password(tmp_shared_folder: Path) -> "FastAPI":  # type: ignore[name-defined]  # noqa: F821
-    """Create a FastAPI app with password protection enabled."""
+    """Create a FastAPI app with password protection enabled.
+
+    ``create_app`` builds the AuthTokenService automatically; tests read it
+    from ``app.state.token_service`` when they need a valid session cookie.
+    """
     password_hash = hash_password(TEST_PASSWORD)
     config = ServerConfig(
         shared_folder=tmp_shared_folder,
@@ -105,18 +128,9 @@ def configured_app_with_password(tmp_shared_folder: Path) -> "FastAPI":  # type:
         read_only=False,
         receive=False,
         mount_code=None,
-            relay_url=None,
+        relay_url=None,
     )
-    set_server_config(config)
-
-    # 32-byte hex secret for signing session tokens in tests
-    secret_key = secrets.token_hex(32)
-    service = AuthTokenService(secret_key)
-    set_token_service(service)
-
-    from server.app.main import create_app
-
-    return create_app()
+    return create_app(config)
 
 
 @pytest.fixture
@@ -142,13 +156,9 @@ def configured_app_read_only(tmp_shared_folder: Path) -> "FastAPI":  # type: ign
         read_only=True,
         receive=False,
         mount_code=None,
-            relay_url=None,
+        relay_url=None,
     )
-    set_server_config(config)
-
-    from server.app.main import create_app
-
-    return create_app()
+    return create_app(config)
 
 
 @pytest.fixture
@@ -174,13 +184,9 @@ def configured_app_receive(tmp_shared_folder: Path) -> "FastAPI":  # type: ignor
         read_only=False,
         receive=True,
         mount_code=None,
-            relay_url=None,
+        relay_url=None,
     )
-    set_server_config(config)
-
-    from server.app.main import create_app
-
-    return create_app()
+    return create_app(config)
 
 
 @pytest.fixture

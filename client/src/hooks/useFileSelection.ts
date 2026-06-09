@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import type { FileEntry } from "../types/files.ts";
 
 interface FileSelectionResult {
@@ -19,10 +19,14 @@ interface FileSelectionResult {
 export function useFileSelection(files: FileEntry[]): FileSelectionResult {
   const [selectedNames, setSelectedNames] = useState<Set<string>>(new Set());
 
-  // Reset selection when files change (new directory navigation)
-  useEffect(() => {
+  // Reset selection when files change (new directory navigation) using the
+  // adjust-state-during-render pattern instead of a setState-in-effect
+  // (https://react.dev/learn/you-might-not-need-an-effect).
+  const [prevFiles, setPrevFiles] = useState<FileEntry[]>(files);
+  if (files !== prevFiles) {
+    setPrevFiles(files);
     setSelectedNames(new Set());
-  }, [files]);
+  }
 
   const toggleSelect = useCallback((name: string): void => {
     setSelectedNames((prev) => {

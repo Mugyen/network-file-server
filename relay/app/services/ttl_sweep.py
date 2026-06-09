@@ -48,7 +48,9 @@ async def sweep_once(registry: SqliteMountRegistry, config: RelayConfig) -> None
                     await mount.connection.send_control(
                         {"type": "ttl_warning", "expires_in": int(remaining)}
                     )
-                mount.ttl_warned = True
+                # Persist the flag — active_mounts() rebuilds records from
+                # SQLite each sweep, so an in-memory mark would re-warn forever.
+                await registry.mark_ttl_warned(mount.code)
         except Exception:
             logger.exception(
                 "Error processing mount during TTL sweep: code=%s", mount.code

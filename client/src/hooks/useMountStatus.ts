@@ -29,19 +29,28 @@ interface MountStatusResult {
 }
 
 export function useMountStatus(): MountStatusResult {
-  const [status, setStatus] = useState<MountStatus>(MountStatus.UNKNOWN);
+  // Local serving is always ONLINE; only a remote mount needs polling.
+  // Deriving the initial state keeps poll() free of synchronous setState.
+  const [status, setStatus] = useState<MountStatus>(
+    isRemoteMount() ? MountStatus.UNKNOWN : MountStatus.ONLINE,
+  );
   const intervalRef = useRef<number | null>(null);
   const prevStatusRef = useRef<MountStatus>(MountStatus.UNKNOWN);
   const onRecoveryRef = useRef<(() => void) | null>(null);
 
-  const poll = useCallback(async (): Promise<void> => {
+  // All setState happens inside promise continuations so the synchronous
+  // part of poll() never sets state (react-hooks/set-state-in-effect).
+  const poll = useCallback((): void => {
     if (!isRemoteMount()) {
-      setStatus(MountStatus.ONLINE);
+      // Nothing to poll: status was initialized to ONLINE and never changes.
       return;
     }
-    try {
-      const resp = await fetch(`${getMountPrefix()}/status`);
-      if (resp.ok) {
+    fetch(`${getMountPrefix()}/status`)
+      .then(async (resp) => {
+        if (!resp.ok) {
+          setStatus(MountStatus.UNKNOWN);
+          return;
+        }
         const data = (await resp.json()) as { status: string };
         const newStatus = data.status as MountStatus;
         setStatus(newStatus);
@@ -56,20 +65,20 @@ export function useMountStatus(): MountStatusResult {
           onRecoveryRef.current();
         }
         prevStatusRef.current = newStatus;
-      } else {
+      })
+      .catch(() => {
+        // Network failure is an expected state here, not an error to surface:
+        // it maps directly to the UNKNOWN status shown by the UI.
         setStatus(MountStatus.UNKNOWN);
-      }
-    } catch {
-      setStatus(MountStatus.UNKNOWN);
-    }
+      });
   }, []);
 
   useEffect(() => {
-    void poll();
+    poll();
 
     function startPolling(): void {
       if (intervalRef.current === null) {
-        intervalRef.current = window.setInterval(() => void poll(), POLL_INTERVAL_MS);
+        intervalRef.current = window.setInterval(() => { poll(); }, POLL_INTERVAL_MS);
       }
     }
 
@@ -84,7 +93,7 @@ export function useMountStatus(): MountStatusResult {
       if (document.hidden) {
         stopPolling();
       } else {
-        void poll();
+        poll();
         startPolling();
       }
     }
@@ -98,7 +107,5 @@ export function useMountStatus(): MountStatusResult {
     };
   }, [poll]);
 
-  const triggerPoll = useCallback(() => { void poll(); }, [poll]);
-
-  return { status, onRecoveryRef, triggerPoll };
+  return { status, onRecoveryRef, triggerPoll: poll };
 }

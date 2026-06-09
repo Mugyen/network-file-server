@@ -4,31 +4,29 @@ Provides bcrypt-based password hashing/verification and itsdangerous-based
 signed session tokens for cookie authentication.
 """
 
-import bcrypt
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
+
+from accounts.exceptions import WeakPasswordError
+from accounts.passwords import (
+    hash_password as _hash_password,
+    verify_password as _verify_password,
+)
 
 
 def hash_password(plain_password: str) -> bytes:
-    """Hash a plaintext password using bcrypt.
-
-    Raises ValueError if password is empty or exceeds 72 bytes (bcrypt limit).
-    """
-    if len(plain_password) == 0:
-        raise ValueError("Password must not be empty")
-    if len(plain_password.encode("utf-8")) > 72:
-        raise ValueError("Password must not exceed 72 bytes (bcrypt limit)")
-    return bcrypt.hashpw(plain_password.encode("utf-8"), bcrypt.gensalt())
+    """Hash a plaintext password using bcrypt."""
+    try:
+        return _hash_password(plain_password)
+    except WeakPasswordError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 def verify_password(plain_password: str, hashed_password: bytes) -> bool:
-    """Verify a plaintext password against a bcrypt hash.
-
-    Uses bcrypt.checkpw which is constant-time.
-    Raises ValueError if plain_password is empty.
-    """
-    if len(plain_password) == 0:
-        raise ValueError("Password must not be empty")
-    return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password)
+    """Verify a plaintext password against a bcrypt hash."""
+    try:
+        return _verify_password(plain_password, hashed_password)
+    except WeakPasswordError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 class AuthTokenService:
@@ -53,20 +51,3 @@ class AuthTokenService:
         except (BadSignature, SignatureExpired):
             return False
 
-
-_token_service: AuthTokenService | None = None
-
-
-def get_token_service() -> AuthTokenService:
-    """Return the current AuthTokenService. Raises RuntimeError if not set."""
-    if _token_service is None:
-        raise RuntimeError(
-            "AuthTokenService has not been set. Call set_token_service() first."
-        )
-    return _token_service
-
-
-def set_token_service(service: AuthTokenService) -> None:
-    """Set the global AuthTokenService instance."""
-    global _token_service
-    _token_service = service

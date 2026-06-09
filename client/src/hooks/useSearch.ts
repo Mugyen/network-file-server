@@ -70,8 +70,10 @@ export function useSearch(currentPath: string): SearchState {
     try {
       const result = await searchFiles(q, path);
       setSearchResults(result.entries);
-    } catch {
-      // On search failure, keep client-side filtering active
+    } catch (err: unknown) {
+      // Degrade to client-side filtering of the current directory, but log
+      // it — silent degradation here hides real server-side search outages.
+      console.error("Server-side search failed; using client-side filter:", err);
       setSearchResults(null);
     } finally {
       setIsSearching(false);

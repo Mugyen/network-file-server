@@ -57,6 +57,16 @@ class ConnectionManager:
         self.active_connections.pop(device_id, None)
         self.devices.pop(device_id, None)
 
+    def is_current_connection(self, device_id: str, websocket: WebSocket) -> bool:
+        """True if this websocket is the one currently registered for device_id.
+
+        With stable client-supplied device IDs, a second tab from the same
+        browser replaces the first tab's registration. The first tab's
+        teardown must not evict the newer connection, so callers check this
+        before disconnect().
+        """
+        return self.active_connections.get(device_id) is websocket
+
     async def broadcast(self, message: dict, exclude_device: str) -> None:
         """Send message to all connections except excluded device_id.
 
@@ -107,5 +117,3 @@ class ConnectionManager:
         """Return list of device info dicts for all connected devices."""
         return [asdict(info) for info in self.devices.values()]
 
-
-manager = ConnectionManager()

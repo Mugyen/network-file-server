@@ -25,6 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from relay.app.services.mount_registry import set_registry
 from relay.app.services.sqlite_registry import SqliteMountRegistry
 from relay.app.services.ttl_sweep import run_ttl_sweep
+from shared.paths import repo_root
 
 
 @asynccontextmanager
@@ -36,11 +37,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from accounts import SqliteAccountStore
 
     from relay.app.services.account_store import set_account_store
-    from relay.app.services.dropbox import init_dropbox, set_dropbox_client
+    from relay.app.services.dropbox import get_dropbox_app, init_dropbox, set_dropbox_client
     from relay.app.services.file_ttl_db import FileTtlDb, set_file_ttl_db
     from relay.app.services.file_ttl_sweep import run_file_ttl_sweep
     from relay.app.services.session import RelaySession, set_relay_session
-    from server.app.services.connection_manager import manager
 
     _logger = logging.getLogger("relay.lifespan")
 
@@ -53,14 +53,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     set_account_store(account_store)
     set_relay_session(RelaySession(config.session_secret))
 
-    # Initialize file TTL tracking on the same SQLite connection
-    file_ttl_db = FileTtlDb(registry._db)
-    await file_ttl_db.init_table()
+    # File TTL tracking on its own connection (same DB file) so TTL traffic
+    # doesn't serialize behind registry operations.
+    file_ttl_db = await FileTtlDb.create(config.db_path)
     set_file_ttl_db(file_ttl_db)
 
     # Initialize drop box server app and register as a first-class mount
     dropbox_client = await init_dropbox(Path(config.data_dir), config.dropbox_code)
     set_dropbox_client(dropbox_client)
+    dropbox_app = get_dropbox_app()
+    # Inject the TTL provider into the in-process server (drop box) — the
+    # server consumes the FileTtlProvider protocol it owns; FileTtlDb
+    # satisfies it structurally. Injection is per-app via app.state.
+    dropbox_app.state.file_ttl_provider = file_ttl_db
     await registry.register(
         code=config.dropbox_code,
         connection=None,
@@ -80,8 +85,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     sweep_task = asyncio.create_task(
         run_ttl_sweep(registry, config)
     )
+    # Toasts about expired drop box files go to the drop box app's own
+    # connection manager (per-app, no module-level singleton).
     file_ttl_sweep_task = asyncio.create_task(
-        run_file_ttl_sweep(file_ttl_db, Path(config.data_dir), config.dropbox_code, 60, manager.broadcast_all)
+        run_file_ttl_sweep(
+            file_ttl_db,
+            Path(config.data_dir),
+            config.dropbox_code,
+            60,
+            dropbox_app.state.manager.broadcast_all,
+        )
     )
     yield
     sweep_task.cancel()
@@ -96,6 +109,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         pass
     await dropbox_client.aclose()
     set_dropbox_client(None)
+    dropbox_app.state.file_ttl_provider = None
+    await file_ttl_db.close()
     set_file_ttl_db(None)
     await account_store.close()
     set_account_store(None)
@@ -118,7 +133,7 @@ def create_relay_app(config_path: Path | None = None) -> FastAPI:
         ValueError: If RELAY_ENV=production and RELAY_ALLOWED_ORIGINS is not set.
     """
     if config_path is None:
-        config_path = Path(__file__).resolve().parent.parent / "config.yaml"
+        config_path = repo_root() / "relay" / "config.yaml"
 
     config = load_config(config_path)
     set_config(config)
@@ -153,7 +168,7 @@ def create_relay_app(config_path: Path | None = None) -> FastAPI:
     application.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 
     # Mount static files for OG image and future assets
-    static_dir = Path(__file__).resolve().parent.parent / "static"
+    static_dir = repo_root() / "relay" / "static"
     if static_dir.exists():
         application.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
@@ -168,7 +183,7 @@ def create_relay_app(config_path: Path | None = None) -> FastAPI:
     from relay.app.routers.user_storage import router as user_storage_router
 
     # Serve the client bundle's assets at the relay root for account pages.
-    client_assets = Path(__file__).resolve().parent.parent.parent / "client" / "dist" / "assets"
+    client_assets = repo_root() / "client" / "dist" / "assets"
     if client_assets.exists() and client_assets.is_dir():
         application.mount(
             "/assets",

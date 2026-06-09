@@ -12,22 +12,19 @@ conflict where nargs='?' would greedily consume 'mount' as the folder argument.
 """
 
 import argparse
-import secrets
 import sys
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from agent.connection import MountAppContext
 
 import uvicorn
 
-from agent.duration import parse_duration
-from server.app.config import ServerConfig, set_server_config
-from server.app.services.auth_service import (
-    AuthTokenService,
-    hash_password,
-    set_token_service,
-)
-from server.app.services.share_service import ShareLinkService, set_share_service
-from server.app.services.network_service import detect_primary_lan_ip
-from server.app.services.qr_service import generate_ascii_qr
+from shared.duration import parse_duration
+from server.app.config import ServerConfig
+from server.app.services.auth_service import hash_password
+from shared.network import detect_primary_lan_ip
+from shared.qr import generate_ascii_qr
 
 # Known subcommand names — used to detect mode in _parse_args and main()
 _SUBCOMMANDS: frozenset = frozenset({"mount"})
@@ -187,18 +184,41 @@ def _parse_args(argv: Optional[list] = None) -> argparse.Namespace:
     )
 
 
+def build_mount_app(ctx: "MountAppContext") -> object:
+    """App factory handed to the agent: build the server ASGI app for a mount.
+
+    This is the composition root joining the agent and server packages —
+    the agent itself never imports the server. All services (token service,
+    share links, ...) are constructed inside create_app and live on
+    app.state — no globals are touched, so repeated mounts (reconnects) and
+    other in-process apps cannot interfere with each other.
+    """
+    from server.app.main import create_app as _create_app
+
+    config = ServerConfig(
+        shared_folder=ctx.folder,
+        port=0,
+        password_hash=ctx.password_hash,
+        read_only=False,
+        receive=False,
+        mount_code=ctx.mount_code,
+        relay_url=ctx.relay_url,
+    )
+    return _create_app(config)
+
+
 def main() -> None:
     """Parse CLI arguments and start the server or mount agent.
 
     Dispatches based on args.command:
-    - 'mount': imports and calls agent.cli.run_mount(args)
+    - 'mount': imports and calls agent.cli.run_mount(args, build_mount_app)
     - None (bare invocation): requires folder, validates it, starts LAN server
     """
     args = _parse_args()
 
     if args.command == "mount":
         from agent.cli import run_mount
-        run_mount(args)
+        run_mount(args, build_mount_app)
         return
 
     # LAN mode validation
@@ -240,20 +260,7 @@ def main() -> None:
         print(f"Error: {exc}")
         sys.exit(1)
 
-    set_server_config(config)
-
-    # Create and register AuthTokenService when password protection is enabled
-    # Generate a secret key for share links (always needed regardless of password)
-    share_secret_key = secrets.token_hex(32)
-    if args.password is not None:
-        # 32-byte hex secret (64 hex chars) for signing session tokens
-        secret_key = secrets.token_hex(32)
-        set_token_service(AuthTokenService(secret_key))
-
-    # Initialize ShareLinkService for share link functionality
-    set_share_service(ShareLinkService(share_secret_key))
-
-    print(f"\nNetwork File Server Starting...")
+    print("\nNetwork File Server Starting...")
     print(f"Sharing folder: {config.shared_folder}")
 
     # Print active modes
@@ -269,7 +276,7 @@ def main() -> None:
         local_ip = detect_primary_lan_ip()
         server_url = f"http://{local_ip}:{port}"
         ascii_qr = generate_ascii_qr(server_url)
-        print(f"\nScan this QR code to connect:\n")
+        print("\nScan this QR code to connect:\n")
         print(ascii_qr)
         print(f"Server URL: {server_url}")
     except RuntimeError as exc:
@@ -277,11 +284,16 @@ def main() -> None:
         print(f"Server will be available at http://localhost:{port}")
 
     print(f"Local URL: http://localhost:{port}")
-    print(f"Access from any device on the same network!")
-    print(f"\nPress Ctrl+C to stop the server\n")
+    print("Access from any device on the same network!")
+    print("\nPress Ctrl+C to stop the server\n")
+
+    # Build the app explicitly — all services live on app.state.
+    from server.app.main import create_app
+
+    app = create_app(config)
 
     try:
-        uvicorn.run("server.app.main:app", host=host, port=port)
+        uvicorn.run(app, host=host, port=port)
     except KeyboardInterrupt:
         print("\nServer stopped by user")
     except Exception as exc:

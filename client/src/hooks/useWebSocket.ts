@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { WSMessageType } from "../types/websocket.ts";
+import { ToastType, WSMessageType } from "../types/websocket.ts";
 import type { DeviceInfo } from "../types/websocket.ts";
+import {
+  isDeviceCountPayload,
+  isDeviceInfo,
+  isDeviceListPayload,
+  isRecord,
+  isToastPayload,
+} from "../utils/wsGuards.ts";
 import { getWsUrl } from "../utils/remoteMount.ts";
 
 /** Maximum reconnect delay in milliseconds. */
@@ -34,8 +41,11 @@ interface UseWebSocketResult {
 /**
  * WebSocket hook with auto-reconnect via exponential backoff.
  * Stores WS in useRef (not useState) to avoid stale closure issues.
+ *
+ * deviceId is the stable identity key (see getDeviceId); deviceName is the
+ * cosmetic label shown to other devices.
  */
-export function useWebSocket(deviceName: string): UseWebSocketResult {
+export function useWebSocket(deviceId: string, deviceName: string): UseWebSocketResult {
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [deviceCount, setDeviceCount] = useState<number>(0);
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
@@ -46,11 +56,18 @@ export function useWebSocket(deviceName: string): UseWebSocketResult {
   const reconnectTimerRef = useRef<number | null>(null);
   const stableTimerRef = useRef<number | null>(null);
   const mountedRef = useRef<boolean>(true);
+  /** Latest connect(), so the reconnect timeout below never closes over a
+   *  stale (or not-yet-declared) version of the callback. Assigned in an
+   *  effect before any reconnect timeout can possibly fire. */
+  const connectRef = useRef<() => void>(() => undefined);
 
   const connect = useCallback((): void => {
     if (!mountedRef.current) return;
 
-    const url = getWsUrl("/ws", `device_name=${encodeURIComponent(deviceName)}`);
+    const url = getWsUrl(
+      "/ws",
+      `device_name=${encodeURIComponent(deviceName)}&device_id=${encodeURIComponent(deviceId)}`,
+    );
     const ws = new WebSocket(url);
 
     ws.onopen = (): void => {
@@ -67,33 +84,68 @@ export function useWebSocket(deviceName: string): UseWebSocketResult {
 
     ws.onmessage = (event: MessageEvent): void => {
       if (!mountedRef.current) return;
-      const data = JSON.parse(event.data as string) as Record<string, unknown>;
-      const msgType = data.type as string;
+      let data: unknown;
+      try {
+        data = JSON.parse(event.data as string);
+      } catch (err: unknown) {
+        console.error("Malformed WS message (invalid JSON)", err, event.data);
+        return;
+      }
+      if (!isRecord(data) || typeof data.type !== "string") {
+        console.error("Malformed WS message", undefined, data);
+        return;
+      }
+      const msgType = data.type;
 
       if (msgType === WSMessageType.DEVICE_COUNT) {
-        setDeviceCount(data.count as number);
+        if (isDeviceCountPayload(data)) {
+          setDeviceCount(data.count);
+        } else {
+          console.error("Malformed WS message", msgType, data);
+        }
       }
 
       if (msgType === WSMessageType.DEVICE_LIST) {
-        setDevices(data.devices as DeviceInfo[]);
-        setMyDeviceId(data.your_device_id as string);
+        if (isDeviceListPayload(data)) {
+          setDevices(data.devices);
+          setMyDeviceId(data.your_device_id);
+        } else {
+          console.error("Malformed WS message", msgType, data);
+        }
       }
 
       if (msgType === WSMessageType.TOAST) {
-        const toastType = data.toast_type as string;
-        if (toastType === "device_connected" && data.device_info !== undefined) {
-          const newDevice = data.device_info as DeviceInfo;
-          setDevices((prev) => {
-            // Avoid duplicates
-            if (prev.some((d) => d.device_id === newDevice.device_id)) {
-              return prev;
-            }
-            return [...prev, newDevice];
-          });
+        if (!isToastPayload(data)) {
+          console.error("Malformed WS message", msgType, data);
+          return;
         }
-        if (toastType === "device_disconnected" && data.device_id !== undefined) {
-          const disconnectedId = data.device_id as string;
-          setDevices((prev) => prev.filter((d) => d.device_id !== disconnectedId));
+        if (
+          data.toast_type === ToastType.DEVICE_CONNECTED &&
+          data.device_info !== undefined
+        ) {
+          if (isDeviceInfo(data.device_info)) {
+            const newDevice = data.device_info;
+            setDevices((prev) => {
+              // Avoid duplicates
+              if (prev.some((d) => d.device_id === newDevice.device_id)) {
+                return prev;
+              }
+              return [...prev, newDevice];
+            });
+          } else {
+            console.error("Malformed WS message", msgType, data);
+          }
+        }
+        if (
+          data.toast_type === ToastType.DEVICE_DISCONNECTED &&
+          data.device_id !== undefined
+        ) {
+          if (typeof data.device_id === "string") {
+            const disconnectedId = data.device_id;
+            setDevices((prev) => prev.filter((d) => d.device_id !== disconnectedId));
+          } else {
+            console.error("Malformed WS message", msgType, data);
+          }
         }
       }
 
@@ -126,12 +178,16 @@ export function useWebSocket(deviceName: string): UseWebSocketResult {
       attemptRef.current += 1;
 
       reconnectTimerRef.current = window.setTimeout(() => {
-        connect();
+        connectRef.current();
       }, delay + jitter);
     };
 
     wsRef.current = ws;
-  }, [deviceName]);
+  }, [deviceId, deviceName]);
+
+  useEffect(() => {
+    connectRef.current = connect;
+  }, [connect]);
 
   useEffect(() => {
     mountedRef.current = true;

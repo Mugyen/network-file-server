@@ -12,7 +12,6 @@ from httpx_ws.transport import ASGIWebSocketTransport
 from accounts import AccessMode, Role, SqliteAccountStore, SubjectType, hash_password
 from relay.app.main import create_relay_app
 from relay.app.services.account_store import set_account_store
-from relay.app.services.mount_registry import get_registry
 from relay.app.services.session import RelaySession, set_relay_session
 from tests.relay.conftest import _setup_in_memory_registry
 

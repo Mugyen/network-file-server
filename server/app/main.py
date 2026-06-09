@@ -1,17 +1,23 @@
 """FastAPI application factory.
 
-Creates the app with CORS middleware and router mounting.
-Conditionally mounts SPA static files if client/dist exists.
+``create_app(config)`` builds a fully self-contained app instance: all
+services (auth tokens, share links, clipboard, file requests, connection
+manager) are constructed here and attached to ``app.state``. There are no
+module-level singletons and no module-level app — multiple instances can
+coexist in one process (LAN server, relay drop box, parallel tests).
+
+Routes access services via ``server.app.dependencies`` with ``Depends``.
 """
 
-from pathlib import Path
+import logging
+import secrets
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from server.app.config import get_server_config
+from server.app.config import ServerConfig
 from server.app.exceptions import AccessDeniedError, ReadOnlyError
 from server.app.middleware.auth_middleware import AuthMiddleware
 from server.app.routers.auth import router as auth_router
@@ -22,19 +28,51 @@ from server.app.routers.server_info import router as server_info_router
 from server.app.routers.share import router as share_router
 from server.app.routers.share_target import router as share_target_router
 from server.app.routers.websocket import router as websocket_router
-from server.app.services.auth_service import get_token_service
-from server.app.services.share_service import ShareLinkService, set_share_service
+from server.app.services.auth_service import AuthTokenService
+from server.app.services.clipboard_service import ClipboardService
+from server.app.services.connection_manager import ConnectionManager
+from server.app.services.file_request_service import FileRequestService
+from server.app.services.share_service import ShareLinkService
+from server.app.services.sqlite_store import get_state_store
+from shared.paths import repo_root
+
+logger = logging.getLogger("server.app")
 
 
-def create_app() -> FastAPI:
-    """Create and configure the FastAPI application.
+def create_app(config: ServerConfig) -> FastAPI:
+    """Create and configure a FastAPI application for the given config.
 
+    - Attaches config and all services to ``app.state``.
     - Adds CORSMiddleware with wildcard origins for LAN access.
-    - Includes the files API router and server-info router.
+    - Adds AuthMiddleware when a password hash is configured.
     - Mounts SPA static files if client/dist exists (production mode).
     """
+    if not isinstance(config, ServerConfig):
+        raise ValueError(f"config must be a ServerConfig, got {type(config)!r}")
+
     application = FastAPI(title="Network File Server")
 
+    # --- App-scoped state (replaces module-level singletons) -------------
+    application.state.config = config
+
+    data_dir = config.shared_folder.parent / ".wfs_data"
+    share_secret = get_state_store(data_dir).get_or_create_share_secret()
+    application.state.share_service = ShareLinkService(share_secret, data_dir)
+    application.state.clipboard_service = ClipboardService(data_dir)
+    application.state.file_request_service = FileRequestService(data_dir)
+    application.state.manager = ConnectionManager()
+
+    # Injected by an in-process host (relay drop box) after creation; None
+    # means TTL tracking is absent (standalone LAN mode).
+    application.state.file_ttl_provider = None
+
+    # Session tokens exist only for password-protected apps.
+    if config.password_hash is not None:
+        application.state.token_service = AuthTokenService(secrets.token_hex(32))
+    else:
+        application.state.token_service = None
+
+    # --- Middleware -------------------------------------------------------
     # CORS: allow all origins for LAN access
     # Note: allow_credentials is NOT set to True (mutually exclusive with wildcard origins per CORS spec)
     application.add_middleware(
@@ -44,6 +82,17 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # Conditionally add auth middleware when password is set.
+    # Must be added AFTER CORSMiddleware (Starlette processes in reverse order,
+    # so AuthMiddleware added second runs first in the request pipeline).
+    if config.password_hash is not None:
+        application.add_middleware(
+            AuthMiddleware,
+            token_service=application.state.token_service,
+            relay_served=config.mount_code is not None,
+        )
+
+    # --- Routers ------------------------------------------------------------
     application.include_router(auth_router)
     application.include_router(clipboard_router)
     application.include_router(file_requests_router)
@@ -68,30 +117,8 @@ def create_app() -> FastAPI:
             content={"detail": "Access denied"},
         )
 
-    # Conditionally add auth middleware when password is set.
-    # Must be added AFTER CORSMiddleware (Starlette processes in reverse order,
-    # so AuthMiddleware added second runs first in the request pipeline).
-    try:
-        config = get_server_config()
-        if config.password_hash is not None:
-            application.add_middleware(AuthMiddleware, token_service=get_token_service())
-    except RuntimeError:
-        pass  # Config not set yet (e.g., during import-time app creation)
-
-    # Initialize ShareLinkService if not already set (e.g., during test setup)
-    try:
-        from server.app.services.share_service import get_share_service
-        get_share_service()  # Check if already initialized
-    except RuntimeError:
-        import secrets as _secrets
-        _share_secret = _secrets.token_hex(32)
-        set_share_service(ShareLinkService(_share_secret))
-
-    # SPA catch-all: mount static files if client/dist exists
-    # Resolve relative to the project root (two levels up from this file),
-    # not the CWD, so the server works regardless of where it's launched from.
-    project_root = Path(__file__).resolve().parent.parent.parent
-    client_dist = project_root / "client" / "dist"
+    # SPA catch-all: mount static files if client/dist exists.
+    client_dist = repo_root() / "client" / "dist"
     if client_dist.exists() and client_dist.is_dir():
         assets_dir = client_dist / "assets"
         if assets_dir.exists():
@@ -113,6 +140,3 @@ def create_app() -> FastAPI:
             return FileResponse(str(index_html))
 
     return application
-
-
-app = create_app()

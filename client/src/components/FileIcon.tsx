@@ -69,15 +69,6 @@ const EXTENSION_ICON_MAP: Record<string, LucideIcon> = {
   bz2: FileArchive,
 };
 
-function getIconForFile(fileName: string): LucideIcon {
-  const dotIndex = fileName.lastIndexOf(".");
-  if (dotIndex === -1) {
-    return File;
-  }
-  const ext = fileName.slice(dotIndex + 1).toLowerCase();
-  return EXTENSION_ICON_MAP[ext] ?? File;
-}
-
 interface FileIconProps {
   fileName: string;
   isDirectory: boolean;
@@ -91,7 +82,11 @@ function FileIcon({ fileName, isDirectory }: FileIconProps) {
   if (isDirectory) {
     return <Folder size={18} className="text-blue-500" />;
   }
-  const IconComponent = getIconForFile(fileName);
+  // Resolve the icon via a module-scope map lookup (never a function call
+  // returning a component) so no component identity is created during render.
+  const dotIndex = fileName.lastIndexOf(".");
+  const ext = dotIndex === -1 ? "" : fileName.slice(dotIndex + 1).toLowerCase();
+  const IconComponent = EXTENSION_ICON_MAP[ext] ?? File;
   return <IconComponent size={18} className="text-gray-500" />;
 }
 

@@ -5,9 +5,7 @@ Verifies that CORS is configured differently based on RELAY_ENV:
 - production: explicit origins only, with credentials
 """
 
-import os
 
-import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
 

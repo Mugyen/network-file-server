@@ -27,11 +27,19 @@ class WebSocketProtocol(Protocol):
         """Receive the next text WebSocket frame."""
         ...
 
-    async def receive(self) -> dict:
+    async def receive(self) -> dict[str, bytes | str]:
         """Receive the next frame (binary or text).
 
         Returns a dict with exactly one key:
           - {"bytes": <bytes>}  for binary frames
           - {"text": <str>}     for text frames
+        """
+        ...
+
+    async def close(self) -> None:
+        """Close the underlying WebSocket connection.
+
+        Part of the required contract: TunnelConnection.close() calls this
+        during teardown, so every adapter must provide it.
         """
         ...

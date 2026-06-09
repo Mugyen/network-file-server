@@ -1,4 +1,4 @@
-import { Upload, Wifi, WifiOff, Bell, X } from "lucide-react";
+import { Upload, Wifi, WifiOff, Bell, AlertTriangle, X } from "lucide-react";
 import type { ToastMessage } from "../types/websocket.ts";
 import { ToastType } from "../types/websocket.ts";
 
@@ -18,6 +18,8 @@ function getToastIcon(toastType: ToastType): React.ReactNode {
     case ToastType.REQUEST_CREATED:
     case ToastType.REQUEST_FULFILLED:
       return <Bell className="w-4 h-4 text-yellow-500" />;
+    case ToastType.ERROR:
+      return <AlertTriangle className="w-4 h-4 text-red-500" />;
     default:
       return <Bell className="w-4 h-4 text-gray-500" />;
   }

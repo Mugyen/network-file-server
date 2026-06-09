@@ -4,11 +4,10 @@ import asyncio
 import json
 import uuid
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tunnel.exceptions import StreamNotFoundError
 
 
 def make_mock_conn(control_responses: list) -> MagicMock:
@@ -52,8 +51,6 @@ async def test_connect_and_serve_receives_mount_registered(tmp_path: Path) -> No
         patch("agent.connection.websockets_connect") as mock_connect,
         patch("agent.connection.WebSocketClientAdapter", return_value=MagicMock()),
         patch("agent.connection.TunnelConnection", return_value=mock_conn),
-        patch("agent.connection.set_server_config"),
-        patch("agent.connection.create_app", return_value=MagicMock()),
         patch("agent.connection.print_mounted"),
         patch("agent.connection.print_connected_status"),
     ):
@@ -68,6 +65,7 @@ async def test_connect_and_serve_receives_mount_registered(tmp_path: Path) -> No
             password_hash=None,
             ttl_seconds=None,
             owner=None,
+            app_factory=lambda ctx: MagicMock(),
         )
 
     assert result == assigned_code
@@ -105,6 +103,7 @@ async def test_connect_and_serve_raises_on_wrong_control_type(tmp_path: Path) ->
                 password_hash=None,
                 ttl_seconds=None,
                 owner=None,
+                app_factory=lambda ctx: MagicMock(),
             )
 
 
@@ -117,7 +116,7 @@ async def test_run_agent_loop_retries_after_disconnect(tmp_path: Path) -> None:
 
     async def fake_connect_and_serve(
         relay_url: str, folder: Path, name: str, preferred_code: str | None,
-        password_hash: bytes | None, ttl_seconds: int | None, owner=None,
+        password_hash: bytes | None, ttl_seconds: int | None, owner=None, app_factory=None,
     ) -> str:
         nonlocal call_count
         call_count += 1
@@ -140,6 +139,7 @@ async def test_run_agent_loop_retries_after_disconnect(tmp_path: Path) -> None:
             password_hash=None,
             ttl_seconds=None,
             owner=None,
+            app_factory=lambda ctx: MagicMock(),
         )
 
     assert call_count == 3
@@ -155,7 +155,7 @@ async def test_run_agent_loop_sends_preferred_code_on_reconnect(tmp_path: Path) 
 
     async def fake_connect_and_serve(
         relay_url: str, folder: Path, name: str, preferred_code: str | None,
-        password_hash: bytes | None, ttl_seconds: int | None, owner=None,
+        password_hash: bytes | None, ttl_seconds: int | None, owner=None, app_factory=None,
     ) -> str:
         call_args_list.append(preferred_code)
         if len(call_args_list) == 1:
@@ -177,6 +177,7 @@ async def test_run_agent_loop_sends_preferred_code_on_reconnect(tmp_path: Path) 
             password_hash=None,
             ttl_seconds=None,
             owner=None,
+            app_factory=lambda ctx: MagicMock(),
         )
 
     # First call: no preferred code (None)
@@ -214,7 +215,7 @@ async def test_run_agent_loop_resets_attempt_counter_after_success(tmp_path: Pat
 
     async def fake_connect_alternating(
         relay_url: str, folder: Path, name: str, preferred_code: str | None,
-        password_hash: bytes | None, ttl_seconds: int | None, owner=None,
+        password_hash: bytes | None, ttl_seconds: int | None, owner=None, app_factory=None,
     ) -> str:
         nonlocal call_count
         call_count += 1
@@ -243,6 +244,7 @@ async def test_run_agent_loop_resets_attempt_counter_after_success(tmp_path: Pat
             password_hash=None,
             ttl_seconds=None,
             owner=None,
+            app_factory=lambda ctx: MagicMock(),
         )
 
     # After the first success and then failure, attempt should reset to 1
@@ -254,12 +256,10 @@ async def test_agent_receive_loop_dispatches_open_frames(tmp_path: Path) -> None
     """Test 5: OPEN frames received are dispatched as concurrent tasks via on_open callback."""
     from agent.connection import _agent_receive_loop
 
-    import struct
     from tunnel.frames import serialize_frame
     from tunnel.enums import FrameType
 
     dispatched_ids: list[uuid.UUID] = []
-    dispatched_tasks: list[asyncio.Task] = []
 
     async def fake_on_open(request_id: uuid.UUID) -> None:
         dispatched_ids.append(request_id)

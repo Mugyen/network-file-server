@@ -10,14 +10,17 @@ interface DevicesPanelProps {
   myDeviceId: string;
 }
 
-function getDeviceIcon(deviceType: DeviceType): typeof Smartphone {
+const DEVICE_ICON_CLASS = "h-5 w-5 text-gray-500 dark:text-gray-400 flex-shrink-0";
+
+/** Module-scope icon component so no component is created during render. */
+function DeviceIcon({ deviceType }: { deviceType: DeviceType }) {
   switch (deviceType) {
     case DeviceType.PHONE:
-      return Smartphone;
+      return <Smartphone className={DEVICE_ICON_CLASS} />;
     case DeviceType.TABLET:
-      return Tablet;
+      return <Tablet className={DEVICE_ICON_CLASS} />;
     case DeviceType.DESKTOP:
-      return Laptop;
+      return <Laptop className={DEVICE_ICON_CLASS} />;
   }
 }
 
@@ -42,12 +45,10 @@ function formatDuration(connectedAt: string): string {
 }
 
 function DeviceCard({ device, isMe }: { device: DeviceInfo; isMe: boolean }) {
-  const Icon = getDeviceIcon(device.device_type);
-
   return (
     <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3">
       <div className="flex items-center gap-3">
-        <Icon className="h-5 w-5 text-gray-500 dark:text-gray-400 flex-shrink-0" />
+        <DeviceIcon deviceType={device.device_type} />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium text-gray-800 dark:text-gray-100 truncate">

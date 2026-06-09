@@ -5,7 +5,7 @@ Tests LAN IP detection functions. These run against the real network stack.
 
 import re
 
-from server.app.services.network_service import detect_all_lan_ips, detect_primary_lan_ip
+from shared.network import detect_all_lan_ips, detect_primary_lan_ip
 
 # IPv4 pattern: 1-3 digits . 1-3 digits . 1-3 digits . 1-3 digits
 IPV4_PATTERN = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")

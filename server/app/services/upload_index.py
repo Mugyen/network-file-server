@@ -1,25 +1,12 @@
-"""Per-file uploader index — backs the RECEIVE role ("see own uploads").
+"""Per-file uploader index for RECEIVE role ownership checks.
 
-A small JSON sidecar in the shared folder maps a file's relative path to
-the username that uploaded it (via the trusted relay identity). RECEIVE
-users only see/download files they themselves uploaded; untracked /
-pre-existing files are invisible to them.
+Mappings live in SQLite alongside the other server-side state so they
+survive restarts without leaving storage artifacts inside the shared folder.
 """
 
 from pathlib import Path
 
-from server.app.services.persistence import read_json, write_json_atomic
-
-_INDEX_NAME = ".wfs_upload_index.json"
-
-
-def index_filename() -> str:
-    """Name of the sidecar file (hidden from listings by callers)."""
-    return _INDEX_NAME
-
-
-def _index_path(shared_folder: Path) -> Path:
-    return shared_folder / _INDEX_NAME
+from server.app.services.sqlite_store import get_state_store
 
 
 def _norm(rel_path: str) -> str:
@@ -33,19 +20,17 @@ async def record_upload(shared_folder: Path, rel_path: str, uploader: str) -> No
     if not isinstance(uploader, str) or len(uploader) == 0:
         raise ValueError("uploader must be a non-empty string")
     key = _norm(rel_path)
-    path = _index_path(shared_folder)
-    data = await read_json(path)
-    data[key] = uploader
-    await write_json_atomic(path, data)
+    store = get_state_store(shared_folder.parent / ".wfs_data")
+    store.record_upload_owner(key, uploader)
 
 
 async def is_owned_by(shared_folder: Path, rel_path: str, uploader: str) -> bool:
     """True if ``uploader`` is the recorded uploader of ``rel_path``."""
-    data = await read_json(_index_path(shared_folder))
-    return data.get(_norm(rel_path)) == uploader
+    store = get_state_store(shared_folder.parent / ".wfs_data")
+    return store.is_upload_owned_by(_norm(rel_path), uploader)
 
 
 async def owned_paths(shared_folder: Path, uploader: str) -> set[str]:
     """Return the set of relative paths uploaded by ``uploader``."""
-    data = await read_json(_index_path(shared_folder))
-    return {k for k, v in data.items() if v == uploader}
+    store = get_state_store(shared_folder.parent / ".wfs_data")
+    return store.owned_upload_paths(uploader)

@@ -32,12 +32,7 @@ class ResolveBody(BaseModel):
     role: Role | None = None
 
 
-async def _serialize(req) -> dict[str, object]:
-    username = None
-    try:
-        username = (await get_account_store().get_user_by_id(req.user_id)).username
-    except UserNotFoundError:
-        username = None
+def _serialize_with_username(req, username: str | None) -> dict[str, object]:
     return {
         "id": req.id,
         "code": req.code,
@@ -46,6 +41,14 @@ async def _serialize(req) -> dict[str, object]:
         "status": req.status.value,
         "created_at": req.created_at,
     }
+
+
+async def _serialize(req) -> dict[str, object]:
+    try:
+        username = (await get_account_store().get_user_by_id(req.user_id)).username
+    except UserNotFoundError:
+        username = None
+    return _serialize_with_username(req, username)
 
 
 @router.post("")
@@ -71,7 +74,14 @@ async def list_requests(
         by_id = {r.id: r for r in mine}
         by_id.update({r.id: r for r in owned})
         reqs = sorted(by_id.values(), key=lambda r: r.id, reverse=True)
-    return [await _serialize(r) for r in reqs]
+    # One batch query for all usernames instead of one query per request row.
+    users = await get_account_store().get_users_by_ids([r.user_id for r in reqs])
+    return [
+        _serialize_with_username(
+            r, users[r.user_id].username if r.user_id in users else None
+        )
+        for r in reqs
+    ]
 
 
 @router.post("/{request_id}/resolve")
