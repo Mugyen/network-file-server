@@ -319,14 +319,39 @@ class TunnelConnection:
     # ------------------------------------------------------------------
 
     async def run_receive_loop(self) -> None:
-        """Async loop that reads frames from the WebSocket and dispatches them.
+        """Read frames and route them; OPEN/WS_OPEN go to _dispatch_frame.
 
-        - Binary frames are deserialized and routed to _dispatch_frame.
-        - Text frames are parsed as JSON control messages; "pong" calls handle_pong().
-        - Disconnect messages (no "bytes" or "text" key) break the loop.
-
-        Runs until the WebSocket is closed or an unrecoverable error occurs.
+        Used by the relay side, where inbound OPEN/DATA frames are correlated
+        to streams the relay opened and consumes via read_stream. Binary
+        frames are deserialized and routed to _dispatch_frame; text control
+        frames are handled (pong/ping/control_handler); a disconnect breaks
+        the loop. Runs until the WebSocket closes or errors.
         """
+        await self._run_receive_loop(None, None)
+
+    async def run_receive_loop_with_handlers(
+        self,
+        on_open: "Callable[[uuid.UUID, bytes], Coroutine[Any, Any, None]]",
+        on_ws_open: "Callable[[uuid.UUID, bytes], Coroutine[Any, Any, None]]",
+    ) -> None:
+        """Like run_receive_loop, but route OPEN/WS_OPEN to the given handlers.
+
+        Used by the agent side, which must intercept OPEN/WS_OPEN to spawn
+        request/WebSocket handlers (the agent is the origin server, not a
+        stream consumer). All other frame handling is identical.
+
+        Args:
+            on_open:    Awaitable invoked with (request_id, payload) for OPEN.
+            on_ws_open: Awaitable invoked with (request_id, payload) for WS_OPEN.
+        """
+        await self._run_receive_loop(on_open, on_ws_open)
+
+    async def _run_receive_loop(
+        self,
+        on_open: "Callable[[uuid.UUID, bytes], Coroutine[Any, Any, None]] | None",
+        on_ws_open: "Callable[[uuid.UUID, bytes], Coroutine[Any, Any, None]] | None",
+    ) -> None:
+        """Core receive loop shared by both public entry points."""
         while True:
             frame_dict = await self._ws.receive()
             if "bytes" in frame_dict:
@@ -334,7 +359,12 @@ class TunnelConnection:
                 if not isinstance(raw, bytes):
                     raise TunnelError(f"adapter returned non-bytes under 'bytes' key: {type(raw)!r}")
                 frame_type, request_id, payload = deserialize_frame(raw)
-                await self._dispatch_frame(frame_type, request_id, payload)
+                if frame_type is FrameType.OPEN and on_open is not None:
+                    await on_open(request_id, payload)
+                elif frame_type is FrameType.WS_OPEN and on_ws_open is not None:
+                    await on_ws_open(request_id, payload)
+                else:
+                    await self._dispatch_frame(frame_type, request_id, payload)
             elif "text" in frame_dict:
                 text = frame_dict["text"]
                 if not isinstance(text, str):

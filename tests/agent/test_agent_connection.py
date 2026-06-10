@@ -1,7 +1,5 @@
 """Tests for agent connection loop and reconnect behavior."""
 
-import asyncio
-import json
 import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -44,9 +42,12 @@ async def test_connect_and_serve_receives_mount_registered(tmp_path: Path) -> No
     mock_conn.start_heartbeat = MagicMock()
     mock_conn.close = AsyncMock()
     mock_conn.send_control = AsyncMock()
+    mock_conn.set_control_handler = MagicMock()
     mock_conn._ws = MagicMock()
-    # _agent_receive_loop will call _ws.receive which raises ConnectionError to exit
-    mock_conn._ws.receive = AsyncMock(side_effect=ConnectionError("ws closed"))
+    # The receive loop raises ConnectionError to simulate a clean disconnect.
+    mock_conn.run_receive_loop_with_handlers = AsyncMock(
+        side_effect=ConnectionError("ws closed")
+    )
 
     with (
         patch("agent.connection.websockets_connect") as mock_connect,
@@ -256,170 +257,79 @@ async def test_run_agent_loop_resets_attempt_counter_after_success(tmp_path: Pat
     assert attempt_on_second_failure == [1]
 
 
+# Receive-loop wiring lives in TunnelConnection now; the agent provides
+# OPEN/WS_OPEN handlers via _OpenFrameHandlers (ping/pong routing is covered
+# by tests/tunnel/test_connection.py). These tests cover that handler class.
+
+
 @pytest.mark.asyncio
-async def test_agent_receive_loop_dispatches_open_frames(tmp_path: Path) -> None:
-    """Test 5: OPEN frames received are dispatched as concurrent tasks via on_open callback."""
-    from agent.connection import _agent_receive_loop
-
-    from tunnel.frames import serialize_frame
-    from tunnel.enums import FrameType
-
-    dispatched_ids: list[uuid.UUID] = []
-
-    async def fake_on_open(request_id: uuid.UUID) -> None:
-        dispatched_ids.append(request_id)
-
-    rid1 = uuid.uuid4()
-    rid2 = uuid.uuid4()
-
-    # Build raw OPEN frames
-    frame1 = serialize_frame(FrameType.OPEN, rid1, json.dumps({"method": "GET", "path": "/a", "query": "", "headers": {}, "body": ""}).encode())
-    frame2 = serialize_frame(FrameType.OPEN, rid2, json.dumps({"method": "GET", "path": "/b", "query": "", "headers": {}, "body": ""}).encode())
-
-    # Use a call counter to interleave yields with event loop turns
-    call_count = 0
-    responses = [
-        {"bytes": frame1},
-        {"bytes": frame2},
-    ]
-
-    async def receive_with_yields() -> dict:
-        nonlocal call_count
-        idx = call_count
-        call_count += 1
-        if idx < len(responses):
-            await asyncio.sleep(0)  # yield control so previous task can run
-            return responses[idx]
-        raise ConnectionError("ws closed")
+async def test_open_frame_handlers_dispatch_open() -> None:
+    """_OpenFrameHandlers.on_open opens the stream and spawns handle_open_frame."""
+    from agent.connection import _OpenFrameHandlers
+    from tunnel.metadata import RequestMetadata
 
     conn = MagicMock()
-    conn._ws = MagicMock()
-    conn._dispatch_frame = AsyncMock()
-    conn.handle_pong = MagicMock()
-    conn._ws.receive = receive_with_yields
+    conn.open_stream = MagicMock()
+    payload = RequestMetadata(
+        method="GET", path="/a", query="", headers={}, content_length=0
+    ).to_payload()
+    rid = uuid.uuid4()
 
-    try:
-        await _agent_receive_loop(conn, fake_on_open)
-    except ConnectionError:
-        pass
+    dispatched: list[uuid.UUID] = []
 
-    # Give any remaining tasks a chance to complete
-    await asyncio.sleep(0)
+    async def fake_handle_open(c, request_id, metadata, client) -> None:
+        dispatched.append(request_id)
 
-    assert len(dispatched_ids) == 2
-    assert rid1 in dispatched_ids
-    assert rid2 in dispatched_ids
+    handlers = _OpenFrameHandlers(conn, MagicMock(), MagicMock())
+    with patch("agent.connection.handle_open_frame", side_effect=fake_handle_open):
+        await handlers.on_open(rid, payload)
+        await handlers.drain()
+
+    conn.open_stream.assert_called_once_with(rid)
+    assert dispatched == [rid]
 
 
 @pytest.mark.asyncio
-async def test_agent_receive_loop_dispatches_ws_open_frames() -> None:
-    """WS_OPEN frames received cause handle_ws_open_frame to be dispatched as tasks."""
-    from agent.connection import _agent_receive_loop_with_metadata
-    from tunnel.frames import serialize_frame
-    from tunnel.enums import FrameType
-    from fastapi import FastAPI
-
-    dispatched_ws_ids: list[uuid.UUID] = []
-    dispatched_metadata: list[dict] = []
+async def test_open_frame_handlers_dispatch_ws_open() -> None:
+    """_OpenFrameHandlers.on_ws_open spawns handle_ws_open_frame with parsed metadata."""
+    from agent.connection import _OpenFrameHandlers
+    from tunnel.metadata import WsOpenMetadata
 
     ws_id = uuid.uuid4()
-    ws_metadata = {"path": "/ws", "query": "", "headers": {}}
-    ws_frame = serialize_frame(
-        FrameType.WS_OPEN, ws_id, json.dumps(ws_metadata).encode()
-    )
+    payload = WsOpenMetadata(path="/ws", query="", headers={}).to_payload()
 
-    call_count = 0
+    dispatched_meta: list = []
 
-    async def receive_with_yields() -> dict:
-        nonlocal call_count
-        idx = call_count
-        call_count += 1
-        if idx == 0:
-            await asyncio.sleep(0)
-            return {"bytes": ws_frame}
-        raise ConnectionError("ws closed")
+    async def fake_handle_ws(c, request_id, metadata, app) -> None:
+        dispatched_meta.append(metadata)
 
-    conn = MagicMock()
-    conn._ws = MagicMock()
-    conn._dispatch_frame = AsyncMock()
-    conn.handle_pong = MagicMock()
-    conn._ws.receive = receive_with_yields
+    handlers = _OpenFrameHandlers(MagicMock(), MagicMock(), MagicMock())
+    with patch("agent.connection.handle_ws_open_frame", side_effect=fake_handle_ws):
+        await handlers.on_ws_open(ws_id, payload)
+        await handlers.drain()
 
-    app = FastAPI()
-
-    # Patch handle_ws_open_frame to capture calls
-    with patch("agent.connection.handle_ws_open_frame") as mock_handle_ws:
-        async def fake_handle_ws(conn, ws_id, metadata, asgi_app) -> None:
-            dispatched_ws_ids.append(ws_id)
-            dispatched_metadata.append(metadata)
-
-        mock_handle_ws.side_effect = fake_handle_ws
-
-        try:
-            await _agent_receive_loop_with_metadata(conn, MagicMock(), app)
-        except ConnectionError:
-            pass
-
-    await asyncio.sleep(0)
-
-    assert len(dispatched_ws_ids) == 1
-    assert dispatched_ws_ids[0] == ws_id
-    assert dispatched_metadata[0].path == "/ws"
+    assert len(dispatched_meta) == 1
+    assert dispatched_meta[0].path == "/ws"
 
 
 @pytest.mark.asyncio
-async def test_agent_receive_loop_responds_to_ping() -> None:
-    """_agent_receive_loop sends pong when it receives a ping control message."""
-    from agent.connection import _agent_receive_loop
-
-    call_count = 0
-
-    async def receive_ping_then_close() -> dict:
-        nonlocal call_count
-        idx = call_count
-        call_count += 1
-        if idx == 0:
-            return {"text": json.dumps({"type": "ping"})}
-        raise ConnectionError("ws closed")
+async def test_open_frame_handlers_reject_malformed_open() -> None:
+    """A malformed OPEN payload answers 400 and does not spawn a handler."""
+    from agent.connection import _OpenFrameHandlers
 
     conn = MagicMock()
-    conn._ws = MagicMock()
-    conn._ws.receive = receive_ping_then_close
-    conn.handle_pong = MagicMock()
-    conn.send_control = AsyncMock()
+    conn.send_data = AsyncMock()
+    conn.send_close = AsyncMock()
+    conn.open_stream = MagicMock()
 
-    try:
-        await _agent_receive_loop(conn, AsyncMock())
-    except ConnectionError:
-        pass
+    handlers = _OpenFrameHandlers(conn, MagicMock(), MagicMock())
+    with patch("agent.connection.handle_open_frame") as mock_handle:
+        await handlers.on_open(uuid.uuid4(), b"not valid json")
+        await handlers.drain()
 
-    conn.send_control.assert_called_once_with({"type": "pong"})
-
-
-@pytest.mark.asyncio
-async def test_agent_receive_loop_with_metadata_responds_to_ping() -> None:
-    """_agent_receive_loop_with_metadata sends pong when it receives a ping."""
-    from agent.connection import _agent_receive_loop_with_metadata
-
-    call_count = 0
-
-    async def receive_ping_then_close() -> dict:
-        nonlocal call_count
-        idx = call_count
-        call_count += 1
-        if idx == 0:
-            return {"text": json.dumps({"type": "ping"})}
-        raise ConnectionError("ws closed")
-
-    conn = MagicMock()
-    conn._ws = MagicMock()
-    conn._ws.receive = receive_ping_then_close
-    conn.handle_pong = MagicMock()
-    conn.send_control = AsyncMock()
-
-    try:
-        await _agent_receive_loop_with_metadata(conn, MagicMock(), MagicMock())
-    except ConnectionError:
-        pass
-
-    conn.send_control.assert_called_once_with({"type": "pong"})
+    mock_handle.assert_not_called()
+    conn.open_stream.assert_not_called()
+    # _reject_open sent a 400 status frame.
+    assert conn.send_data.await_count == 1
+    sent_payload = conn.send_data.await_args.args[1]
+    assert b'"status": 400' in sent_payload

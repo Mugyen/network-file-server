@@ -357,3 +357,7 @@ New relay/app/services/local_mount.py: LocalAsgiMount (app + forwarding client +
 ## 2026-06-10: Remediation phase 7 — signed identity headers + AccessMode.LEGACY
 
 New shared/identity_sig.py (HMAC-SHA256 over user|role|bypass). Agent mints a per-mount secret each connect, passes it to its embedded server (ServerConfig.identity_secret) and the relay (agent_auth); relay signs injected X-WFS-* headers (mount_proxy), server verifies before trusting (relay_identity). Closed a LATENT hole: AuthMiddleware did its own raw bypass check — now routes through signature-verifying is_auth_bypassed. Local-mount forward strips client X-WFS-*. AccessMode.LEGACY added; pre-v1.3 access_mode ALTER default → 'legacy'; access_policy logs the fail-open explicitly. 974 pytest green (+17 trust-boundary/sig tests incl. forged/cross-secret/unsigned rejection).
+
+## 2026-06-10: Remediation phase 8 — composition cleanups
+
+(a) server/app/bootstrap.py is the new composition root (build_mount_app, run_mount_agent, run_lan_server); cli.py is now parsing + delegation only and no longer imports the agent; import-boundaries whitelist points at bootstrap. (b) TunnelConnection.run_receive_loop_with_handlers(on_open, on_ws_open) added (shared private core); the agent's two hand-rolled receive loops deleted in favour of _OpenFrameHandlers (task spawn/drain) + a registered expired_files control handler — the agent no longer pokes conn._ws/_dispatch_frame. (c) mount_proxy left at 520 lines (cohesive; high-value extractions already done in 5-6). 974 pytest green.

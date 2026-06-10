@@ -111,8 +111,11 @@ async def test_connect_and_serve_passes_context_to_app_factory(tmp_path: Path) -
     mock_conn.start_heartbeat = MagicMock()
     mock_conn.close = AsyncMock()
     mock_conn.send_control = AsyncMock()
+    mock_conn.set_control_handler = MagicMock()
     mock_conn._ws = MagicMock()
-    mock_conn._ws.receive = AsyncMock(side_effect=ConnectionError("ws closed"))
+    mock_conn.run_receive_loop_with_handlers = AsyncMock(
+        side_effect=ConnectionError("ws closed")
+    )
 
     fake_hash = b"fakehashbytes"
 
@@ -149,7 +152,7 @@ def test_build_mount_app_configures_server(tmp_path: Path) -> None:
     server app's per-app config on app.state (the agent itself never
     touches server state)."""
     from agent.connection import MountAppContext
-    from server.app.cli import build_mount_app
+    from server.app.bootstrap import build_mount_app
 
     ctx = MountAppContext(
         folder=tmp_path,
@@ -183,18 +186,19 @@ async def test_connect_and_serve_ttl_raises_agent_expired_error(tmp_path: Path) 
     mock_conn.start_heartbeat = MagicMock()
     mock_conn.close = AsyncMock()
     mock_conn.send_control = AsyncMock()
+    mock_conn.set_control_handler = MagicMock()
     mock_conn._ws = MagicMock()
-    # Simulate a long-running receive that only returns after a brief sleep
-    # The TTL is 0 seconds so it should expire almost immediately
+    # Simulate a long-running receive loop that only returns after a brief
+    # sleep. The TTL is 0 seconds so it should expire almost immediately.
     receive_call_count = 0
 
-    async def slow_receive() -> dict:
+    async def slow_loop(on_open, on_ws_open) -> None:
         nonlocal receive_call_count
         receive_call_count += 1
         await asyncio.sleep(0.05)  # Let the TTL fire
         raise ConnectionError("ws closed")
 
-    mock_conn._ws.receive = slow_receive
+    mock_conn.run_receive_loop_with_handlers = slow_loop
 
     with (
         patch("agent.connection.websockets_connect") as mock_connect,

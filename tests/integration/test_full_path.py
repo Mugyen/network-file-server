@@ -26,7 +26,7 @@ import websockets
 
 from agent.connection import connect_and_serve
 from relay.app.enums import MountStatus
-from server.app.cli import build_mount_app
+from server.app.bootstrap import build_mount_app
 
 # Generous CI-friendly timeout for each await step.
 STEP_TIMEOUT_S = 15.0

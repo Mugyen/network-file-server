@@ -324,6 +324,23 @@ tunnel-level callback tests; agent integration tests must pass unchanged.
 **Done when.** No agent code touches `conn._*` internals; cli.py is parsing +
 delegation only; suite green.
 
+**AS-IMPLEMENTED (2026-06-10).** (a) `server/app/bootstrap.py` is the new
+composition root (`build_mount_app`, `run_mount_agent`, `run_lan_server`);
+`cli.py` is parsing + delegation; boundaries whitelist points at bootstrap.
+(b) `TunnelConnection.run_receive_loop_with_handlers(on_open, on_ws_open)`
+added (private `_run_receive_loop` core; no default params per project rule —
+the relay's zero-arg `run_receive_loop()` is the other wrapper). The agent's
+two hand-rolled loops are deleted; `_OpenFrameHandlers` owns task
+spawn/drain and `expired_files` moves to a registered control handler — the
+agent no longer touches `conn._ws`/`conn._dispatch_frame`. (c) NOT done:
+mount_proxy is 520 lines but cohesive (two tunnel-forwarding endpoints +
+shared header injection); the high-value extractions (html_rewriter,
+local-mount WS bridge) already landed in phases 5-6. A further split was
+judged to add indirection without clear benefit. e2e (`scripts/e2e.sh`)
+deferred to CI — it needs a browser + built client; the real-tunnel
+integration suite (`tests/integration/test_full_path.py`) passes as the
+local integration signal.
+
 ---
 
 ## Phase 9 — Client API types generated from OpenAPI

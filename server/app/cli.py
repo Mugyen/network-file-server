@@ -13,18 +13,9 @@ conflict where nargs='?' would greedily consume 'mount' as the folder argument.
 
 import argparse
 import sys
-from typing import TYPE_CHECKING, Optional
-
-if TYPE_CHECKING:
-    from agent.connection import MountAppContext
-
-import uvicorn
+from typing import Optional
 
 from shared.duration import parse_duration
-from server.app.config import ServerConfig
-from server.app.services.auth_service import hash_password
-from shared.network import detect_primary_lan_ip
-from shared.qr import generate_ascii_qr
 
 # Known subcommand names — used to detect mode in _parse_args and main()
 _SUBCOMMANDS: frozenset = frozenset({"mount"})
@@ -184,123 +175,23 @@ def _parse_args(argv: Optional[list] = None) -> argparse.Namespace:
     )
 
 
-def build_mount_app(ctx: "MountAppContext") -> object:
-    """App factory handed to the agent: build the server ASGI app for a mount.
-
-    This is the composition root joining the agent and server packages —
-    the agent itself never imports the server. All services (token service,
-    share links, ...) are constructed inside create_app and live on
-    app.state — no globals are touched, so repeated mounts (reconnects) and
-    other in-process apps cannot interfere with each other.
-    """
-    from server.app.main import create_app as _create_app
-
-    config = ServerConfig(
-        shared_folder=ctx.folder,
-        port=0,
-        password_hash=ctx.password_hash,
-        read_only=False,
-        receive=False,
-        mount_code=ctx.mount_code,
-        relay_url=ctx.relay_url,
-        identity_secret=ctx.identity_secret,
-    )
-    return _create_app(config)
-
-
 def main() -> None:
     """Parse CLI arguments and start the server or mount agent.
 
-    Dispatches based on args.command:
-    - 'mount': imports and calls agent.cli.run_mount(args, build_mount_app)
-    - None (bare invocation): requires folder, validates it, starts LAN server
+    Parsing lives here; composition (building/serving the app, wiring the
+    agent) lives in server/app/bootstrap.py so it can be tested without argv.
     """
     args = _parse_args()
 
+    # Imported here so `import server.app.cli` does not pull in the agent
+    # package — bootstrap is the single composition root that does.
+    from server.app import bootstrap
+
     if args.command == "mount":
-        from agent.cli import run_mount
-        run_mount(args, build_mount_app)
+        bootstrap.run_mount_agent(args)
         return
 
-    # LAN mode validation
-    if args.read_only and args.receive:
-        print("Error: --read-only and --receive cannot be used together")
-        sys.exit(1)
-
-    # Validate password length (bcrypt 72-byte limit)
-    if args.password is not None and len(args.password.encode("utf-8")) > 72:
-        print("Error: Password must not exceed 72 bytes (bcrypt limit)")
-        sys.exit(1)
-
-    # Apply defaults for arguments not provided
-    # Default port 8000 for FastAPI convention
-    port: int = args.port if args.port is not None else 8000
-    # Default 0.0.0.0 for LAN access
-    host: str = args.host if args.host is not None else "0.0.0.0"
-
-    from pathlib import Path
-
-    folder_path = Path(args.folder).resolve()
-
-    # Hash password if provided
-    password_hash: bytes | None = None
-    if args.password is not None:
-        password_hash = hash_password(args.password)
-
-    try:
-        config = ServerConfig(
-            shared_folder=folder_path,
-            port=port,
-            password_hash=password_hash,
-            read_only=args.read_only,
-            receive=args.receive,
-            mount_code=None,
-            relay_url=None,
-            identity_secret=None,
-        )
-    except ValueError as exc:
-        print(f"Error: {exc}")
-        sys.exit(1)
-
-    print("\nNetwork File Server Starting...")
-    print(f"Sharing folder: {config.shared_folder}")
-
-    # Print active modes
-    if args.password is not None:
-        print("  Mode: Password Protected")
-    if args.read_only:
-        print("  Mode: Read Only")
-    if args.receive:
-        print("  Mode: Receive Only")
-
-    # Display QR code and server URL for easy device connection
-    try:
-        local_ip = detect_primary_lan_ip()
-        server_url = f"http://{local_ip}:{port}"
-        ascii_qr = generate_ascii_qr(server_url)
-        print("\nScan this QR code to connect:\n")
-        print(ascii_qr)
-        print(f"Server URL: {server_url}")
-    except RuntimeError as exc:
-        print(f"Warning: Could not detect LAN IP ({exc})")
-        print(f"Server will be available at http://localhost:{port}")
-
-    print(f"Local URL: http://localhost:{port}")
-    print("Access from any device on the same network!")
-    print("\nPress Ctrl+C to stop the server\n")
-
-    # Build the app explicitly — all services live on app.state.
-    from server.app.main import create_app
-
-    app = create_app(config)
-
-    try:
-        uvicorn.run(app, host=host, port=port)
-    except KeyboardInterrupt:
-        print("\nServer stopped by user")
-    except Exception as exc:
-        print(f"Error starting server: {exc}")
-        sys.exit(1)
+    bootstrap.run_lan_server(args)
 
 
 def run_with_defaults(folder: str) -> None:
