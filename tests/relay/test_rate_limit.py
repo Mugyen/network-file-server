@@ -14,6 +14,7 @@ from httpx_ws.transport import ASGIWebSocketTransport
 from relay.app.main import create_relay_app
 from relay.app.rate_limit import get_client_ip
 from tests.relay.conftest import MockTunnelConnection, _setup_in_memory_registry
+from tunnel.constants import PROTOCOL_VERSION
 
 
 pytestmark = pytest.mark.anyio
@@ -224,7 +225,7 @@ async def _ws_recv_first_message(app, path: str) -> dict:
             await ws.send_text(
                 json.dumps(
                     {
-                        "type": "agent_auth",
+                        "type": "agent_auth", "protocol_version": PROTOCOL_VERSION,
                         "token": None,
                         "access_mode": "open",
                         "has_password": False,

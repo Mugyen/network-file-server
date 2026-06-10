@@ -16,6 +16,7 @@ from relay.app.logging import RelayEnv
 from relay.app.main import create_relay_app
 from relay.app.services.sqlite_registry import SqliteMountRegistry
 from tests.relay.conftest import MockTunnelConnection, _setup_in_memory_registry
+from tunnel.constants import PROTOCOL_VERSION
 
 
 pytestmark = pytest.mark.anyio
@@ -69,7 +70,7 @@ async def _recv_mount_registered(app, path: str) -> dict:
             await ws.send_text(
                 json.dumps(
                     {
-                        "type": "agent_auth",
+                        "type": "agent_auth", "protocol_version": PROTOCOL_VERSION,
                         "token": None,
                         "access_mode": "open",
                         "has_password": False,

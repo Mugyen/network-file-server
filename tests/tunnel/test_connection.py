@@ -291,9 +291,13 @@ async def test_send_data_serializes_and_sends_binary_frame(mock_ws):
 @pytest.mark.asyncio
 async def test_send_open_serializes_open_frame_with_json_metadata(mock_ws):
     """send_open serializes OPEN frame with JSON metadata as payload, sends binary."""
+    from tunnel.metadata import RequestMetadata
+
     conn = TunnelConnection(mock_ws)
     rid = uuid.uuid4()
-    metadata = {"method": "GET", "path": "/api/files"}
+    metadata = RequestMetadata(
+        method="GET", path="/api/files", query="", headers={}, content_length=0
+    )
 
     await conn.send_open(rid, metadata)
 
@@ -302,8 +306,7 @@ async def test_send_open_serializes_open_frame_with_json_metadata(mock_ws):
     frame_type, decoded_rid, decoded_payload = deserialize_frame(mock_ws.sent_bytes_frames[0])
     assert frame_type == FrameType.OPEN
     assert decoded_rid == rid
-    decoded_metadata = json.loads(decoded_payload.decode("utf-8"))
-    assert decoded_metadata == metadata
+    assert RequestMetadata.from_payload(decoded_payload) == metadata
 
 
 @pytest.mark.asyncio

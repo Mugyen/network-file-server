@@ -216,7 +216,7 @@ async def test_proxy_strips_spoofed_wfs_headers(proxy_env, mock_connection):
         headers={"x-wfs-role": "write", "x-wfs-user": "attacker",
                  "x-wfs-auth-bypass": "1"},
     )
-    fwd = mock_connection.sent_opens[-1][1]["headers"]
+    fwd = mock_connection.sent_opens[-1][1].headers
     lowered = {k.lower() for k in fwd}
     assert "x-wfs-role" not in lowered
     assert "x-wfs-user" not in lowered
@@ -240,7 +240,7 @@ async def test_proxy_injects_identity_for_allowlisted(proxy_env, mock_connection
         cookies={"wfs_session": token},
         headers={"x-wfs-role": "read"},  # spoof attempt — must be overridden
     )
-    fwd = {k.lower(): v for k, v in mock_connection.sent_opens[-1][1]["headers"].items()}
+    fwd = {k.lower(): v for k, v in mock_connection.sent_opens[-1][1].headers.items()}
     assert fwd["x-wfs-user"] == "ivy"
     assert fwd["x-wfs-role"] == "write"
     assert fwd["x-wfs-auth-bypass"] == "1"

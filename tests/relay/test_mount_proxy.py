@@ -86,8 +86,8 @@ async def test_proxy_send_open_metadata(registered_relay_client):
 
     assert len(conn.sent_opens) == 1
     _request_id, metadata = conn.sent_opens[0]
-    assert metadata["method"] == "GET"
-    assert metadata["path"] == "/some/path"
+    assert metadata.method == "GET"
+    assert metadata.path == "/some/path"
 
 
 async def test_proxy_post_body(registered_relay_client):
@@ -99,10 +99,10 @@ async def test_proxy_post_body(registered_relay_client):
 
     assert len(conn.sent_opens) == 1
     _request_id, metadata = conn.sent_opens[0]
-    assert metadata["method"] == "POST"
-    assert metadata["path"] == "/upload"
+    assert metadata.method == "POST"
+    assert metadata.path == "/upload"
     # Body must NOT be embedded in OPEN metadata
-    assert "body" not in metadata
+    assert not hasattr(metadata, "body")
     # Body must arrive as DATA frames followed by zero-length sentinel
     payloads = [payload for (_rid, payload) in conn.sent_data]
     assert len(payloads) >= 2, "Expected at least one body chunk and one sentinel"
@@ -129,7 +129,7 @@ async def test_proxy_large_upload_streams_body(relay_app):
     assert len(conn.sent_opens) == 1
     _request_id, metadata = conn.sent_opens[0]
     # Body must NOT be in OPEN metadata
-    assert "body" not in metadata
+    assert not hasattr(metadata, "body")
     # Must have multiple DATA frames
     payloads = [payload for (_rid, payload) in conn.sent_data]
     assert len(payloads) >= 3, "Expected multiple body chunks plus sentinel for large body"
@@ -151,7 +151,7 @@ async def test_proxy_get_no_body_sends_sentinel(registered_relay_client):
 
     assert len(conn.sent_opens) == 1
     _request_id, metadata = conn.sent_opens[0]
-    assert metadata["method"] == "GET"
+    assert metadata.method == "GET"
     # GET has no body — only the zero-length sentinel DATA frame
     payloads = [payload for (_rid, payload) in conn.sent_data]
     assert payloads == [b""], "GET must send exactly the zero-length sentinel DATA frame"
@@ -265,7 +265,7 @@ async def test_proxy_strips_hop_by_hop_headers(registered_relay_client):
 
     assert len(conn.sent_opens) == 1
     _request_id, metadata = conn.sent_opens[0]
-    fwd_headers = {k.lower(): v for k, v in metadata["headers"].items()}
+    fwd_headers = {k.lower(): v for k, v in metadata.headers.items()}
     assert "connection" not in fwd_headers
     assert "transfer-encoding" not in fwd_headers
 
@@ -372,8 +372,8 @@ async def test_proxy_websocket_sends_ws_open_frame(relay_app):
 
     assert len(conn.sent_ws_opens) == 1
     _ws_id, metadata = conn.sent_ws_opens[0]
-    assert metadata["path"] == "/ws"
-    assert "foo=bar" in metadata["query"]
+    assert metadata.path == "/ws"
+    assert "foo=bar" in metadata.query
 
 
 async def test_proxy_websocket_sends_ws_close_on_disconnect(relay_app):

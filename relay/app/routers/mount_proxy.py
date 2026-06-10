@@ -29,7 +29,12 @@ from relay.app.rate_limit import get_client_ip, limiter, proxy_request_rate
 from relay.app.routers.landing import templates
 from relay.app.services.access_policy import authorize, identity_from_cookies
 from tunnel.constants import FIRST_BYTE_TIMEOUT_S, MAX_PAYLOAD_BYTES
-from tunnel.exceptions import FirstByteTimeoutError
+from tunnel.exceptions import (
+    FirstByteTimeoutError,
+    MetadataTooLargeError,
+    TunnelSendError,
+)
+from tunnel.metadata import RequestMetadata, WsOpenMetadata
 from tunnel.ws_payload import (
     WsMessageKind,
     decode_ws_message,
@@ -215,27 +220,37 @@ async def proxy_request(request: Request, code: str, path: str) -> Response:
 
     content_length: int = int(request.headers.get("content-length", "0"))
 
-    metadata: dict = {
-        "method": request.method,
-        "path": f"/{path}",
-        "query": str(request.url.query),
-        "headers": forward_headers,
-        "content_length": content_length,
-    }
+    metadata = RequestMetadata(
+        method=request.method,
+        path=f"/{path}",
+        query=str(request.url.query),
+        headers=forward_headers,
+        content_length=content_length,
+    )
 
     request_id = uuid.uuid4()
     conn.open_stream(request_id)
-    await conn.send_open(request_id, metadata)
+    try:
+        await conn.send_open(request_id, metadata)
 
-    # Stream request body as DATA frames so frames never exceed MAX_PAYLOAD_BYTES.
-    # A zero-length DATA frame acts as the end-of-body sentinel.
-    async for chunk in request.stream():
-        offset = 0
-        while offset < len(chunk):
-            end = offset + MAX_PAYLOAD_BYTES
-            await conn.send_data(request_id, chunk[offset:end])
-            offset = end
-    await conn.send_data(request_id, b"")
+        # Stream request body as DATA frames so frames never exceed
+        # MAX_PAYLOAD_BYTES. A zero-length DATA frame is the end-of-body
+        # sentinel.
+        async for chunk in request.stream():
+            offset = 0
+            while offset < len(chunk):
+                end = offset + MAX_PAYLOAD_BYTES
+                await conn.send_data(request_id, chunk[offset:end])
+                offset = end
+        await conn.send_data(request_id, b"")
+    except MetadataTooLargeError:
+        # Pathological header set from the browser — reject, do not crash.
+        return Response("Request Header Fields Too Large", status_code=431)
+    except TunnelSendError:
+        # Socket went stale between lookup and send — clean 503, and the
+        # heartbeat/receive loop will mark the mount offline shortly.
+        logger.warning("Send failed mid-proxy: code=%s path=/%s", code, path)
+        return Response("Mount connection lost", status_code=503)
 
     try:
         first_chunk = await conn.read_stream(request_id, FIRST_BYTE_TIMEOUT_S)
@@ -431,14 +446,21 @@ async def proxy_websocket(websocket: WebSocket, code: str, path: str) -> None:
 
     ws_id = uuid.uuid4()
     conn.open_stream(ws_id)
-    await conn.send_ws_open(
-        ws_id,
-        {
-            "path": f"/{path}",
-            "query": str(websocket.url.query),
-            "headers": forward_headers,
-        },
-    )
+    try:
+        await conn.send_ws_open(
+            ws_id,
+            WsOpenMetadata(
+                path=f"/{path}",
+                query=str(websocket.url.query),
+                headers=forward_headers,
+            ),
+        )
+    except (MetadataTooLargeError, TunnelSendError) as exc:
+        # Cannot reach the agent (oversized headers or stale socket) —
+        # close the browser socket cleanly instead of crashing the bridge.
+        logger.warning("WS open failed: code=%s path=/%s error=%s", code, path, exc)
+        await websocket.close(code=1011)
+        return
 
     async def browser_to_agent() -> None:
         """Forward browser messages (text or binary) to agent as WS_DATA frames."""

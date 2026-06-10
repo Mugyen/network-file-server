@@ -25,7 +25,11 @@ from relay.app.services.mount_registry import (
 )
 from relay.app.state import RelayState
 from tunnel.connection import TunnelConnection
-from tunnel.constants import HEARTBEAT_INTERVAL_S, HEARTBEAT_MISSED_LIMIT
+from tunnel.constants import (
+    HEARTBEAT_INTERVAL_S,
+    HEARTBEAT_MISSED_LIMIT,
+    PROTOCOL_VERSION,
+)
 
 logger = logging.getLogger("relay.agent")
 
@@ -85,6 +89,20 @@ async def _read_agent_auth(
         await websocket.send_json(
             {"type": "error", "error": "expected agent_auth handshake"}
         )
+        await websocket.close(code=1008)
+        return None
+
+    agent_version = msg.get("protocol_version")
+    if agent_version != PROTOCOL_VERSION:
+        # Reject BEFORE registering: a version-skewed agent failing loudly
+        # at connect time beats silently dropped frames mid-session.
+        await websocket.send_json({
+            "type": "error",
+            "error": (
+                f"protocol version mismatch: agent={agent_version!r} "
+                f"relay={PROTOCOL_VERSION}"
+            ),
+        })
         await websocket.close(code=1008)
         return None
 

@@ -341,3 +341,7 @@ Server (2a): removed get_state_store() process cache; one ServerStateStore per a
 ## 2026-06-10: Remediation phase 3 — event loop never blocks on SQLite
 
 Service layer (clipboard/share/file-request/upload_index) now offloads all ServerStateStore calls via asyncio.to_thread; ShareLinkService methods went async (router + tests updated). Deviation from plan documented: store stays sync sqlite3 (create_app is a sync factory; lifespan-less test architecture), threading contract documented in sqlite_store.py. New shared/sqlite_kernel.py (is_new_db/open_wal_db/run_schema) adopted by relay sqlite_registry + file_ttl_db; accounts keeps its own bootstrap (leaf-package import boundary). 933 pytest green (+8 kernel tests).
+
+## 2026-06-10: Remediation phase 4 — tunnel protocol hardening
+
+PROTOCOL_VERSION=1 exchanged in agent_auth; relay rejects skewed/missing versions at handshake (close 1008). New tunnel/metadata.py: RequestMetadata/WsOpenMetadata wire contract with 16KiB cap + typed MetadataError validation on both ends (malformed OPEN now answers 400 instead of crashing the agent loop). Agent runs its own 30s heartbeat (detects half-dead relay sockets). Relay send paths wrap transport failures as TunnelSendError -> 503/431 instead of unhandled 500. 949 pytest green (+16 tests).

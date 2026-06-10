@@ -9,11 +9,13 @@ from typing import Any, AsyncIterator, Callable, Coroutine
 
 from tunnel.constants import MAX_STREAMS, QUEUE_DEPTH
 from tunnel.enums import FrameType
+from tunnel.metadata import RequestMetadata, WsOpenMetadata
 from tunnel.exceptions import (
     FirstByteTimeoutError,
     StreamLimitError,
     StreamNotFoundError,
     TunnelError,
+    TunnelSendError,
 )
 from tunnel.frames import deserialize_frame, serialize_frame
 from tunnel.protocol import WebSocketProtocol
@@ -173,26 +175,45 @@ class TunnelConnection:
     # Sending — binary data frames
     # ------------------------------------------------------------------
 
+    async def _guarded_send(self, frame: bytes) -> None:
+        """Send a binary frame, wrapping transport failures as TunnelSendError.
+
+        Raises:
+            TunnelSendError: If the underlying transport send fails.
+        """
+        try:
+            await self._ws.send_bytes(frame)
+        except (ConnectionError, OSError, RuntimeError) as exc:
+            # Stale/closed socket mid-send — surface as a typed tunnel error
+            # so the proxy can answer 503 instead of crashing the endpoint.
+            raise TunnelSendError(f"frame send failed: {exc}") from exc
+
     async def send_data(self, request_id: uuid.UUID, payload: bytes) -> None:
         """Serialize and send a DATA binary frame.
 
         Args:
             request_id: UUID correlating this data to an open stream on the receiver.
             payload:    Raw bytes to transmit.
+
+        Raises:
+            TunnelSendError: If the transport send fails.
         """
         frame = serialize_frame(FrameType.DATA, request_id, payload)
-        await self._ws.send_bytes(frame)
+        await self._guarded_send(frame)
 
-    async def send_open(self, request_id: uuid.UUID, metadata: dict[str, Any]) -> None:
-        """Serialize and send an OPEN binary frame with JSON metadata payload.
+    async def send_open(self, request_id: uuid.UUID, metadata: RequestMetadata) -> None:
+        """Serialize and send an OPEN binary frame with validated metadata.
 
         Args:
             request_id: UUID for the new stream being opened.
-            metadata:   Dict of request metadata (method, path, headers, etc.).
+            metadata:   Typed request metadata (size-capped at serialization).
+
+        Raises:
+            MetadataTooLargeError: If the metadata exceeds METADATA_MAX_BYTES.
+            TunnelSendError: If the transport send fails.
         """
-        payload = json.dumps(metadata).encode("utf-8")
-        frame = serialize_frame(FrameType.OPEN, request_id, payload)
-        await self._ws.send_bytes(frame)
+        frame = serialize_frame(FrameType.OPEN, request_id, metadata.to_payload())
+        await self._guarded_send(frame)
 
     async def send_close(self, request_id: uuid.UUID) -> None:
         """Serialize and send a CLOSE binary frame with empty payload.
@@ -212,16 +233,19 @@ class TunnelConnection:
         frame = serialize_frame(FrameType.CANCEL, request_id, b"")
         await self._ws.send_bytes(frame)
 
-    async def send_ws_open(self, ws_id: uuid.UUID, metadata: dict[str, Any]) -> None:
-        """Serialize and send a WS_OPEN binary frame with JSON metadata payload.
+    async def send_ws_open(self, ws_id: uuid.UUID, metadata: WsOpenMetadata) -> None:
+        """Serialize and send a WS_OPEN binary frame with validated metadata.
 
         Args:
             ws_id:    UUID for the new WebSocket stream being opened.
-            metadata: Dict of WebSocket metadata (path, query).
+            metadata: Typed WebSocket metadata (size-capped at serialization).
+
+        Raises:
+            MetadataTooLargeError: If the metadata exceeds METADATA_MAX_BYTES.
+            TunnelSendError: If the transport send fails.
         """
-        payload = json.dumps(metadata).encode("utf-8")
-        frame = serialize_frame(FrameType.WS_OPEN, ws_id, payload)
-        await self._ws.send_bytes(frame)
+        frame = serialize_frame(FrameType.WS_OPEN, ws_id, metadata.to_payload())
+        await self._guarded_send(frame)
 
     async def send_ws_data(self, ws_id: uuid.UUID, payload: bytes) -> None:
         """Serialize and send a WS_DATA binary frame with the given payload.

@@ -26,11 +26,38 @@ from agent.ws_adapter import WebSocketClientAdapter
 from shared.backoff import compute_backoff
 from agent.display import print_connected_status, print_mounted, print_reconnect_status
 from tunnel.connection import TunnelConnection
+from tunnel.constants import (
+    AGENT_HEARTBEAT_INTERVAL_S,
+    HEARTBEAT_MISSED_LIMIT,
+    PROTOCOL_VERSION,
+)
 from tunnel.enums import FrameType
+from tunnel.exceptions import MetadataError
 from tunnel.frames import deserialize_frame
+from tunnel.metadata import RequestMetadata, WsOpenMetadata
+
+import logging
+
+logger = logging.getLogger("agent.connection")
 
 # Alias for patching in tests
 asyncio_sleep = asyncio.sleep
+
+
+async def _reject_open(conn: TunnelConnection, request_id: uuid.UUID) -> None:
+    """Answer a malformed OPEN with an HTTP 400 so the relay's request resolves.
+
+    Best-effort: a send failure here means the connection is going down
+    anyway and the relay's first-byte timeout will produce the 504.
+    """
+    try:
+        await conn.send_data(
+            request_id,
+            json.dumps({"status": 400, "headers": {}}).encode("utf-8"),
+        )
+        await conn.send_close(request_id)
+    except Exception as exc:  # noqa: BLE001 — best-effort by contract; logged, never raised
+        logger.debug("Could not deliver 400 for malformed OPEN: %r", exc)
 
 
 @dataclass(frozen=True)
@@ -131,7 +158,14 @@ async def _agent_receive_loop_with_metadata(
                 raw: bytes = frame_dict["bytes"]
                 frame_type, request_id, payload = deserialize_frame(raw)
                 if frame_type == FrameType.OPEN:
-                    metadata = json.loads(payload.decode("utf-8"))
+                    try:
+                        metadata = RequestMetadata.from_payload(payload)
+                    except MetadataError as exc:
+                        # Malformed OPEN must not kill the receive loop —
+                        # answer 400 so the relay's waiting request resolves.
+                        logger.warning("Rejected malformed OPEN metadata: %s", exc)
+                        await _reject_open(conn, request_id)
+                        continue
                     # Open stream BEFORE spawning task so DATA frames dispatched
                     # by subsequent loop iterations land in the queue instead of
                     # being silently dropped by StreamNotFoundError.
@@ -142,9 +176,14 @@ async def _agent_receive_loop_with_metadata(
                     pending_tasks.add(task)
                     task.add_done_callback(pending_tasks.discard)
                 elif frame_type == FrameType.WS_OPEN:
-                    metadata = json.loads(payload.decode("utf-8"))
+                    try:
+                        ws_metadata = WsOpenMetadata.from_payload(payload)
+                    except MetadataError as exc:
+                        logger.warning("Rejected malformed WS_OPEN metadata: %s", exc)
+                        await conn.send_ws_close(request_id)
+                        continue
                     task = asyncio.create_task(
-                        handle_ws_open_frame(conn, request_id, metadata, app)
+                        handle_ws_open_frame(conn, request_id, ws_metadata, app)
                     )
                     pending_tasks.add(task)
                     task.add_done_callback(pending_tasks.discard)
@@ -306,6 +345,7 @@ async def connect_and_serve(
             )
         await conn.send_control({
             "type": "agent_auth",
+            "protocol_version": PROTOCOL_VERSION,
             "token": token,
             "access_mode": (
                 owner.access_mode.value
@@ -331,8 +371,11 @@ async def connect_and_serve(
 
         assigned_code: str = control["code"]
 
-        # Agent does NOT start its own heartbeat — the relay initiates pings,
-        # and the agent's receive loop responds with pongs automatically.
+        # Mutual heartbeat: the relay pings every HEARTBEAT_INTERVAL_S; the
+        # agent pings at a slower cadence so it also detects a half-dead
+        # relay socket (otherwise it would believe the mount is online while
+        # browsers get 503s). The relay's receive loop answers with pongs.
+        conn.start_heartbeat(AGENT_HEARTBEAT_INTERVAL_S, HEARTBEAT_MISSED_LIMIT)
 
         print_connected_status(reconnected=preferred_code is not None)
         print_mounted(relay_url, assigned_code, folder, name)

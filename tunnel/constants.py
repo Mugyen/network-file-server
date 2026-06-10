@@ -23,3 +23,14 @@ HEARTBEAT_MISSED_LIMIT: int = 3
 
 # Seconds before the first data byte is expected on a new stream
 FIRST_BYTE_TIMEOUT_S: int = 30
+
+# Protocol version exchanged in the agent_auth handshake. The relay rejects
+# agents with a different version BEFORE registering a mount, so a frame
+# format / frame type change bumps this and old agents fail loudly at
+# connect time instead of dropping frames silently.
+PROTOCOL_VERSION: int = 1
+
+# Agent-side heartbeat interval (the relay pings every HEARTBEAT_INTERVAL_S;
+# the agent pings less aggressively — it only needs to detect a half-dead
+# relay socket, where the agent believes it is mounted but the relay is gone).
+AGENT_HEARTBEAT_INTERVAL_S: int = 30

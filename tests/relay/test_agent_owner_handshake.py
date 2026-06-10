@@ -13,6 +13,7 @@ from accounts import AccessMode, Role, SqliteAccountStore, SubjectType, hash_pas
 from relay.app.main import create_relay_app
 from relay.app.services.session import RelaySession
 from tests.relay.conftest import _setup_in_memory_registry
+from tunnel.constants import PROTOCOL_VERSION
 
 pytestmark = pytest.mark.anyio
 
@@ -51,7 +52,7 @@ async def test_anonymous_open_handshake(owner_app):
     msg = await _handshake(
         app,
         "/agent/ws?code=openm",
-        {"type": "agent_auth", "token": None, "access_mode": "open",
+        {"type": "agent_auth", "protocol_version": PROTOCOL_VERSION, "token": None, "access_mode": "open",
          "has_password": False, "allowlist": []},
     )
     assert msg["type"] == "mount_registered"
@@ -73,7 +74,7 @@ async def test_restricted_owner_handshake_persists_policy(owner_app):
         app,
         "/agent/ws?code=secret1",
         {
-            "type": "agent_auth",
+            "type": "agent_auth", "protocol_version": PROTOCOL_VERSION,
             "token": token,
             "access_mode": "restricted",
             "has_password": True,
@@ -100,7 +101,7 @@ async def test_restricted_without_token_rejected(owner_app):
     msg = await _handshake(
         app,
         "/agent/ws",
-        {"type": "agent_auth", "token": None, "access_mode": "restricted",
+        {"type": "agent_auth", "protocol_version": PROTOCOL_VERSION, "token": None, "access_mode": "restricted",
          "has_password": False, "allowlist": []},
     )
     assert msg["type"] == "error"
@@ -112,7 +113,7 @@ async def test_invalid_owner_token_rejected(owner_app):
     msg = await _handshake(
         app,
         "/agent/ws",
-        {"type": "agent_auth", "token": "garbage", "access_mode": "restricted",
+        {"type": "agent_auth", "protocol_version": PROTOCOL_VERSION, "token": "garbage", "access_mode": "restricted",
          "has_password": False, "allowlist": []},
     )
     assert msg["type"] == "error"
@@ -127,7 +128,7 @@ async def test_unknown_allowlist_ref_rejected(owner_app):
         app,
         "/agent/ws",
         {
-            "type": "agent_auth",
+            "type": "agent_auth", "protocol_version": PROTOCOL_VERSION,
             "token": token,
             "access_mode": "restricted",
             "has_password": False,

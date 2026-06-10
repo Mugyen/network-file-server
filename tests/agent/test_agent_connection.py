@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from tunnel.constants import AGENT_HEARTBEAT_INTERVAL_S, HEARTBEAT_MISSED_LIMIT
 
 
 
@@ -70,7 +71,11 @@ async def test_connect_and_serve_receives_mount_registered(tmp_path: Path) -> No
 
     assert result == assigned_code
     # Agent does NOT start its own heartbeat — relay initiates pings, agent responds
-    mock_conn.start_heartbeat.assert_not_called()
+    # Phase-4 hardening: the agent now runs its own (slower) heartbeat so a
+    # half-dead relay socket is detected instead of silently believed online.
+    mock_conn.start_heartbeat.assert_called_once_with(
+        AGENT_HEARTBEAT_INTERVAL_S, HEARTBEAT_MISSED_LIMIT
+    )
 
 
 @pytest.mark.asyncio
@@ -318,7 +323,7 @@ async def test_agent_receive_loop_dispatches_ws_open_frames() -> None:
     dispatched_metadata: list[dict] = []
 
     ws_id = uuid.uuid4()
-    ws_metadata = {"path": "/ws", "query": ""}
+    ws_metadata = {"path": "/ws", "query": "", "headers": {}}
     ws_frame = serialize_frame(
         FrameType.WS_OPEN, ws_id, json.dumps(ws_metadata).encode()
     )
@@ -359,7 +364,7 @@ async def test_agent_receive_loop_dispatches_ws_open_frames() -> None:
 
     assert len(dispatched_ws_ids) == 1
     assert dispatched_ws_ids[0] == ws_id
-    assert dispatched_metadata[0]["path"] == "/ws"
+    assert dispatched_metadata[0].path == "/ws"
 
 
 @pytest.mark.asyncio

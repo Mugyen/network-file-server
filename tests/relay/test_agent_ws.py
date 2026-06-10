@@ -13,6 +13,7 @@ from httpx_ws.transport import ASGIWebSocketTransport
 
 from relay.app.main import create_relay_app
 from tests.relay.conftest import MockTunnelConnection, _setup_in_memory_registry
+from tunnel.constants import PROTOCOL_VERSION
 
 
 pytestmark = pytest.mark.anyio
@@ -62,7 +63,7 @@ async def _recv_mount_registered(app, path: str) -> dict:
             await ws.send_text(
                 json.dumps(
                     {
-                        "type": "agent_auth",
+                        "type": "agent_auth", "protocol_version": PROTOCOL_VERSION,
                         "token": None,
                         "access_mode": "open",
                         "has_password": False,
@@ -154,3 +155,49 @@ async def test_agent_reclaims_offline_mount_same_ip(agent_ws_app) -> None:
     assert msg2["reclaimed"] is True
     assert msg2["remaining_ttl"] is not None
     assert msg2["remaining_ttl"] > 0
+
+
+async def test_version_mismatch_rejected(agent_ws_app) -> None:
+    """An agent with a skewed protocol_version is refused before registration."""
+    transport = ASGIWebSocketTransport(app=agent_ws_app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        async with aconnect_ws(
+            "http://testserver/agent/ws",
+            client,
+            keepalive_ping_interval_seconds=None,
+            keepalive_ping_timeout_seconds=None,
+        ) as ws:
+            await ws.send_text(json.dumps({
+                "type": "agent_auth", "protocol_version": PROTOCOL_VERSION + 1,
+                "token": None, "access_mode": "open",
+                "has_password": False, "allowlist": [],
+            }))
+            raw = await ws.receive_text()
+            msg = json.loads(raw)
+    assert msg["type"] == "error"
+    assert "protocol version mismatch" in msg["error"]
+
+
+async def test_missing_version_rejected(agent_ws_app) -> None:
+    """An agent omitting protocol_version (pre-versioning) is refused."""
+    transport = ASGIWebSocketTransport(app=agent_ws_app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        async with aconnect_ws(
+            "http://testserver/agent/ws",
+            client,
+            keepalive_ping_interval_seconds=None,
+            keepalive_ping_timeout_seconds=None,
+        ) as ws:
+            await ws.send_text(json.dumps({
+                "type": "agent_auth",
+                "token": None, "access_mode": "open",
+                "has_password": False, "allowlist": [],
+            }))
+            raw = await ws.receive_text()
+            msg = json.loads(raw)
+    assert msg["type"] == "error"
+    assert "protocol version mismatch" in msg["error"]
