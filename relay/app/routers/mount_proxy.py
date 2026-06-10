@@ -27,6 +27,7 @@ from relay.app.services.html_rewriter import (
     HTML_REWRITE_MAX_BYTES,
     rewrite_html_body,
 )
+from shared.identity_sig import IDENTITY_SIG_HEADER, sign_identity
 from tunnel.constants import FIRST_BYTE_TIMEOUT_S, MAX_PAYLOAD_BYTES
 from tunnel.exceptions import (
     FirstByteTimeoutError,
@@ -61,6 +62,26 @@ HOP_BY_HOP: frozenset[str] = frozenset(
 )
 
 # HTML asset-path rewriting lives in relay/app/services/html_rewriter.py.
+
+
+def _inject_identity(
+    headers: dict[str, str], username: str, role_value: str, secret: str | None
+) -> None:
+    """Inject signed X-WFS-* identity headers for an allowlisted user.
+
+    Sets user/role/auth-bypass plus an HMAC signature over the tuple when a
+    per-mount secret is available. Without a secret (old agent), the headers
+    are injected unsigned — the server then ignores them (fail closed on
+    identity), so allowlisted users degrade to password/anonymous rather
+    than being silently trusted.
+    """
+    headers["x-wfs-user"] = username
+    headers["x-wfs-role"] = role_value
+    headers["x-wfs-auth-bypass"] = "1"
+    if secret is not None:
+        headers[IDENTITY_SIG_HEADER] = sign_identity(
+            secret, username, role_value, True
+        )
 
 
 @router.get("/m/{code}/status")
@@ -115,10 +136,17 @@ async def proxy_request(request: Request, code: str, path: str) -> Response:
     state: RelayState = request.app.state.relay
     local = state.local_mounts.get(code)
     if local is not None:
+        # Strip any client-supplied X-WFS-* identity headers — local mounts
+        # carry no trusted identity (the embedded server has no secret and
+        # ignores them regardless; stripping makes that explicit).
+        local_headers = {
+            k: v for k, v in request.headers.items()
+            if not k.lower().startswith("x-wfs-")
+        }
         resp = await local.forward_request(
             method=request.method,
             path=path,
-            headers=dict(request.headers),
+            headers=local_headers,
             content=await request.body(),
             query=str(request.url.query),
         )
@@ -196,9 +224,12 @@ async def proxy_request(request: Request, code: str, path: str) -> Response:
         forward_headers[header_name] = header_value
     forward_headers["host"] = request.headers.get("host", "")
     if decision.identified:
-        forward_headers["x-wfs-user"] = decision.username
-        forward_headers["x-wfs-role"] = decision.role.value
-        forward_headers["x-wfs-auth-bypass"] = "1"
+        _inject_identity(
+            forward_headers,
+            decision.username,
+            decision.role.value,
+            registry.get_identity_secret(code),
+        )
 
     content_length: int = int(request.headers.get("content-length", "0"))
 
@@ -399,9 +430,12 @@ async def proxy_websocket(websocket: WebSocket, code: str, path: str) -> None:
         forward_headers[header_name] = header_value
     forward_headers["host"] = websocket.headers.get("host", "")
     if decision.identified:
-        forward_headers["x-wfs-user"] = decision.username
-        forward_headers["x-wfs-role"] = decision.role.value
-        forward_headers["x-wfs-auth-bypass"] = "1"
+        _inject_identity(
+            forward_headers,
+            decision.username,
+            decision.role.value,
+            registry.get_identity_secret(code),
+        )
 
     ws_id = uuid.uuid4()
     conn.open_stream(ws_id)

@@ -244,3 +244,51 @@ async def test_proxy_injects_identity_for_allowlisted(proxy_env, mock_connection
     assert fwd["x-wfs-user"] == "ivy"
     assert fwd["x-wfs-role"] == "write"
     assert fwd["x-wfs-auth-bypass"] == "1"
+
+
+async def test_proxy_signs_injected_identity(proxy_env, mock_connection):
+    """The proxy adds a valid HMAC signature over the injected identity tuple."""
+    from shared.identity_sig import IDENTITY_SIG_HEADER, verify_identity
+
+    client, registry, store, session = proxy_env
+    user = await store.create_user("signed", hash_password("pw"), None)
+    await registry.register(
+        "sigm", mock_connection, agent_ip="127.0.0.1",
+        created_at=time.time(), expires_at=None,
+    )
+    await registry.set_owner_policy(
+        "sigm", user.id, AccessMode.RESTRICTED, False,
+        [PolicyEntry(SubjectType.USER, user.id, Role.WRITE)],
+    )
+    registry.set_identity_secret("sigm", "mount-secret-xyz")
+    token = session.issue(user.id, user.username)
+    await client.get("/m/sigm/file.txt", cookies={"wfs_session": token})
+
+    fwd = {k.lower(): v for k, v in mock_connection.sent_opens[-1][1].headers.items()}
+    assert verify_identity(
+        "mount-secret-xyz", fwd["x-wfs-user"], fwd["x-wfs-role"], True,
+        fwd[IDENTITY_SIG_HEADER],
+    )
+
+
+async def test_proxy_no_secret_injects_unsigned(proxy_env, mock_connection):
+    """Without a per-mount secret (old agent) identity headers are unsigned."""
+    from shared.identity_sig import IDENTITY_SIG_HEADER
+
+    client, registry, store, session = proxy_env
+    user = await store.create_user("nosig", hash_password("pw"), None)
+    await registry.register(
+        "nosigm", mock_connection, agent_ip="127.0.0.1",
+        created_at=time.time(), expires_at=None,
+    )
+    await registry.set_owner_policy(
+        "nosigm", user.id, AccessMode.RESTRICTED, False,
+        [PolicyEntry(SubjectType.USER, user.id, Role.WRITE)],
+    )
+    # No set_identity_secret call — simulates a pre-signing agent.
+    token = session.issue(user.id, user.username)
+    await client.get("/m/nosigm/file.txt", cookies={"wfs_session": token})
+
+    fwd = {k.lower(): v for k, v in mock_connection.sent_opens[-1][1].headers.items()}
+    assert fwd["x-wfs-user"] == "nosig"
+    assert IDENTITY_SIG_HEADER not in fwd

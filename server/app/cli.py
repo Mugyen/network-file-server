@@ -203,6 +203,7 @@ def build_mount_app(ctx: "MountAppContext") -> object:
         receive=False,
         mount_code=ctx.mount_code,
         relay_url=ctx.relay_url,
+        identity_secret=ctx.identity_secret,
     )
     return _create_app(config)
 
@@ -255,6 +256,7 @@ def main() -> None:
             receive=args.receive,
             mount_code=None,
             relay_url=None,
+            identity_secret=None,
         )
     except ValueError as exc:
         print(f"Error: {exc}")

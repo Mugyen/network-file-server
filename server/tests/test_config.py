@@ -23,6 +23,7 @@ class TestServerConfig:
             receive=False,
             mount_code=None,
             relay_url=None,
+            identity_secret=None,
         )
         assert config.shared_folder == tmp_path
         assert config.port == 8000
@@ -38,6 +39,7 @@ class TestServerConfig:
                 receive=False,
                 mount_code=None,
             relay_url=None,
+            identity_secret=None,
             )
 
     def test_file_instead_of_directory_raises(self, tmp_path: Path) -> None:
@@ -52,6 +54,7 @@ class TestServerConfig:
                 receive=False,
                 mount_code=None,
             relay_url=None,
+            identity_secret=None,
             )
 
     def test_stores_password_hash(self, tmp_path: Path) -> None:
@@ -64,6 +67,7 @@ class TestServerConfig:
             receive=False,
             mount_code=None,
             relay_url=None,
+            identity_secret=None,
         )
         assert config.password_hash == hashed
 
@@ -76,6 +80,7 @@ class TestServerConfig:
             receive=False,
             mount_code=None,
             relay_url=None,
+            identity_secret=None,
         )
         assert config.read_only is True
 
@@ -88,6 +93,7 @@ class TestServerConfig:
             receive=True,
             mount_code=None,
             relay_url=None,
+            identity_secret=None,
         )
         assert config.receive is True
 

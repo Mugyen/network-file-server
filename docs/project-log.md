@@ -353,3 +353,7 @@ New relay/app/services/html_rewriter.py: charset-aware decode (Content-Type para
 ## 2026-06-10: Remediation phase 6 — dropbox is a first-class local mount
 
 New relay/app/services/local_mount.py: LocalAsgiMount (app + forwarding client + WS bridge + aclose). RelayState.local_mounts dict replaces dropbox_app/dropbox_client fields; lifespan registers/closes the drop box through it. mount_proxy now has ZERO dropbox references — both HTTP and WS paths dispatch on local_mounts membership; the ~70-line bespoke WS bridge moved into the service. init_dropbox returns the mount. 959 pytest green (+2 tests).
+
+## 2026-06-10: Remediation phase 7 — signed identity headers + AccessMode.LEGACY
+
+New shared/identity_sig.py (HMAC-SHA256 over user|role|bypass). Agent mints a per-mount secret each connect, passes it to its embedded server (ServerConfig.identity_secret) and the relay (agent_auth); relay signs injected X-WFS-* headers (mount_proxy), server verifies before trusting (relay_identity). Closed a LATENT hole: AuthMiddleware did its own raw bypass check — now routes through signature-verifying is_auth_bypassed. Local-mount forward strips client X-WFS-*. AccessMode.LEGACY added; pre-v1.3 access_mode ALTER default → 'legacy'; access_policy logs the fail-open explicitly. 974 pytest green (+17 trust-boundary/sig tests incl. forged/cross-secret/unsigned rejection).

@@ -8,8 +8,9 @@ import json
 from http.cookies import SimpleCookie
 from typing import Any, Callable
 
+from server.app.config import ServerConfig
 from server.app.services.auth_service import AuthTokenService
-from server.app.services.relay_identity import HEADER_AUTH_BYPASS
+from server.app.services.relay_identity import is_auth_bypassed
 
 # Type aliases for ASGI
 Scope = dict[str, Any]
@@ -29,12 +30,12 @@ class AuthMiddleware:
     reliably reject WebSocket connections before upgrade.
     """
 
-    def __init__(self, app: ASGIApp, token_service: AuthTokenService, relay_served: bool) -> None:
+    def __init__(self, app: ASGIApp, token_service: AuthTokenService, config: ServerConfig) -> None:
         self._app = app
         self._token_service = token_service
-        # Whether X-WFS-* bypass headers are trustworthy (relay strips and
-        # re-injects them only when this server is mounted via the relay).
-        self._relay_served = relay_served
+        # Full config so the bypass decision goes through the signature-
+        # verifying is_auth_bypassed (relay-served + valid HMAC required).
+        self._config = config
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in ("http",):
@@ -58,13 +59,15 @@ class AuthMiddleware:
         # Parse cookies from headers
         headers = dict(scope.get("headers", []))
 
-        # Relay-vouched allowlisted user: the relay strips inbound
-        # X-WFS-* and injects this only for authorised accounts. Honour
-        # it only when relay-served (LAN clients can't be trusted).
-        bypass = headers.get(
-            HEADER_AUTH_BYPASS.encode("latin-1"), b""
-        ).decode("latin-1")
-        if bypass == "1" and self._relay_served:
+        # Relay-vouched allowlisted user: the relay strips inbound X-WFS-*
+        # and injects a SIGNED identity only for authorised accounts.
+        # is_auth_bypassed verifies the HMAC against the per-mount secret —
+        # a bare/forged bypass header from a LAN client does not pass.
+        str_headers = {
+            k.decode("latin-1").lower(): v.decode("latin-1")
+            for k, v in scope.get("headers", [])
+        }
+        if is_auth_bypassed(self._config, str_headers):
             await self._app(scope, receive, send)
             return
 

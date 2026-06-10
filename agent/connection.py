@@ -7,6 +7,7 @@ Provides connect_and_serve (single connection attempt) and run_agent_loop
 import asyncio
 import functools
 import json
+import secrets
 import time
 import uuid
 from dataclasses import dataclass
@@ -74,6 +75,9 @@ class MountAppContext:
     password_hash: bytes | None
     mount_code: str
     relay_url: str
+    # Per-mount secret the relay uses to sign injected identity headers and
+    # the embedded server uses to verify them (see shared.identity_sig).
+    identity_secret: str
 
 
 AppFactory = Callable[[MountAppContext], Any]
@@ -335,6 +339,12 @@ async def connect_and_serve(
         adapter = WebSocketClientAdapter(raw_ws)
         conn = TunnelConnection(adapter)
 
+        # Per-mount identity-signing secret: minted fresh each connect and
+        # shared only with this relay (in agent_auth) and this mount's
+        # embedded server (via MountAppContext). A LAN client that reaches
+        # the server directly cannot forge signed identity headers.
+        identity_secret = secrets.token_urlsafe(32)
+
         # Owner/policy handshake: the relay reads exactly one agent_auth
         # control message after accepting the socket and before sending
         # mount_registered. Anonymous/open mounts still send it (token=None).
@@ -346,6 +356,7 @@ async def connect_and_serve(
         await conn.send_control({
             "type": "agent_auth",
             "protocol_version": PROTOCOL_VERSION,
+            "identity_secret": identity_secret,
             "token": token,
             "access_mode": (
                 owner.access_mode.value
@@ -388,6 +399,7 @@ async def connect_and_serve(
                 password_hash=password_hash,
                 mount_code=assigned_code,
                 relay_url=relay_url,
+                identity_secret=identity_secret,
             )
         )
         transport = ASGITransport(app=app)

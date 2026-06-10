@@ -271,6 +271,27 @@ policy-less mounts; the fallback catch becomes a logged, enum-visible state.
 `server/app/services/relay_identity.py`, `server/app/middleware/auth_middleware.py`,
 `relay/app/routers/{agent_ws,mount_proxy}.py`, `relay/app/services/access_policy.py`.
 
+**AS-IMPLEMENTED DEVIATIONS (2026-06-10).**
+- Signature covers `user|role|bypass`, NOT the request path. Path-binding was
+  dropped: the path is rewritten between relay and server (fragile to
+  canonicalize), and per-mount secrets already prevent cross-mount replay;
+  intra-mount replay requires capturing a legitimate signed request = local
+  MITM = already-compromised host (out of scope). Shared canonicalization
+  lives in `shared/identity_sig.py` so relay (signer) and server (verifier)
+  stay byte-identical.
+- The per-mount secret lives in `SqliteMountRegistry._identity_secrets`
+  (in-memory, never persisted — agents mint a fresh secret per connect),
+  not in a registry DB column.
+- A LATENT HOLE was found and closed during implementation: `AuthMiddleware`
+  did its own raw `x-wfs-auth-bypass == "1"` check, bypassing signature
+  verification entirely. It now routes through `is_auth_bypassed` (config +
+  HMAC) like the rest of the trust path.
+- LEGACY: rather than a startup migration inserting rows, the pre-v1.3
+  `access_mode` ALTER default is `'legacy'` (fresh mounts get an explicit
+  policy anyway); `authorize` treats LEGACY as OPEN but logs it. The
+  `MountNotFoundError` fail-open is now logged with an accurate "mount
+  vanished → get_connection renders 404" comment.
+
 **Tests.** Forged-header rejection (wrong/missing sig → anonymous), happy-path
 signed identity, legacy-mount migration test.
 

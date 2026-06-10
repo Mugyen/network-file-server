@@ -156,6 +156,7 @@ def test_build_mount_app_configures_server(tmp_path: Path) -> None:
         password_hash=None,
         mount_code="FACTORYCODE",
         relay_url="https://relay.example.com",
+        identity_secret="ctx-secret",
     )
     app = build_mount_app(ctx)
     assert app is not None
@@ -163,6 +164,7 @@ def test_build_mount_app_configures_server(tmp_path: Path) -> None:
     config = app.state.config
     assert config.mount_code == "FACTORYCODE"
     assert config.shared_folder == tmp_path
+    assert config.identity_secret == "ctx-secret"
     assert config.password_hash is None
 
 

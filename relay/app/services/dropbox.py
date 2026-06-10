@@ -37,5 +37,7 @@ async def init_dropbox(data_dir: Path, dropbox_code: str) -> LocalAsgiMount:
         receive=False,
         mount_code=dropbox_code,
         relay_url=None,
+        # Local mount: never trusts X-WFS-* identity (no allowlist, anonymous).
+        identity_secret=None,
     )
     return LocalAsgiMount(code=dropbox_code, app=create_app(config))

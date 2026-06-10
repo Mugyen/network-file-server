@@ -21,10 +21,17 @@ class Role(str, Enum):
 
 
 class AccessMode(str, Enum):
-    """Whether a mount is open to anyone or restricted to an allowlist."""
+    """Whether a mount is open to anyone or restricted to an allowlist.
+
+    LEGACY marks a pre-v1.3 mount row that predates the access-policy model
+    (no explicit owner/access policy was ever recorded). It is treated as
+    OPEN at authorization time, but as a named, auditable state rather than
+    an implicit absence.
+    """
 
     OPEN = "open"
     RESTRICTED = "restricted"
+    LEGACY = "legacy"
 
 
 class SubjectType(str, Enum):

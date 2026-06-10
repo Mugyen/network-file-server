@@ -8,6 +8,9 @@ from httpx import ASGITransport, AsyncClient
 
 from server.app.config import ServerConfig
 from server.app.main import create_app
+from shared.identity_sig import IDENTITY_SIG_HEADER, sign_identity
+
+_SECRET = "receive-test-secret"
 
 
 def _mount_app(folder: Path):
@@ -19,6 +22,7 @@ def _mount_app(folder: Path):
         receive=False,
         mount_code="ABC123",
         relay_url="https://relay.example.com",
+        identity_secret=_SECRET,
     )
     return create_app(config)
 
@@ -30,7 +34,13 @@ async def _client(app):
 
 
 def _recv(user: str) -> dict:
-    return {"x-wfs-role": "receive", "x-wfs-user": user}
+    """Signed RECEIVE-role identity headers as the relay would inject them."""
+    return {
+        "x-wfs-role": "receive",
+        "x-wfs-user": user,
+        "x-wfs-auth-bypass": "1",
+        IDENTITY_SIG_HEADER: sign_identity(_SECRET, user, "receive", True),
+    }
 
 
 @pytest.fixture

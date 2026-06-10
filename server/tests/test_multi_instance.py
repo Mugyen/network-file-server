@@ -68,6 +68,7 @@ class TestMultiInstance:
                 receive=False,
                 mount_code=None,
                 relay_url=None,
+                identity_secret=None,
             )
         )
         open_app = _make_app(open_folder, 8004)

@@ -40,6 +40,7 @@ def configured_app_with_shares(
         receive=False,
         mount_code=None,
         relay_url=None,
+        identity_secret=None,
     )
     app = create_app(config)
     app.state.share_service = ShareLinkService(secrets.token_hex(32), now_fn=share_clock)
@@ -68,6 +69,7 @@ def configured_app_shares_with_password(tmp_shared_folder: Path) -> "FastAPI":  
         receive=False,
         mount_code=None,
         relay_url=None,
+        identity_secret=None,
     )
     return create_app(config)
 

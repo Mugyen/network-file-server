@@ -7,12 +7,18 @@ Public API re-exports — importers may use either:
 
 from shared.backoff import compute_backoff
 from shared.duration import parse_duration
+from shared.identity_sig import (
+    IDENTITY_SIG_HEADER,
+    sign_identity,
+    verify_identity,
+)
 from shared.network import detect_all_lan_ips, detect_primary_lan_ip
 from shared.paths import repo_root
 from shared.qr import generate_ascii_qr, generate_svg_qr
 from shared.spa import SPA_PLACEHOLDER_HTML, spa_shell_response
 
 __all__ = [
+    "IDENTITY_SIG_HEADER",
     "SPA_PLACEHOLDER_HTML",
     "compute_backoff",
     "detect_all_lan_ips",
@@ -21,5 +27,7 @@ __all__ = [
     "generate_svg_qr",
     "parse_duration",
     "repo_root",
+    "sign_identity",
     "spa_shell_response",
+    "verify_identity",
 ]

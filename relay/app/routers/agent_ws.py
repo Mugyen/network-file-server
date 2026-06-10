@@ -68,9 +68,9 @@ async def _read_agent_auth(
     """Read+validate the agent_auth handshake frame.
 
     Returns ``(owner_user_id|None, owner_username|None, AccessMode,
-    has_password, list[PolicyEntry])`` on success. On any protocol/auth
-    failure it sends an error frame, closes the socket (1008), and
-    returns ``None``.
+    has_password, list[PolicyEntry], identity_secret|None)`` on success. On
+    any protocol/auth failure it sends an error frame, closes the socket
+    (1008), and returns ``None``.
     """
     try:
         msg = await conn.receive_control()
@@ -108,6 +108,7 @@ async def _read_agent_auth(
 
     token = msg.get("token")
     has_password = bool(msg.get("has_password", False))
+    identity_secret = msg.get("identity_secret")
     raw_allow = msg.get("allowlist", []) or []
     try:
         access_mode = AccessMode(msg.get("access_mode", AccessMode.OPEN.value))
@@ -169,7 +170,8 @@ async def _read_agent_auth(
             PolicyEntry(subject_type=st, subject_id=subject_id, role=role)
         )
 
-    return owner_user_id, owner_username, access_mode, has_password, entries
+    secret = identity_secret if isinstance(identity_secret, str) and identity_secret else None
+    return owner_user_id, owner_username, access_mode, has_password, entries, secret
 
 
 @router.websocket("/agent/ws")
@@ -267,7 +269,14 @@ async def agent_websocket(
     auth = await _read_agent_auth(conn, websocket, state)
     if auth is None:
         return
-    owner_user_id, owner_username, access_mode, has_password, policy_entries = auth
+    (
+        owner_user_id,
+        owner_username,
+        access_mode,
+        has_password,
+        policy_entries,
+        identity_secret,
+    ) = auth
 
     # Determine assigned code with reclaim-aware logic
     reclaimed: bool = False
@@ -324,6 +333,13 @@ async def agent_websocket(
         logger.warning(
             "set_owner_policy: mount %s missing after register", assigned_code
         )
+
+    # Store this session's identity-signing secret so the proxy can sign
+    # injected identity headers for allowlisted users. Absent for old agents
+    # (pre-signing) — the proxy then injects unsigned headers, which the
+    # server safely ignores (fail closed on identity).
+    if identity_secret is not None:
+        registry.set_identity_secret(assigned_code, identity_secret)
 
     reused_code: bool = code is not None and assigned_code == code
     logger.info(

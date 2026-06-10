@@ -17,6 +17,7 @@ Header injection (X-WFS-*) is layered on top of this in the proxy
 """
 
 from collections.abc import Mapping
+import logging
 from dataclasses import dataclass
 
 from accounts import AccessMode, AccountStore, Role, SubjectType, UserNotFoundError
@@ -32,6 +33,8 @@ from relay.app.services.session import (
     RelaySession,
     SessionIdentity,
 )
+
+logger = logging.getLogger("relay.access_policy")
 
 # Most-permissive-wins ordering when a user matches several allowlist
 # entries (e.g. directly and via a group).
@@ -128,8 +131,9 @@ async def authorize(
     try:
         policy: MountPolicy = await registry.get_policy(code)
     except MountNotFoundError:
-        # Legacy mounts (pre-v1.3) and the drop box have no policy row —
-        # fail open to preserve prior behaviour.
+        # Mount row absent (vanished between checks): fail open here — the
+        # proxy's subsequent get_connection() renders the not_found page.
+        logger.debug("authorize: no policy row for code=%s, failing open", code)
         return AccessDecision(identified=False, username=None, role=None)
 
     if identity is not None:
@@ -138,6 +142,16 @@ async def authorize(
             return AccessDecision(
                 identified=True, username=identity.username, role=role
             )
+
+    # LEGACY (pre-v1.3, no policy ever recorded) is treated as OPEN, but as a
+    # named, logged state rather than an implicit absence.
+    if policy.access_mode is AccessMode.LEGACY:
+        logger.info("authorize: legacy mount code=%s treated as open", code)
+        return AccessDecision(
+            identified=False,
+            username=identity.username if identity is not None else None,
+            role=None,
+        )
 
     if policy.access_mode is AccessMode.OPEN:
         return AccessDecision(

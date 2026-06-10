@@ -94,7 +94,7 @@ def create_app(config: ServerConfig) -> FastAPI:
         application.add_middleware(
             AuthMiddleware,
             token_service=application.state.token_service,
-            relay_served=config.mount_code is not None,
+            config=config,
         )
 
     # --- Routers ------------------------------------------------------------
