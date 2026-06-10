@@ -12,7 +12,6 @@ from httpx_ws import aconnect_ws
 from httpx_ws.transport import ASGIWebSocketTransport
 
 from relay.app.main import create_relay_app
-from relay.app.services.mount_registry import get_registry
 from tests.relay.conftest import MockTunnelConnection, _setup_in_memory_registry
 
 
@@ -24,14 +23,13 @@ async def agent_ws_app():
     """Create a fresh relay app with in-memory SQLite registry for each test.
 
     Manually creates the SqliteMountRegistry because ASGIWebSocketTransport
-    does not trigger FastAPI lifespan events. Resets the mount registration
-    rate limiter to avoid cross-test pollution.
+    does not trigger FastAPI lifespan events. Each app instance has its own
+    mount-registration rate limiter on ``app.state.relay.mount_reg_limiter``,
+    so no cross-test reset is needed.
     """
     with patch.dict(os.environ, {"RELAY_DB_PATH": ":memory:"}):
         app = create_relay_app()
-    from relay.app.routers.agent_ws import reset_mount_reg_limiter
-    reset_mount_reg_limiter()
-    registry = await _setup_in_memory_registry()
+    registry = await _setup_in_memory_registry(app)
     yield app
     await registry.close()
 
@@ -103,7 +101,7 @@ async def test_agent_connects_with_available_preferred_code_uses_it(agent_ws_app
 async def test_agent_connects_with_occupied_code_generates_new_code(agent_ws_app) -> None:
     """Agent connects with ?code=occupied (already taken) — relay generates a different code."""
     # Register directly with a different IP to truly occupy the code
-    registry = get_registry()
+    registry = agent_ws_app.state.relay.registry
     conn = MockTunnelConnection()
     await registry.register(
         "occupied",
@@ -127,7 +125,7 @@ async def test_agent_disconnect_marks_mount_offline(agent_ws_app) -> None:
     assigned_code = msg["code"]
     # Give the server a moment for the finally block cleanup to run
     await asyncio.sleep(0.1)
-    registry = get_registry()
+    registry = agent_ws_app.state.relay.registry
     # Mount should still exist (OFFLINE) because we use mark_offline instead of deregister
     assert await registry.has_mount(assigned_code)
 

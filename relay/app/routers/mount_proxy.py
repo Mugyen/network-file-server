@@ -17,7 +17,7 @@ import httpx_ws
 from httpx_ws.transport import ASGIWebSocketTransport
 from wsproto.events import BytesMessage, CloseConnection, TextMessage
 
-from relay.app.config import get_config
+from relay.app.state import RelayState
 from relay.app.exceptions import (
     AccessDeniedError,
     AuthenticationRequiredError,
@@ -25,11 +25,9 @@ from relay.app.exceptions import (
     MountNotFoundError,
     MountOfflineError,
 )
-from relay.app.rate_limit import get_client_ip, limiter
+from relay.app.rate_limit import get_client_ip, limiter, proxy_request_rate
 from relay.app.routers.landing import templates
 from relay.app.services.access_policy import authorize, identity_from_cookies
-from relay.app.services.dropbox import get_dropbox_app, get_dropbox_client
-from relay.app.services.mount_registry import get_registry
 from tunnel.constants import FIRST_BYTE_TIMEOUT_S, MAX_PAYLOAD_BYTES
 from tunnel.exceptions import FirstByteTimeoutError
 from tunnel.ws_payload import (
@@ -81,14 +79,15 @@ def rewrite_html_asset_paths(html: str, mount_prefix: str) -> str:
 
 
 @router.get("/m/{code}/status")
-async def mount_status(code: str) -> dict[str, str]:
+async def mount_status(request: Request, code: str) -> dict[str, str]:
     """Return the current status of a mount code.
 
     Returns JSON: {"status": "online"|"offline"|"expired"|"not_found"}
     Not rate-limited — status polling at 30s intervals should not consume
     the proxy rate limit budget.
     """
-    registry = get_registry()
+    state: RelayState = request.app.state.relay
+    registry = state.require_registry()
     try:
         await registry.get_connection(code)
         return {"status": "online"}
@@ -107,7 +106,7 @@ async def mount_status(code: str) -> dict[str, str]:
     "/m/{code}/{path:path}",
     methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
 )
-@limiter.limit(lambda: get_config().proxy_request_rate)
+@limiter.limit(proxy_request_rate)
 async def proxy_request(request: Request, code: str, path: str) -> Response:
     """Proxy a browser HTTP request through the tunnel to the registered agent.
 
@@ -128,8 +127,9 @@ async def proxy_request(request: Request, code: str, path: str) -> Response:
     start: float = time.monotonic()
 
     # Drop box interception — forward to local server app via httpx ASGITransport
-    dropbox_client = get_dropbox_client()
-    config = get_config()
+    state: RelayState = request.app.state.relay
+    dropbox_client = state.dropbox_client
+    config = state.config
     if dropbox_client is not None and code == config.dropbox_code:
         resp = await dropbox_client.request(
             method=request.method,
@@ -158,10 +158,10 @@ async def proxy_request(request: Request, code: str, path: str) -> Response:
     # --- Account access enforcement (allowlisted users bypass the server
     # password; non-allowlisted users fall back to it on RESTRICTED+pw
     # mounts; RESTRICTED+no-pw mounts require login/allowlist). ---
-    registry = get_registry()
-    identity = identity_from_cookies(request.cookies)
+    registry = state.require_registry()
+    identity = identity_from_cookies(request.cookies, state.session)
     try:
-        decision = await authorize(registry, code, identity)
+        decision = await authorize(registry, state.account_store, code, identity)
     except AuthenticationRequiredError:
         next_url = request.url.path
         if request.url.query:
@@ -323,8 +323,9 @@ async def proxy_websocket(websocket: WebSocket, code: str, path: str) -> None:
         path:      Remaining path after the mount code.
     """
     # Drop box WebSocket: bridge to local server app via ASGIWebSocketTransport
-    if code == get_config().dropbox_code:
-        app = get_dropbox_app()
+    state: RelayState = websocket.app.state.relay
+    if code == state.config.dropbox_code and state.dropbox_app is not None:
+        app = state.dropbox_app
         await websocket.accept()
         query = str(websocket.url.query) if websocket.url.query else ""
         local_ws_url = f"ws://dropbox/{path}"
@@ -396,10 +397,10 @@ async def proxy_websocket(websocket: WebSocket, code: str, path: str) -> None:
             logger.exception("Drop box WS bridge failed: path=%s", path)
         return
 
-    registry = get_registry()
-    identity = identity_from_cookies(websocket.cookies)
+    registry = state.require_registry()
+    identity = identity_from_cookies(websocket.cookies, state.session)
     try:
-        decision = await authorize(registry, code, identity)
+        decision = await authorize(registry, state.account_store, code, identity)
     except (AuthenticationRequiredError, AccessDeniedError):
         await websocket.accept()
         await websocket.close(code=1008)

@@ -24,7 +24,8 @@ _TEST_IP = "10.0.0.1"
 def _make_cap_app(max_mounts_per_ip: int):
     """Create a relay app with a specific mount cap for testing.
 
-    Also resets the module-level mount reg limiter to avoid cross-test pollution.
+    Each app instance has its own mount-registration rate limiter on
+    ``app.state.relay.mount_reg_limiter``, so no cross-test reset is needed.
     """
     with patch.dict(os.environ, {
         "RELAY_MAX_MOUNTS_PER_IP": str(max_mounts_per_ip),
@@ -32,8 +33,6 @@ def _make_cap_app(max_mounts_per_ip: int):
         "RELAY_DB_PATH": ":memory:",
     }):
         app = create_relay_app()
-    from relay.app.routers.agent_ws import reset_mount_reg_limiter
-    reset_mount_reg_limiter()
     return app
 
 
@@ -87,7 +86,7 @@ async def _prefill_mounts(registry: SqliteMountRegistry, count: int, agent_ip: s
 async def test_5_mounts_from_same_ip_all_succeed() -> None:
     """Registering 5 mounts from the same IP succeeds (at the cap, not over)."""
     app = _make_cap_app(5)
-    registry = await _setup_in_memory_registry()
+    registry = await _setup_in_memory_registry(app)
     await _prefill_mounts(registry, 4, _TEST_IP)
 
     # The 5th mount (via WebSocket from same IP) should succeed
@@ -99,7 +98,7 @@ async def test_5_mounts_from_same_ip_all_succeed() -> None:
 async def test_6th_mount_from_same_ip_rejected() -> None:
     """Registering a 6th mount from the same IP is rejected with error."""
     app = _make_cap_app(5)
-    registry = await _setup_in_memory_registry()
+    registry = await _setup_in_memory_registry(app)
     await _prefill_mounts(registry, 5, _TEST_IP)
 
     # The 6th mount from same IP should be rejected
@@ -113,7 +112,7 @@ async def test_6th_mount_from_same_ip_rejected() -> None:
 async def test_different_ip_not_affected_by_cap() -> None:
     """5 mounts from IP A, 1 mount from IP B succeeds (different IP not affected)."""
     app = _make_cap_app(5)
-    registry = await _setup_in_memory_registry()
+    registry = await _setup_in_memory_registry(app)
     await _prefill_mounts(registry, 5, _TEST_IP)
 
     # A different IP should succeed
@@ -125,7 +124,7 @@ async def test_different_ip_not_affected_by_cap() -> None:
 async def test_expired_mount_frees_cap_slot() -> None:
     """5 mounts from IP A, expire 1, 6th from IP A now succeeds."""
     app = _make_cap_app(5)
-    registry = await _setup_in_memory_registry()
+    registry = await _setup_in_memory_registry(app)
     await _prefill_mounts(registry, 5, _TEST_IP)
     # Expire one mount via registry method
     await registry.expire("prefill-0")

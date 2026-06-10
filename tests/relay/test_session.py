@@ -10,13 +10,10 @@ import pytest
 
 from relay.app.config import load_config
 from relay.app.exceptions import InvalidSessionError
-from relay.app.services.account_store import get_account_store, set_account_store
 from relay.app.services.session import (
     AGENT_TOKEN_MAX_AGE_SECONDS,
     SESSION_MAX_AGE_SECONDS,
     RelaySession,
-    get_relay_session,
-    set_relay_session,
 )
 
 _CONFIG_YAML = Path(__file__).resolve().parent.parent.parent / "relay" / "config.yaml"
@@ -88,27 +85,6 @@ def test_session_token_not_valid_as_agent_token() -> None:
 
 def test_agent_token_max_age_is_short() -> None:
     assert AGENT_TOKEN_MAX_AGE_SECONDS <= 300
-
-
-# ---------------------------------------------------------------------------
-# Singletons
-# ---------------------------------------------------------------------------
-
-
-def test_session_singleton_raises_before_set() -> None:
-    set_relay_session(None)
-    with pytest.raises(RuntimeError, match="RelaySession has not been set"):
-        get_relay_session()
-    s = RelaySession("k")
-    set_relay_session(s)
-    assert get_relay_session() is s
-    set_relay_session(None)
-
-
-def test_account_store_singleton_raises_before_set() -> None:
-    set_account_store(None)
-    with pytest.raises(RuntimeError, match="AccountStore has not been set"):
-        get_account_store()
 
 
 # ---------------------------------------------------------------------------

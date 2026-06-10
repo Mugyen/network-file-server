@@ -119,23 +119,3 @@ class FileTtlDb:
             )
             await self._db.commit()
         return paths
-
-
-_file_ttl_db: FileTtlDb | None = None
-
-
-def get_file_ttl_db() -> FileTtlDb:
-    """Return the global FileTtlDb singleton.
-
-    Raises:
-        RuntimeError: If set_file_ttl_db() has not been called.
-    """
-    if _file_ttl_db is None:
-        raise RuntimeError("FileTtlDb not initialized. Call set_file_ttl_db() first.")
-    return _file_ttl_db
-
-
-def set_file_ttl_db(db: FileTtlDb | None) -> None:
-    """Install the global FileTtlDb singleton."""
-    global _file_ttl_db
-    _file_ttl_db = db

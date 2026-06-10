@@ -6,7 +6,7 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from relay.app.config import get_config
+from relay.app.dependencies import get_relay_state
 
 _template_dir = Path(__file__).resolve().parent.parent.parent / "templates"
 templates = Jinja2Templates(directory=str(_template_dir))
@@ -23,7 +23,7 @@ async def landing_page(request: Request, code: str = Query("")) -> RedirectRespo
     """
     if code:
         return RedirectResponse(url=f"/m/{code}/", status_code=302)
-    config = get_config()
+    config = get_relay_state(request).config
     og_image_url = str(request.base_url) + "static/og-image.png"
     return templates.TemplateResponse(request, "landing.html", {
         "og_image_url": og_image_url,

@@ -13,7 +13,6 @@ from httpx_ws.transport import ASGIWebSocketTransport
 
 from relay.app.main import create_relay_app
 from relay.app.rate_limit import get_client_ip
-from relay.app.services.mount_registry import get_registry
 from tests.relay.conftest import MockTunnelConnection, _setup_in_memory_registry
 
 
@@ -33,14 +32,14 @@ async def _make_rate_limited_app(proxy_rate: str):
         "RELAY_DB_PATH": ":memory:",
     }):
         app = create_relay_app()
-    registry = await _setup_in_memory_registry()
+    registry = await _setup_in_memory_registry(app)
     return app, registry
 
 
-async def _register_mock_connection(code: str) -> MockTunnelConnection:
-    """Register a MockTunnelConnection under the given code and return it."""
+async def _register_mock_connection(registry, code: str) -> MockTunnelConnection:
+    """Register a MockTunnelConnection under the given code in the given registry and return it."""
     conn = MockTunnelConnection()
-    await get_registry().register(
+    await registry.register(
         code,
         conn,
         agent_ip="127.0.0.1",
@@ -110,7 +109,7 @@ async def test_proxy_returns_200_under_rate_limit() -> None:
 
     transport = httpx.ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        await _register_mock_connection("testcode")
+        await _register_mock_connection(registry, "testcode")
         response = await client.get("/m/testcode/")
     assert response.status_code == 200
     await registry.close()
@@ -122,7 +121,7 @@ async def test_proxy_returns_429_after_exceeding_rate_limit() -> None:
 
     transport = httpx.ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        await _register_mock_connection("testcode")
+        await _register_mock_connection(registry, "testcode")
         # Send requests up to the limit
         for _ in range(2):
             resp = await client.get("/m/testcode/path")
@@ -146,7 +145,7 @@ async def test_429_browser_gets_html() -> None:
 
     transport = httpx.ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        await _register_mock_connection("testcode")
+        await _register_mock_connection(registry, "testcode")
         # Exhaust the rate limit
         await client.get("/m/testcode/path")
         # This should be 429
@@ -168,7 +167,7 @@ async def test_429_api_gets_json() -> None:
 
     transport = httpx.ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        await _register_mock_connection("testcode")
+        await _register_mock_connection(registry, "testcode")
         # Exhaust the rate limit
         await client.get("/m/testcode/path")
         # This should be 429
@@ -193,7 +192,8 @@ async def test_429_api_gets_json() -> None:
 async def _make_mount_reg_rate_app(mount_reg_rate: str):
     """Create a relay app with a specific mount registration rate limit.
 
-    Also resets the module-level rate limiter to avoid cross-test pollution.
+    Each app instance has its own mount-registration rate limiter on
+    ``app.state.relay.mount_reg_limiter``, so no cross-test reset is needed.
     Creates an in-memory SqliteMountRegistry since ASGIWebSocketTransport
     does not trigger lifespan.
 
@@ -205,10 +205,7 @@ async def _make_mount_reg_rate_app(mount_reg_rate: str):
         "RELAY_DB_PATH": ":memory:",
     }):
         app = create_relay_app()
-    registry = await _setup_in_memory_registry()
-    # Reset the module-level mount reg limiter storage
-    from relay.app.routers.agent_ws import reset_mount_reg_limiter
-    reset_mount_reg_limiter()
+    registry = await _setup_in_memory_registry(app)
     return app, registry
 
 

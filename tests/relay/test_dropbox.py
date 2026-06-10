@@ -5,10 +5,8 @@ import time
 import httpx
 import pytest
 
-from relay.app.config import get_config
-from relay.app.services.dropbox import get_dropbox_app, init_dropbox, set_dropbox_client
-from relay.app.services.file_ttl_db import FileTtlDb, set_file_ttl_db
-from relay.app.services.mount_registry import get_registry
+from relay.app.services.dropbox import init_dropbox
+from relay.app.services.file_ttl_db import FileTtlDb
 
 
 # ---------------------------------------------------------------------------
@@ -23,7 +21,7 @@ async def test_reserved_code_rejected_via_ws(relay_app) -> None:
 
     # Use TestClient sync WS for simplicity
     client = TestClient(relay_app)
-    config = get_config()
+    config = relay_app.state.relay.config
 
     with client.websocket_connect(f"/agent/ws?code={config.dropbox_code}") as ws:
         data = ws.receive_json()
@@ -39,7 +37,7 @@ async def test_reserved_code_rejected_via_ws(relay_app) -> None:
 @pytest.mark.asyncio
 async def test_register_with_none_connection(relay_app) -> None:
     """Registry accepts connection=None for local mounts."""
-    registry = get_registry()
+    registry = relay_app.state.relay.registry
     await registry.register(
         code="local-mount",
         connection=None,
@@ -53,7 +51,7 @@ async def test_register_with_none_connection(relay_app) -> None:
 @pytest.mark.asyncio
 async def test_get_connection_raises_for_local_mount(relay_app) -> None:
     """get_connection() raises RuntimeError for a code registered with connection=None."""
-    registry = get_registry()
+    registry = relay_app.state.relay.registry
     await registry.register(
         code="local-mount2",
         connection=None,
@@ -73,19 +71,20 @@ async def test_get_connection_raises_for_local_mount(relay_app) -> None:
 @pytest.fixture
 async def dropbox_client(relay_app, tmp_path):
     """Relay client with drop box initialized in a temp directory."""
-    config = get_config()
-    registry = get_registry()
+    state = relay_app.state.relay
+    config = state.config
+    registry = state.registry
 
     # Initialize file TTL tracking
     file_ttl_db = FileTtlDb(registry._db)
     await file_ttl_db.init_table()
-    set_file_ttl_db(file_ttl_db)
+    state.file_ttl_db = file_ttl_db
 
     # Initialize the drop box server app backed by tmp_path, then inject the
     # TTL provider per-app via app.state (mirrors relay/app/main.py lifespan)
-    client = await init_dropbox(tmp_path, config.dropbox_code)
-    set_dropbox_client(client)
-    dropbox_app = get_dropbox_app()
+    dropbox_app, client = await init_dropbox(tmp_path, config.dropbox_code)
+    state.dropbox_app = dropbox_app
+    state.dropbox_client = client
     dropbox_app.state.file_ttl_provider = file_ttl_db
 
     # Register drop box as a first-class mount
@@ -102,23 +101,24 @@ async def dropbox_client(relay_app, tmp_path):
         yield http_client
 
     await client.aclose()
-    set_dropbox_client(None)
+    state.dropbox_client = None
     dropbox_app.state.file_ttl_provider = None
-    set_file_ttl_db(None)
+    state.dropbox_app = None
+    state.file_ttl_db = None
 
 
 @pytest.mark.asyncio
-async def test_dropbox_serves_file_browser(dropbox_client) -> None:
+async def test_dropbox_serves_file_browser(relay_app, dropbox_client) -> None:
     """GET /m/dropbox/ returns 200 (the SPA file browser)."""
-    config = get_config()
+    config = relay_app.state.relay.config
     resp = await dropbox_client.get(f"/m/{config.dropbox_code}/")
     assert resp.status_code == 200
 
 
 @pytest.mark.asyncio
-async def test_dropbox_file_upload(dropbox_client, tmp_path) -> None:
+async def test_dropbox_file_upload(relay_app, dropbox_client, tmp_path) -> None:
     """File upload to drop box succeeds and file is browsable."""
-    config = get_config()
+    config = relay_app.state.relay.config
     # Upload a file
     resp = await dropbox_client.post(
         f"/m/{config.dropbox_code}/api/files/upload?path=",
@@ -135,17 +135,17 @@ async def test_dropbox_file_upload(dropbox_client, tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_dropbox_registered_in_sqlite(dropbox_client) -> None:
+async def test_dropbox_registered_in_sqlite(relay_app, dropbox_client) -> None:
     """Drop box mount is registered with status ONLINE and expires_at NULL."""
-    config = get_config()
-    registry = get_registry()
+    config = relay_app.state.relay.config
+    registry = relay_app.state.relay.registry
     assert await registry.has_mount(config.dropbox_code)
 
 
 @pytest.mark.asyncio
-async def test_landing_page_has_dropbox_link(dropbox_client) -> None:
+async def test_landing_page_has_dropbox_link(relay_app, dropbox_client) -> None:
     """Landing page contains a link to the drop box mount."""
-    config = get_config()
+    config = relay_app.state.relay.config
     resp = await dropbox_client.get("/")
     assert resp.status_code == 200
     assert f"/m/{config.dropbox_code}/" in resp.text
@@ -157,18 +157,16 @@ async def test_landing_page_has_dropbox_link(dropbox_client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_upload_with_ttl_records_expiry(dropbox_client, tmp_path) -> None:
+async def test_upload_with_ttl_records_expiry(relay_app, dropbox_client, tmp_path) -> None:
     """Upload with ttl=3600 stores a file_ttl record; listing shows expires_at."""
-    from relay.app.services.file_ttl_db import get_file_ttl_db
-
-    config = get_config()
+    config = relay_app.state.relay.config
     resp = await dropbox_client.post(
         f"/m/{config.dropbox_code}/api/files/upload?path=&ttl=3600",
         files={"files": ("ttl-test.txt", b"ttl content", "text/plain")},
     )
     assert resp.status_code == 200
 
-    file_ttl_db = get_file_ttl_db()
+    file_ttl_db = relay_app.state.relay.file_ttl_db
     records = await file_ttl_db.get_ttl_for_mount(config.dropbox_code)
     assert any(r[0] == "ttl-test.txt" for r in records)
 
@@ -182,18 +180,16 @@ async def test_upload_with_ttl_records_expiry(dropbox_client, tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_upload_with_ttl_zero_no_record(dropbox_client, tmp_path) -> None:
+async def test_upload_with_ttl_zero_no_record(relay_app, dropbox_client, tmp_path) -> None:
     """Upload with ttl=0 (Never) does NOT create a file_ttl record."""
-    from relay.app.services.file_ttl_db import get_file_ttl_db
-
-    config = get_config()
+    config = relay_app.state.relay.config
     resp = await dropbox_client.post(
         f"/m/{config.dropbox_code}/api/files/upload?path=&ttl=0",
         files={"files": ("no-ttl.txt", b"permanent content", "text/plain")},
     )
     assert resp.status_code == 200
 
-    file_ttl_db = get_file_ttl_db()
+    file_ttl_db = relay_app.state.relay.file_ttl_db
     records = await file_ttl_db.get_ttl_for_mount(config.dropbox_code)
     assert not any(r[0] == "no-ttl.txt" for r in records)
 

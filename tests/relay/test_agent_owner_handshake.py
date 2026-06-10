@@ -11,8 +11,7 @@ from httpx_ws.transport import ASGIWebSocketTransport
 
 from accounts import AccessMode, Role, SqliteAccountStore, SubjectType, hash_password
 from relay.app.main import create_relay_app
-from relay.app.services.account_store import set_account_store
-from relay.app.services.session import RelaySession, set_relay_session
+from relay.app.services.session import RelaySession
 from tests.relay.conftest import _setup_in_memory_registry
 
 pytestmark = pytest.mark.anyio
@@ -22,17 +21,12 @@ pytestmark = pytest.mark.anyio
 async def owner_app():
     with patch.dict(os.environ, {"RELAY_DB_PATH": ":memory:"}):
         app = create_relay_app()
-    from relay.app.routers.agent_ws import reset_mount_reg_limiter
-
-    reset_mount_reg_limiter()
-    registry = await _setup_in_memory_registry()
+    registry = await _setup_in_memory_registry(app)
     store = await SqliteAccountStore.create(":memory:")
-    set_account_store(store)
+    app.state.relay.account_store = store
     session = RelaySession("test-relay-secret")
-    set_relay_session(session)
+    app.state.relay.session = session
     yield app, registry, store, session
-    set_account_store(None)
-    set_relay_session(None)
     await store.close()
     await registry.close()
 

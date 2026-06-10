@@ -53,8 +53,8 @@ async def full_stack(tmp_path_factory: pytest.TempPathFactory):
     shared.mkdir()
     (shared / "seeded.txt").write_text("full path payload")
 
-    # The relay process-global registry is set by the app lifespan; reset it
-    # afterwards so other tests are unaffected.
+    # All relay services live on relay_app.state.relay (RelayState); the
+    # uvicorn-run lifespan wires them and tears them down on shutdown.
     from relay.app.main import create_relay_app
 
     relay_app = create_relay_app()
@@ -82,13 +82,11 @@ async def full_stack(tmp_path_factory: pytest.TempPathFactory):
             )
         )
 
-        # The lifespan installed the registry singleton; poll it for the
-        # agent's assigned code (dropbox registers too — skip it).
-        from relay.app.config import get_config
-        from relay.app.services.mount_registry import get_registry
-
-        dropbox_code = get_config().dropbox_code
-        registry = get_registry()
+        # The lifespan wired the registry onto the app's RelayState; poll it
+        # for the agent's assigned code (dropbox registers too — skip it).
+        relay_state = relay_app.state.relay
+        dropbox_code = relay_state.config.dropbox_code
+        registry = relay_state.registry
         code: str | None = None
         async with asyncio.timeout(STEP_TIMEOUT_S):
             while code is None:

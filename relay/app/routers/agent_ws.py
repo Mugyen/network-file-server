@@ -10,8 +10,6 @@ import time
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from limits import parse as parse_limit
-from limits.storage import MemoryStorage
-from limits.strategies import MovingWindowRateLimiter
 
 from accounts import (
     AccessMode,
@@ -20,15 +18,12 @@ from accounts import (
     SubjectType,
     UserNotFoundError,
 )
-from relay.app.config import get_config
 from relay.app.exceptions import InvalidSessionError, MountNotFoundError
-from relay.app.services.account_store import get_account_store
 from relay.app.services.mount_registry import (
     PolicyEntry,
     generate_mount_code,
-    get_registry,
 )
-from relay.app.services.session import get_relay_session
+from relay.app.state import RelayState
 from tunnel.connection import TunnelConnection
 from tunnel.constants import HEARTBEAT_INTERVAL_S, HEARTBEAT_MISSED_LIMIT
 
@@ -37,7 +32,9 @@ logger = logging.getLogger("relay.agent")
 router = APIRouter()
 
 
-async def _handle_agent_control_for_mount(msg: dict, mount_code: str) -> None:
+async def _handle_agent_control_for_mount(
+    msg: dict, mount_code: str, state: RelayState
+) -> None:
     """Handle delete_expired_files and keep_expired_files control messages.
 
     Both message types clear expired TTL records for the mount so the agent
@@ -46,40 +43,24 @@ async def _handle_agent_control_for_mount(msg: dict, mount_code: str) -> None:
     Args:
         msg: Parsed control message dict with at least a "type" key.
         mount_code: The mount code this agent connection is registered under.
+        state: The per-app RelayState (file_ttl_db may be unwired in tests).
     """
     msg_type = msg.get("type")
     if msg_type in ("delete_expired_files", "keep_expired_files"):
-        try:
-            from relay.app.services.file_ttl_db import get_file_ttl_db
-            file_ttl_db = get_file_ttl_db()
-            code = msg.get("code", mount_code)
-            await file_ttl_db.delete_expired_for_mount(code)
-            logger.info("Processed %s for mount=%s", msg_type, code)
-        except RuntimeError:
+        if state.file_ttl_db is None:
             # FileTtlDb not initialized (relay running without TTL tracking).
             logger.debug(
                 "Ignoring %s for mount=%s — FileTtlDb not initialized", msg_type, mount_code
             )
+            return
+        code = msg.get("code", mount_code)
+        await state.file_ttl_db.delete_expired_for_mount(code)
+        logger.info("Processed %s for mount=%s", msg_type, code)
 
 
-# Module-level rate limiter for mount registration.
-# Uses the `limits` library directly because SlowAPI decorators
-# do not work on WebSocket endpoints.
-_mount_reg_storage = MemoryStorage()
-_mount_reg_limiter = MovingWindowRateLimiter(_mount_reg_storage)
-
-
-def reset_mount_reg_limiter() -> None:
-    """Reinitialize the mount registration rate limiter storage.
-
-    Called by tests to avoid cross-test state pollution.
-    """
-    global _mount_reg_storage, _mount_reg_limiter
-    _mount_reg_storage = MemoryStorage()
-    _mount_reg_limiter = MovingWindowRateLimiter(_mount_reg_storage)
-
-
-async def _read_agent_auth(conn: TunnelConnection, websocket: WebSocket):
+async def _read_agent_auth(
+    conn: TunnelConnection, websocket: WebSocket, state: RelayState
+):
     """Read+validate the agent_auth handshake frame.
 
     Returns ``(owner_user_id|None, owner_username|None, AccessMode,
@@ -121,9 +102,9 @@ async def _read_agent_auth(conn: TunnelConnection, websocket: WebSocket):
     owner_username: str | None = None
     if token:
         try:
-            owner_user_id = get_relay_session().verify_agent_owner_token(token)
+            owner_user_id = state.require_session().verify_agent_owner_token(token)
             owner_username = (
-                await get_account_store().get_user_by_id(owner_user_id)
+                await state.require_account_store().get_user_by_id(owner_user_id)
             ).username
         except (InvalidSessionError, UserNotFoundError):
             await websocket.send_json(
@@ -140,7 +121,7 @@ async def _read_agent_auth(conn: TunnelConnection, websocket: WebSocket):
         return None
 
     entries: list[PolicyEntry] = []
-    store = get_account_store() if raw_allow else None
+    store = state.require_account_store() if raw_allow else None
     for item in raw_allow:
         try:
             st = SubjectType(item["subject_type"])
@@ -206,8 +187,9 @@ async def agent_websocket(
     else:
         client_ip = websocket.client.host if websocket.client else "unknown"
 
-    config = get_config()
-    registry = get_registry()
+    state: RelayState = websocket.app.state.relay
+    config = state.config
+    registry = state.require_registry()
 
     # --- Reserved code check (before rate limit to avoid wasting tokens) ---
     if code is not None and code == config.dropbox_code:
@@ -225,7 +207,7 @@ async def agent_websocket(
 
     # --- Rate limit check (before accepting WebSocket) ---
     mount_limit = parse_limit(config.mount_reg_rate)
-    if not _mount_reg_limiter.test(mount_limit, "mount_reg", client_ip):
+    if not state.mount_reg_limiter.test(mount_limit, "mount_reg", client_ip):
         logger.warning(
             "Mount registration rate limited: client=%s", client_ip
         )
@@ -239,7 +221,7 @@ async def agent_websocket(
         return
 
     # Consume a rate limit token
-    _mount_reg_limiter.hit(mount_limit, "mount_reg", client_ip)
+    state.mount_reg_limiter.hit(mount_limit, "mount_reg", client_ip)
 
     # --- Per-IP mount cap check ---
     current_count: int = await registry.count_mounts_by_ip(client_ip)
@@ -264,7 +246,7 @@ async def agent_websocket(
     conn = TunnelConnection(websocket)
 
     # Owner/policy handshake (exactly one agent_auth frame, before register).
-    auth = await _read_agent_auth(conn, websocket)
+    auth = await _read_agent_auth(conn, websocket, state)
     if auth is None:
         return
     owner_user_id, owner_username, access_mode, has_password, policy_entries = auth
@@ -348,22 +330,20 @@ async def agent_websocket(
     })
     # Send expired files list to agent on reclaim so it can prompt user
     if reclaimed:
-        try:
-            from relay.app.services.file_ttl_db import get_file_ttl_db
-            file_ttl_db = get_file_ttl_db()
-            expired = await file_ttl_db.get_expired_for_mount(assigned_code)
+        if state.file_ttl_db is None:
+            # FileTtlDb not initialized (relay running without TTL tracking).
+            logger.debug(
+                "Skipping expired-files prompt for mount=%s — FileTtlDb not initialized",
+                assigned_code,
+            )
+        else:
+            expired = await state.file_ttl_db.get_expired_for_mount(assigned_code)
             if expired:
                 await conn.send_control({
                     "type": "expired_files",
                     "code": assigned_code,
                     "files": [{"path": fp, "expired_at": exp} for fp, exp in expired],
                 })
-        except RuntimeError:
-            # FileTtlDb not initialized (relay running without TTL tracking).
-            logger.debug(
-                "Skipping expired-files prompt for mount=%s — FileTtlDb not initialized",
-                assigned_code,
-            )
 
     async def _on_agent_control(msg: dict) -> None:
         """Handle application-specific control messages from the agent.
@@ -372,7 +352,7 @@ async def agent_websocket(
         keep_expired_files: user chose to keep files, clear TTL records so
         they are not re-prompted on next reconnect.
         """
-        await _handle_agent_control_for_mount(msg, assigned_code)
+        await _handle_agent_control_for_mount(msg, assigned_code, state)
 
     conn.set_control_handler(_on_agent_control)
     conn.start_heartbeat(HEARTBEAT_INTERVAL_S, HEARTBEAT_MISSED_LIMIT)

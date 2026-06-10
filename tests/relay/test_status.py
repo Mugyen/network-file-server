@@ -4,17 +4,16 @@ import time
 
 import pytest
 
-from relay.app.services.mount_registry import get_registry
 from tests.relay.conftest import MockTunnelConnection
 
 
 async def _register_mount(
+    registry,
     code: str,
     connection: MockTunnelConnection | None,
     expires_at: float | None,
 ) -> None:
-    """Register a mount in the global registry."""
-    registry = get_registry()
+    """Register a mount in the given app's registry."""
     await registry.register(
         code=code,
         connection=connection,
@@ -25,10 +24,10 @@ async def _register_mount(
 
 
 @pytest.mark.asyncio
-async def test_status_online(relay_client) -> None:
+async def test_status_online(relay_app, relay_client) -> None:
     """ONLINE mount returns {"status": "online"}."""
     conn = MockTunnelConnection()
-    await _register_mount("online1", conn, expires_at=None)
+    await _register_mount(relay_app.state.relay.registry, "online1", conn, expires_at=None)
 
     resp = await relay_client.get("/m/online1/status")
 
@@ -37,12 +36,12 @@ async def test_status_online(relay_client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_status_offline(relay_client) -> None:
+async def test_status_offline(relay_app, relay_client) -> None:
     """OFFLINE mount returns {"status": "offline"}."""
     conn = MockTunnelConnection()
-    await _register_mount("off1", conn, expires_at=None)
+    registry = relay_app.state.relay.registry
+    await _register_mount(registry, "off1", conn, expires_at=None)
 
-    registry = get_registry()
     await registry.mark_offline("off1")
 
     resp = await relay_client.get("/m/off1/status")
@@ -52,12 +51,12 @@ async def test_status_offline(relay_client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_status_expired(relay_client) -> None:
+async def test_status_expired(relay_app, relay_client) -> None:
     """EXPIRED mount returns {"status": "expired"}."""
     conn = MockTunnelConnection()
-    await _register_mount("exp1", conn, expires_at=None)
+    registry = relay_app.state.relay.registry
+    await _register_mount(registry, "exp1", conn, expires_at=None)
 
-    registry = get_registry()
     await registry.expire("exp1")
 
     resp = await relay_client.get("/m/exp1/status")
@@ -76,13 +75,13 @@ async def test_status_not_found(relay_client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_status_local_mount_no_connection(relay_client) -> None:
+async def test_status_local_mount_no_connection(relay_app, relay_client) -> None:
     """Local mount (connection=None, e.g. drop box) returns {"status": "online"}.
 
     After Plan 15-03, the drop box is registered with connection=None.
     The status endpoint must NOT return 500 for this case.
     """
-    await _register_mount("localbox", None, expires_at=None)
+    await _register_mount(relay_app.state.relay.registry, "localbox", None, expires_at=None)
 
     resp = await relay_client.get("/m/localbox/status")
 
@@ -91,10 +90,10 @@ async def test_status_local_mount_no_connection(relay_client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_status_not_rate_limited(relay_client) -> None:
+async def test_status_not_rate_limited(relay_app, relay_client) -> None:
     """Status endpoint is NOT rate-limited by the proxy rate limiter."""
     conn = MockTunnelConnection()
-    await _register_mount("ratetest", conn, expires_at=None)
+    await _register_mount(relay_app.state.relay.registry, "ratetest", conn, expires_at=None)
 
     for _ in range(20):
         resp = await relay_client.get("/m/ratetest/status")

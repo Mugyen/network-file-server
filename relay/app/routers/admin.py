@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from accounts import (
+    AccountStore,
     DuplicateMembershipError,
     GroupCycleError,
     GroupNameTakenError,
@@ -17,8 +18,7 @@ from accounts import (
     SubjectType,
     UserNotFoundError,
 )
-from relay.app.dependencies import require_admin
-from relay.app.services.account_store import get_account_store
+from relay.app.dependencies import get_account_store_dep, require_admin
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])
 
@@ -45,8 +45,9 @@ class RemoveMemberRequest(BaseModel):
 
 
 @router.get("/users")
-async def list_users() -> list[dict[str, object]]:
-    store = get_account_store()
+async def list_users(
+    store: AccountStore = Depends(get_account_store_dep),
+) -> list[dict[str, object]]:
     users = await store.list_users()
     return [
         {
@@ -61,8 +62,11 @@ async def list_users() -> list[dict[str, object]]:
 
 
 @router.post("/users/{user_id}/active")
-async def set_user_active(user_id: int, body: SetActiveRequest) -> dict[str, object]:
-    store = get_account_store()
+async def set_user_active(
+    user_id: int,
+    body: SetActiveRequest,
+    store: AccountStore = Depends(get_account_store_dep),
+) -> dict[str, object]:
     try:
         await store.set_user_active(user_id, body.is_active)
     except UserNotFoundError as exc:
@@ -74,8 +78,9 @@ async def set_user_active(user_id: int, body: SetActiveRequest) -> dict[str, obj
 
 
 @router.get("/groups")
-async def list_groups() -> list[dict[str, object]]:
-    store = get_account_store()
+async def list_groups(
+    store: AccountStore = Depends(get_account_store_dep),
+) -> list[dict[str, object]]:
     groups = await store.list_groups()
     return [
         {"id": g.id, "name": g.name, "created_at": g.created_at} for g in groups
@@ -83,8 +88,10 @@ async def list_groups() -> list[dict[str, object]]:
 
 
 @router.post("/groups")
-async def create_group(body: CreateGroupRequest) -> dict[str, object]:
-    store = get_account_store()
+async def create_group(
+    body: CreateGroupRequest,
+    store: AccountStore = Depends(get_account_store_dep),
+) -> dict[str, object]:
     try:
         group = await store.create_group(body.name)
     except GroupNameTakenError as exc:
@@ -95,8 +102,10 @@ async def create_group(body: CreateGroupRequest) -> dict[str, object]:
 
 
 @router.delete("/groups/{group_id}")
-async def delete_group(group_id: int) -> dict[str, object]:
-    store = get_account_store()
+async def delete_group(
+    group_id: int,
+    store: AccountStore = Depends(get_account_store_dep),
+) -> dict[str, object]:
     try:
         await store.delete_group(group_id)
     except GroupNotFoundError as exc:
@@ -108,8 +117,10 @@ async def delete_group(group_id: int) -> dict[str, object]:
 
 
 @router.get("/groups/{group_id}/members")
-async def list_group_members(group_id: int) -> list[dict[str, object]]:
-    store = get_account_store()
+async def list_group_members(
+    group_id: int,
+    store: AccountStore = Depends(get_account_store_dep),
+) -> list[dict[str, object]]:
     try:
         members = await store.list_group_members(group_id)
     except GroupNotFoundError as exc:
@@ -120,9 +131,10 @@ async def list_group_members(group_id: int) -> list[dict[str, object]]:
     ]
 
 
-async def _resolve_member_id(member_type: SubjectType, member_ref: str) -> int:
+async def _resolve_member_id(
+    store: AccountStore, member_type: SubjectType, member_ref: str
+) -> int:
     """Resolve a username/group-name to its id. Raises 404 if unknown."""
-    store = get_account_store()
     try:
         if member_type is SubjectType.USER:
             return (await store.get_user_by_username(member_ref)).id
@@ -135,10 +147,11 @@ async def _resolve_member_id(member_type: SubjectType, member_ref: str) -> int:
 
 @router.post("/groups/{group_id}/members")
 async def add_group_member(
-    group_id: int, body: AddMemberRequest
+    group_id: int,
+    body: AddMemberRequest,
+    store: AccountStore = Depends(get_account_store_dep),
 ) -> dict[str, object]:
-    store = get_account_store()
-    member_id = await _resolve_member_id(body.member_type, body.member_ref)
+    member_id = await _resolve_member_id(store, body.member_type, body.member_ref)
     try:
         await store.add_member(group_id, body.member_type, member_id)
     except GroupNotFoundError as exc:
@@ -160,9 +173,10 @@ async def add_group_member(
 
 @router.delete("/groups/{group_id}/members")
 async def remove_group_member(
-    group_id: int, body: RemoveMemberRequest
+    group_id: int,
+    body: RemoveMemberRequest,
+    store: AccountStore = Depends(get_account_store_dep),
 ) -> dict[str, object]:
-    store = get_account_store()
     try:
         await store.remove_member(group_id, body.member_type, body.member_id)
     except MembershipNotFoundError as exc:
