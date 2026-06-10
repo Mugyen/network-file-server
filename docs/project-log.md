@@ -361,3 +361,7 @@ New shared/identity_sig.py (HMAC-SHA256 over user|role|bypass). Agent mints a pe
 ## 2026-06-10: Remediation phase 8 — composition cleanups
 
 (a) server/app/bootstrap.py is the new composition root (build_mount_app, run_mount_agent, run_lan_server); cli.py is now parsing + delegation only and no longer imports the agent; import-boundaries whitelist points at bootstrap. (b) TunnelConnection.run_receive_loop_with_handlers(on_open, on_ws_open) added (shared private core); the agent's two hand-rolled receive loops deleted in favour of _OpenFrameHandlers (task spawn/drain) + a registered expired_files control handler — the agent no longer pokes conn._ws/_dispatch_frame. (c) mount_proxy left at 520 lines (cohesive; high-value extractions already done in 5-6). 974 pytest green.
+
+## 2026-06-10: Remediation phase 9 — client API types generated from OpenAPI
+
+New server/app/openapi_dump.py + scripts/gen_api_types.sh dump the server OpenAPI schema and run openapi-typescript into client/src/types/api.gen.ts. Added response_model to the files routes (DirectoryListing/SearchResult/UploadResult) and expires_at to FileEntry so the schema is the true contract. Client types/{files,serverInfo,clipboard,fileRequests}.ts now derive from the generated schema (runtime consts FileType/RequestStatus kept). New CI api-types job regenerates + git diff --exit-code (drift fails the build). 974 pytest + 89 vitest green; tsc/eslint clean.

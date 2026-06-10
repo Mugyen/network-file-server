@@ -1,3 +1,10 @@
+/**
+ * File-listing types. Interfaces are derived from the server's OpenAPI schema
+ * (single source of truth); the FileType runtime const is kept here because
+ * components compare against its values (FileType.DIRECTORY etc.).
+ */
+import type { Schemas } from "./api.ts";
+
 /** File type discriminator matching backend FileType enum values. */
 export const FileType = {
   FILE: "file",
@@ -6,16 +13,5 @@ export const FileType = {
 
 export type FileType = (typeof FileType)[keyof typeof FileType];
 
-export interface FileEntry {
-  name: string;
-  size: number;
-  size_display: string;
-  type: FileType;
-  modified: string;
-  expires_at: string | null;
-}
-
-export interface DirectoryListing {
-  path: string;
-  entries: FileEntry[];
-}
+export type FileEntry = Schemas["FileEntry"];
+export type DirectoryListing = Schemas["DirectoryListing"];

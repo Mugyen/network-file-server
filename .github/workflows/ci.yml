@@ -46,6 +46,31 @@ jobs:
       - name: Unit tests (vitest)
         run: npm run test:unit
 
+  # Regenerate the client API types from the server's OpenAPI schema and fail
+  # if they differ from what's committed — a backend schema change that isn't
+  # reflected in client/src/types/api.gen.ts breaks the build, not users.
+  api-types:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - name: Sync backend dependencies
+        run: uv sync --group dev
+      - name: Install client dependencies
+        run: npm ci
+        working-directory: client
+      - name: Regenerate API types
+        run: ./scripts/gen_api_types.sh
+      - name: Fail on drift
+        run: git diff --exit-code client/src/types/api.gen.ts
+
   # Playwright e2e is slower (boots a throwaway relay + two mounts), so it
   # runs on manual dispatch rather than on every push/PR.
   e2e:

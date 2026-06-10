@@ -164,7 +164,7 @@ function FileRow({
       <td className="py-2 px-3 text-gray-600 dark:text-gray-400 hidden md:table-cell">
         <div className="flex items-center gap-2">
           <span>{formatDate(file.modified)}</span>
-          {file.expires_at !== null && <ExpiryBadge expiresAt={file.expires_at} />}
+          {file.expires_at != null && <ExpiryBadge expiresAt={file.expires_at} />}
         </div>
       </td>
 

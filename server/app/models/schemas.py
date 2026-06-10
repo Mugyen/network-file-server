@@ -11,6 +11,9 @@ class FileEntry(BaseModel):
     size_display: str
     type: FileType
     modified: str
+    # ISO timestamp when a relay-hosted file expires, or null. Enriched by
+    # the files router for relay-served mounts; null in LAN/standalone mode.
+    expires_at: str | None = None
 
 
 class DirectoryListing(BaseModel):

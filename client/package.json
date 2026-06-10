@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "e2e": "playwright test",
     "typecheck": "tsc -b",
-    "test:unit": "vitest run"
+    "test:unit": "vitest run",
+    "gen:api": "../scripts/gen_api_types.sh"
   },
   "dependencies": {
     "@tailwindcss/typography": "^0.5.19",
@@ -36,6 +37,7 @@
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
     "jsdom": "^27.0.1",
+    "openapi-typescript": "^7.13.0",
     "tailwindcss": "^4.2.1",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.48.0",

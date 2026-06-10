@@ -22,9 +22,11 @@ from server.app.models.enums import ConflictResolution
 from server.app.models.schemas import (
     CreateFolderRequest,
     DeleteRequest,
+    DirectoryListing,
     DownloadZipRequest,
     RenameRequest,
     SearchResult,
+    UploadResult,
 )
 from server.app.middleware.mode_guard import (
     receive_scope_user,
@@ -49,7 +51,7 @@ from server.app.services.file_service import (
 router = APIRouter(prefix="/api", tags=["files"])
 
 
-@router.get("/files", dependencies=[Depends(require_browse_access)])
+@router.get("/files", response_model=DirectoryListing, dependencies=[Depends(require_browse_access)])
 async def get_files(request: Request, path: str = Query("")) -> dict:
     """List files in the shared folder with optional TTL expiry data.
 
@@ -100,7 +102,7 @@ async def get_files(request: Request, path: str = Query("")) -> dict:
     return result
 
 
-@router.post("/files/upload", response_model=None, dependencies=[Depends(require_write_access)])
+@router.post("/files/upload", response_model=list[UploadResult], dependencies=[Depends(require_write_access)])
 async def upload_files(
     files: list[UploadFile],
     request: Request,
@@ -249,7 +251,7 @@ def create_new_folder(http_request: Request, request: CreateFolderRequest) -> An
     return {"path": new_path}
 
 
-@router.get("/files/search", response_model=None, dependencies=[Depends(require_browse_access)])
+@router.get("/files/search", response_model=SearchResult, dependencies=[Depends(require_browse_access)])
 def search_files_endpoint(  # sync on purpose: FastAPI runs `def` routes in its threadpool, keeping the rglob walk off the event loop
     request: Request,
     q: str = Query(...),
