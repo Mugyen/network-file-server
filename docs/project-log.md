@@ -369,3 +369,7 @@ New server/app/openapi_dump.py + scripts/gen_api_types.sh dump the server OpenAP
 ## 2026-06-10: Remediation phase 10 — React Query state layer + AppMode routing
 
 Added @tanstack/react-query: BrowseProvider backs the file listing with useQuery(["files",path]); loadFiles is now invalidateQueries and mutations invalidate on success (no manual refetch threading; mutation errors tracked separately so a failed op doesn't clear the listing). QueryClientProvider wraps App. New appMode.ts: resolveAppMode() + AppMode const-object replaces main.tsx's pickRoot if-chain (single routing decision). 95 vitest (+6: appMode ×5, invalidation ×1); tsc/eslint/build green.
+
+## 2026-06-10: Remediation phase 11 — hard-path hook tests (FINAL)
+
+Added unit tests for the three previously-untested stateful hooks: useWebSocket (MockWebSocket + fake timers: connect/open, reconnect-after-backoff, backoff escalation, stable-connection reset, delay cap, message dispatch, unmount stops reconnect — 7 tests), useUpload (concurrency cap of 3, onComplete, 409→conflict→SKIP/OVERWRITE, failure→retry — 5 tests), useClipboard (load, debounce coalescing, WS created/updated/deleted reconciliation, optimistic title rollback — 6 tests). A test bug surfaced a real contract: the clipboard WS-handler effect clears debounce timers on cleanup, so callers MUST pass stable add/removeMessageHandler (App.tsx does via useCallback). 113 vitest green. ALL 11 remediation phases complete.
