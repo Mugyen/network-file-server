@@ -82,10 +82,9 @@ async def dropbox_client(relay_app, tmp_path):
 
     # Initialize the drop box server app backed by tmp_path, then inject the
     # TTL provider per-app via app.state (mirrors relay/app/main.py lifespan)
-    dropbox_app, client = await init_dropbox(tmp_path, config.dropbox_code)
-    state.dropbox_app = dropbox_app
-    state.dropbox_client = client
-    dropbox_app.state.file_ttl_provider = file_ttl_db
+    dropbox = await init_dropbox(tmp_path, config.dropbox_code)
+    state.local_mounts[dropbox.code] = dropbox
+    dropbox.app.state.file_ttl_provider = file_ttl_db
 
     # Register drop box as a first-class mount
     await registry.register(
@@ -100,10 +99,9 @@ async def dropbox_client(relay_app, tmp_path):
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as http_client:
         yield http_client
 
-    await client.aclose()
-    state.dropbox_client = None
-    dropbox_app.state.file_ttl_provider = None
-    state.dropbox_app = None
+    await dropbox.aclose()
+    dropbox.app.state.file_ttl_provider = None
+    state.local_mounts.pop(dropbox.code, None)
     state.file_ttl_db = None
 
 
@@ -200,3 +198,25 @@ async def test_upload_with_ttl_zero_no_record(relay_app, dropbox_client, tmp_pat
     no_ttl_entry = next((e for e in data["entries"] if e["name"] == "no-ttl.txt"), None)
     assert no_ttl_entry is not None
     assert no_ttl_entry["expires_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_dropbox_is_a_local_mount(relay_app, dropbox_client) -> None:
+    """The drop box lives in RelayState.local_mounts — the proxy has no
+    drop-box-specific dispatch."""
+    state = relay_app.state.relay
+    config = state.config
+    assert config.dropbox_code in state.local_mounts
+    mount = state.local_mounts[config.dropbox_code]
+    assert mount.code == config.dropbox_code
+    assert mount.app is not None
+
+
+@pytest.mark.asyncio
+async def test_local_mount_close_releases_client(tmp_path) -> None:
+    """aclose() shuts the forwarding client down."""
+    from relay.app.services.dropbox import init_dropbox
+
+    mount = await init_dropbox(tmp_path, "dropbox")
+    await mount.aclose()
+    assert mount.client.is_closed

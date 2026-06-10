@@ -229,6 +229,13 @@ kind; the two code-equality checks and the bespoke WS loop are deleted.
 one. Unifying restores single-code-path semantics and gives the dropbox a real
 shutdown.
 
+**AS-IMPLEMENTED DEVIATION (2026-06-10).** No persisted MountKind enum
+column: a live ASGI app cannot be persisted, and the registry already
+encodes locality as ``connection=None``. The live object lives in
+``RelayState.local_mounts`` (LocalAsgiMount: app + client + WS bridge +
+aclose); membership in that map IS the mount kind, and the proxy dispatches
+on it with zero drop-box-specific code.
+
 **Files.** `relay/app/services/{mount_registry,sqlite_registry,dropbox}.py`,
 `relay/app/routers/mount_proxy.py`, `relay/app/main.py`.
 

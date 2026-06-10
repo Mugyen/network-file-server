@@ -349,3 +349,7 @@ PROTOCOL_VERSION=1 exchanged in agent_auth; relay rejects skewed/missing version
 ## 2026-06-10: Remediation phase 5 — HTML rewriter extraction + hardening
 
 New relay/app/services/html_rewriter.py: charset-aware decode (Content-Type param, default utf-8), undecodable/unknown-charset bodies pass through unmodified, 5MiB rewrite cap — oversized HTML streams through unrewritten (buffered prefix + remainder) instead of being buffered unbounded. mount_proxy uses it on both tunnel and dropbox paths; the proxy can no longer crash on non-UTF-8 HTML. Rewriter unit tests moved out of test_mount_proxy + 8 hardening tests. 957 pytest green.
+
+## 2026-06-10: Remediation phase 6 — dropbox is a first-class local mount
+
+New relay/app/services/local_mount.py: LocalAsgiMount (app + forwarding client + WS bridge + aclose). RelayState.local_mounts dict replaces dropbox_app/dropbox_client fields; lifespan registers/closes the drop box through it. mount_proxy now has ZERO dropbox references — both HTTP and WS paths dispatch on local_mounts membership; the ~70-line bespoke WS bridge moved into the service. init_dropbox returns the mount. 959 pytest green (+2 tests).

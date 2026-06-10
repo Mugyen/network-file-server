@@ -63,16 +63,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     file_ttl_db = await FileTtlDb.create(config.db_path)
     state.file_ttl_db = file_ttl_db
 
-    # Initialize drop box server app and register as a first-class mount
-    dropbox_app, dropbox_client = await init_dropbox(
-        Path(config.data_dir), config.dropbox_code
-    )
-    state.dropbox_app = dropbox_app
-    state.dropbox_client = dropbox_client
+    # Initialize the drop box as a first-class local ASGI mount.
+    dropbox = await init_dropbox(Path(config.data_dir), config.dropbox_code)
+    state.local_mounts[dropbox.code] = dropbox
     # Inject the TTL provider into the in-process server (drop box) — the
     # server consumes the FileTtlProvider protocol it owns; FileTtlDb
     # satisfies it structurally. Injection is per-app via app.state.
-    dropbox_app.state.file_ttl_provider = file_ttl_db
+    dropbox.app.state.file_ttl_provider = file_ttl_db
     await registry.register(
         code=config.dropbox_code,
         connection=None,
@@ -100,7 +97,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             Path(config.data_dir),
             config.dropbox_code,
             60,
-            dropbox_app.state.manager.broadcast_all,
+            dropbox.app.state.manager.broadcast_all,
         )
     )
     yield
@@ -114,10 +111,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await file_ttl_sweep_task
     except asyncio.CancelledError:
         pass
-    await dropbox_client.aclose()
-    state.dropbox_client = None
-    dropbox_app.state.file_ttl_provider = None
-    state.dropbox_app = None
+    await dropbox.aclose()
+    dropbox.app.state.file_ttl_provider = None
+    state.local_mounts.pop(dropbox.code, None)
     await file_ttl_db.close()
     state.file_ttl_db = None
     await account_store.close()

@@ -17,7 +17,7 @@ returning None so call sites fail loudly when wiring is missing.
 """
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from limits.storage import MemoryStorage
 from limits.strategies import MovingWindowRateLimiter
@@ -25,10 +25,9 @@ from limits.strategies import MovingWindowRateLimiter
 from relay.app.config import RelayConfig
 
 if TYPE_CHECKING:
-    from httpx import AsyncClient
-
     from accounts import SqliteAccountStore
     from relay.app.services.file_ttl_db import FileTtlDb
+    from relay.app.services.local_mount import LocalAsgiMount
     from relay.app.services.session import RelaySession
     from relay.app.services.sqlite_registry import SqliteMountRegistry
 
@@ -46,8 +45,9 @@ class RelayState:
     session: "RelaySession | None" = None
     account_store: "SqliteAccountStore | None" = None
     file_ttl_db: "FileTtlDb | None" = None
-    dropbox_client: "AsyncClient | None" = None
-    dropbox_app: Any = None
+    # Mounts served by in-process ASGI apps (e.g. the drop box), keyed by
+    # mount code. Membership here is what makes a code a "local" mount.
+    local_mounts: "dict[str, LocalAsgiMount]" = field(default_factory=dict)
     mount_reg_storage: MemoryStorage = field(default_factory=_default_storage)
     mount_reg_limiter: MovingWindowRateLimiter = field(init=False)
 

@@ -11,10 +11,6 @@ from urllib.parse import quote
 from fastapi import APIRouter, Request, WebSocket
 from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 
-import httpx
-import httpx_ws
-from httpx_ws.transport import ASGIWebSocketTransport
-from wsproto.events import BytesMessage, CloseConnection, TextMessage
 
 from relay.app.state import RelayState
 from relay.app.exceptions import (
@@ -115,17 +111,16 @@ async def proxy_request(request: Request, code: str, path: str) -> Response:
     """
     start: float = time.monotonic()
 
-    # Drop box interception — forward to local server app via httpx ASGITransport
+    # Local ASGI mounts (e.g. the drop box) are forwarded in-process.
     state: RelayState = request.app.state.relay
-    dropbox_client = state.dropbox_client
-    config = state.config
-    if dropbox_client is not None and code == config.dropbox_code:
-        resp = await dropbox_client.request(
+    local = state.local_mounts.get(code)
+    if local is not None:
+        resp = await local.forward_request(
             method=request.method,
-            url=f"/{path}",
+            path=path,
             headers=dict(request.headers),
             content=await request.body(),
-            params=str(request.url.query) if request.url.query else None,
+            query=str(request.url.query),
         )
         resp_content_type = resp.headers.get("content-type", "application/octet-stream")
         # Apply same HTML rewriting as tunnel-proxied responses (hardened:
@@ -359,79 +354,21 @@ async def proxy_websocket(websocket: WebSocket, code: str, path: str) -> None:
         code:      Mount code extracted from the URL path.
         path:      Remaining path after the mount code.
     """
-    # Drop box WebSocket: bridge to local server app via ASGIWebSocketTransport
+    # Local ASGI mounts (e.g. the drop box) bridge in-process.
     state: RelayState = websocket.app.state.relay
-    if code == state.config.dropbox_code and state.dropbox_app is not None:
-        app = state.dropbox_app
+    local = state.local_mounts.get(code)
+    if local is not None:
         await websocket.accept()
-        query = str(websocket.url.query) if websocket.url.query else ""
-        local_ws_url = f"ws://dropbox/{path}"
-        if query:
-            local_ws_url = f"{local_ws_url}?{query}"
         forward_headers = {
             k: v for k, v in websocket.headers.items()
             if k.lower() not in HOP_BY_HOP and k.lower() != "host"
         }
-        try:
-            async with ASGIWebSocketTransport(app=app) as ws_transport:
-                async with httpx_ws.aconnect_ws(
-                    local_ws_url,
-                    httpx.AsyncClient(transport=ws_transport),
-                    headers=forward_headers,
-                    keepalive_ping_interval_seconds=None,
-                ) as local_ws:
-
-                    async def browser_to_local() -> None:
-                        """Forward browser messages (text or binary) to the drop box app."""
-                        while True:
-                            message = await websocket.receive()
-                            if message["type"] == "websocket.disconnect":
-                                return
-                            text = message.get("text")
-                            if text is not None:
-                                await local_ws.send_text(text)
-                                continue
-                            data = message.get("bytes")
-                            if data is not None:
-                                await local_ws.send_bytes(data)
-
-                    async def local_to_browser() -> None:
-                        """Forward drop box app messages to browser, mirroring frame kind."""
-                        while True:
-                            event = await local_ws.receive()
-                            if isinstance(event, TextMessage):
-                                await websocket.send_text(event.data)
-                            elif isinstance(event, BytesMessage):
-                                await websocket.send_bytes(event.data)
-                            elif isinstance(event, CloseConnection):
-                                return
-
-                    b2l = asyncio.create_task(browser_to_local())
-                    l2b = asyncio.create_task(local_to_browser())
-                    done, pending = await asyncio.wait(
-                        {b2l, l2b}, return_when=asyncio.FIRST_COMPLETED,
-                    )
-                    for t in done:
-                        exc = t.exception()
-                        if exc is not None:
-                            logger.debug(
-                                "Drop box WS bridge task ended with error: path=%s error=%r",
-                                path,
-                                exc,
-                            )
-                    for t in pending:
-                        t.cancel()
-                        try:
-                            await t
-                        except asyncio.CancelledError:
-                            pass  # Expected — we just cancelled it.
-                        except Exception:
-                            logger.exception(
-                                "Drop box WS bridge task raised during cancellation: path=%s",
-                                path,
-                            )
-        except Exception:
-            logger.exception("Drop box WS bridge failed: path=%s", path)
+        await local.bridge_websocket(
+            websocket,
+            path,
+            str(websocket.url.query) if websocket.url.query else "",
+            forward_headers,
+        )
         return
 
     registry = state.require_registry()
