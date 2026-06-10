@@ -8,63 +8,9 @@ import uuid
 import httpx
 import pytest
 
-from relay.app.routers.mount_proxy import rewrite_html_asset_paths
 
 
 pytestmark = pytest.mark.anyio
-
-
-# ---------------------------------------------------------------------------
-# rewrite_html_asset_paths unit tests
-# ---------------------------------------------------------------------------
-
-
-class TestRewriteHtmlAssetPaths:
-    """Unit tests for HTML asset path rewriting in mount proxy."""
-
-    def test_rewrites_script_src(self) -> None:
-        html = '<script src="/assets/index-abc.js"></script>'
-        result = rewrite_html_asset_paths(html, "/m/CODE1")
-        assert result == '<script src="/m/CODE1/assets/index-abc.js"></script>'
-
-    def test_rewrites_link_href(self) -> None:
-        html = '<link rel="stylesheet" href="/assets/index-xyz.css">'
-        result = rewrite_html_asset_paths(html, "/m/CODE1")
-        assert result == '<link rel="stylesheet" href="/m/CODE1/assets/index-xyz.css">'
-
-    def test_rewrites_favicon(self) -> None:
-        html = '<link rel="icon" href="/favicon.ico">'
-        result = rewrite_html_asset_paths(html, "/m/CODE1")
-        assert result == '<link rel="icon" href="/m/CODE1/favicon.ico">'
-
-    def test_does_not_double_rewrite(self) -> None:
-        """Paths already containing /m/ prefix are not rewritten."""
-        html = '<script src="/m/CODE1/assets/index.js"></script>'
-        result = rewrite_html_asset_paths(html, "/m/CODE1")
-        assert result == html
-
-    def test_rewrites_single_quoted_attributes(self) -> None:
-        html = "<script src='/assets/app.js'></script>"
-        result = rewrite_html_asset_paths(html, "/m/XYZ")
-        assert result == "<script src='/m/XYZ/assets/app.js'></script>"
-
-    def test_full_index_html(self) -> None:
-        """Full realistic index.html is rewritten correctly."""
-        html = (
-            '<!doctype html><html><head>'
-            '<script type="module" src="/assets/index-C4XEGJkC.js"></script>'
-            '<link rel="stylesheet" href="/assets/index-BZCOt5Ge.css">'
-            '</head><body><div id="root"></div></body></html>'
-        )
-        result = rewrite_html_asset_paths(html, "/m/t7F5Twps")
-        assert '"/m/t7F5Twps/assets/index-C4XEGJkC.js"' in result
-        assert '"/m/t7F5Twps/assets/index-BZCOt5Ge.css"' in result
-
-    def test_preserves_non_asset_content(self) -> None:
-        """Non src/href content with slashes is not rewritten."""
-        html = '<div data-path="/some/thing">text</div>'
-        result = rewrite_html_asset_paths(html, "/m/CODE")
-        assert result == html
 
 
 async def test_proxy_get(registered_relay_client):

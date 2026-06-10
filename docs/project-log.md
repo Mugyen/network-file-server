@@ -345,3 +345,7 @@ Service layer (clipboard/share/file-request/upload_index) now offloads all Serve
 ## 2026-06-10: Remediation phase 4 — tunnel protocol hardening
 
 PROTOCOL_VERSION=1 exchanged in agent_auth; relay rejects skewed/missing versions at handshake (close 1008). New tunnel/metadata.py: RequestMetadata/WsOpenMetadata wire contract with 16KiB cap + typed MetadataError validation on both ends (malformed OPEN now answers 400 instead of crashing the agent loop). Agent runs its own 30s heartbeat (detects half-dead relay sockets). Relay send paths wrap transport failures as TunnelSendError -> 503/431 instead of unhandled 500. 949 pytest green (+16 tests).
+
+## 2026-06-10: Remediation phase 5 — HTML rewriter extraction + hardening
+
+New relay/app/services/html_rewriter.py: charset-aware decode (Content-Type param, default utf-8), undecodable/unknown-charset bodies pass through unmodified, 5MiB rewrite cap — oversized HTML streams through unrewritten (buffered prefix + remainder) instead of being buffered unbounded. mount_proxy uses it on both tunnel and dropbox paths; the proxy can no longer crash on non-UTF-8 HTML. Rewriter unit tests moved out of test_mount_proxy + 8 hardening tests. 957 pytest green.

@@ -3,7 +3,6 @@
 import asyncio
 import json
 import logging
-import re
 import time
 import uuid
 from typing import AsyncGenerator
@@ -28,6 +27,10 @@ from relay.app.exceptions import (
 from relay.app.rate_limit import get_client_ip, limiter, proxy_request_rate
 from relay.app.routers.landing import templates
 from relay.app.services.access_policy import authorize, identity_from_cookies
+from relay.app.services.html_rewriter import (
+    HTML_REWRITE_MAX_BYTES,
+    rewrite_html_body,
+)
 from tunnel.constants import FIRST_BYTE_TIMEOUT_S, MAX_PAYLOAD_BYTES
 from tunnel.exceptions import (
     FirstByteTimeoutError,
@@ -61,26 +64,7 @@ HOP_BY_HOP: frozenset[str] = frozenset(
     }
 )
 
-# Pattern matching src="/ or href="/ attribute values pointing to absolute paths.
-# Captures the attribute prefix so we can rewrite only the path portion.
-_ASSET_PATH_RE: re.Pattern[str] = re.compile(r'((?:src|href)=["\'])/(?!m/)')
-
-
-def rewrite_html_asset_paths(html: str, mount_prefix: str) -> str:
-    """Rewrite absolute asset paths in HTML to include the mount prefix.
-
-    Transforms ``src="/assets/..."`` into ``src="/m/{code}/assets/..."`` (and
-    likewise for ``href``). Only rewrites paths that don't already start with
-    ``/m/`` to avoid double-rewriting.
-
-    Args:
-        html:         Raw HTML string from the agent response.
-        mount_prefix: The mount URL prefix, e.g. ``/m/ABC123``.
-
-    Returns:
-        HTML string with asset paths rewritten to include the mount prefix.
-    """
-    return _ASSET_PATH_RE.sub(rf"\1{mount_prefix}/", html)
+# HTML asset-path rewriting lives in relay/app/services/html_rewriter.py.
 
 
 @router.get("/m/{code}/status")
@@ -144,11 +128,14 @@ async def proxy_request(request: Request, code: str, path: str) -> Response:
             params=str(request.url.query) if request.url.query else None,
         )
         resp_content_type = resp.headers.get("content-type", "application/octet-stream")
-        # Apply same HTML rewriting as tunnel-proxied responses
+        # Apply same HTML rewriting as tunnel-proxied responses (hardened:
+        # passthrough on oversize/undecodable bodies).
         if resp_content_type.startswith("text/html"):
-            rewritten = rewrite_html_asset_paths(resp.text, f"/m/{code}")
+            rewritten_body = rewrite_html_body(
+                resp.content, resp_content_type, f"/m/{code}"
+            )
             return Response(
-                content=rewritten,
+                content=rewritten_body,
                 status_code=resp.status_code,
                 headers={k: v for k, v in resp.headers.items() if k.lower() not in HOP_BY_HOP and k.lower() != "content-length"},
                 media_type=resp_content_type,
@@ -276,24 +263,59 @@ async def proxy_request(request: Request, code: str, path: str) -> Response:
     # Extract content-type separately so StreamingResponse can set media_type
     resp_content_type: str = resp_headers.pop("content-type", "application/octet-stream")
 
-    # For HTML responses, buffer the full body and rewrite absolute asset paths
-    # so that /assets/... becomes /m/{code}/assets/... in the browser.
-    # Drop content-length since rewriting changes the body size; Response
-    # will set the correct value from the actual content.
+    # For HTML responses, buffer the body (up to HTML_REWRITE_MAX_BYTES) and
+    # rewrite absolute asset paths so /assets/... becomes /m/{code}/assets/...
+    # in the browser. Oversized or undecodable bodies pass through unchanged
+    # (see html_rewriter) — the rewrite is cosmetic, the proxy must not die.
     if resp_content_type.startswith("text/html"):
-        resp_headers.pop("content-length", None)
         body_parts: list[bytes] = []
-        async for chunk in conn.read_stream_iter(request_id):
+        buffered = 0
+        over_cap = False
+        body_iter = conn.read_stream_iter(request_id)
+        async for chunk in body_iter:
             body_parts.append(chunk)
-        html_body = b"".join(body_parts).decode("utf-8")
-        rewritten = rewrite_html_asset_paths(html_body, f"/m/{code}")
+            buffered += len(chunk)
+            if buffered > HTML_REWRITE_MAX_BYTES:
+                over_cap = True
+                break
+
         duration_ms = round((time.monotonic() - start) * 1000)
         logger.info(
             "%s /%s -> %d %dms client=%s",
             request.method, path, resp_status, duration_ms, client_ip,
         )
-        return Response(
-            content=rewritten,
+
+        if not over_cap:
+            # Drop content-length since rewriting changes the body size;
+            # Response sets the correct value from the actual content.
+            resp_headers.pop("content-length", None)
+            rewritten = rewrite_html_body(
+                b"".join(body_parts), resp_content_type, f"/m/{code}"
+            )
+            return Response(
+                content=rewritten,
+                status_code=resp_status,
+                headers=resp_headers,
+                media_type=resp_content_type,
+            )
+
+        async def passthrough_generator() -> AsyncGenerator[bytes, None]:
+            """Stream the buffered prefix plus the remainder, unrewritten."""
+            for part in body_parts:
+                yield part
+            async for chunk in body_iter:
+                if await request.is_disconnected():
+                    await conn.send_cancel(request_id)
+                    return
+                yield chunk
+
+        logger.info(
+            "HTML body exceeds rewrite cap (%d bytes buffered) — streaming "
+            "unrewritten: code=%s path=/%s",
+            buffered, code, path,
+        )
+        return StreamingResponse(
+            passthrough_generator(),
             status_code=resp_status,
             headers=resp_headers,
             media_type=resp_content_type,
