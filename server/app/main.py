@@ -33,7 +33,7 @@ from server.app.services.clipboard_service import ClipboardService
 from server.app.services.connection_manager import ConnectionManager
 from server.app.services.file_request_service import FileRequestService
 from server.app.services.share_service import ShareLinkService
-from server.app.services.sqlite_store import get_state_store
+from server.app.services.sqlite_store import open_state_store
 from shared.paths import repo_root
 from shared.spa import spa_shell_response
 
@@ -58,10 +58,13 @@ def create_app(config: ServerConfig) -> FastAPI:
     application.state.config = config
 
     data_dir = config.shared_folder.parent / ".wfs_data"
-    share_secret = get_state_store(data_dir).get_or_create_share_secret()
-    application.state.share_service = ShareLinkService(share_secret, data_dir)
-    application.state.clipboard_service = ClipboardService(data_dir)
-    application.state.file_request_service = FileRequestService(data_dir)
+    # One store per app instance — no process-level cache (see open_state_store).
+    store = open_state_store(data_dir)
+    application.state.store = store
+    share_secret = store.get_or_create_share_secret()
+    application.state.share_service = ShareLinkService(share_secret, store)
+    application.state.clipboard_service = ClipboardService(store)
+    application.state.file_request_service = FileRequestService(store)
     application.state.manager = ConnectionManager()
 
     # Injected by an in-process host (relay drop box) after creation; None

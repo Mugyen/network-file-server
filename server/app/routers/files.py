@@ -67,7 +67,7 @@ async def get_files(request: Request, path: str = Query("")) -> dict:
     # directories and everyone else's / pre-existing files).
     scope_user = receive_scope_user(request)
     if scope_user is not None:
-        owned = await upload_index.owned_paths(config.shared_folder, scope_user)
+        owned = await upload_index.owned_paths(request.app.state.store, scope_user)
         filtered = []
         for e in result["entries"]:
             if e.get("type") == "directory":
@@ -133,7 +133,7 @@ async def upload_files(
             if name:
                 rel = f"{path}/{name}".lstrip("/") if path else name
                 await upload_index.record_upload(
-                    config.shared_folder, rel, uploader
+                    request.app.state.store, rel, uploader
                 )
 
     # Record file TTL for each uploaded file (when a provider is injected)
@@ -178,7 +178,7 @@ async def download_single_file(request: Request, path: str = Query(...)) -> Any:
     config = request.app.state.config
     scope_user = receive_scope_user(request)
     if scope_user is not None and not await upload_index.is_owned_by(
-        config.shared_folder, path, scope_user
+        request.app.state.store, path, scope_user
     ):
         raise FileNotFoundError("Not found")
     file_path = download_file(config.shared_folder, path)
@@ -285,7 +285,7 @@ async def preview_file(
     config = request.app.state.config
     scope_user = receive_scope_user(request)
     if scope_user is not None and not await upload_index.is_owned_by(
-        config.shared_folder, path, scope_user
+        request.app.state.store, path, scope_user
     ):
         raise FileNotFoundError("Not found")
     file_path = download_file(config.shared_folder, path)

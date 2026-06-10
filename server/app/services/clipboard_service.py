@@ -2,11 +2,10 @@
 
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 
 from server.app.exceptions import SnippetNotFoundError, SnippetValidationError
 from server.app.models.schemas import Snippet
-from server.app.services.sqlite_store import ClipboardRow, get_state_store
+from server.app.services.sqlite_store import ClipboardRow, ServerStateStore
 
 MAX_SNIPPETS = 50
 MAX_CONTENT_LENGTH = 10000
@@ -19,8 +18,10 @@ class ClipboardService:
     the store's generic KeyError never escapes this service.
     """
 
-    def __init__(self, data_dir: Path) -> None:
-        self._store = get_state_store(data_dir)
+    def __init__(self, store: ServerStateStore) -> None:
+        if not isinstance(store, ServerStateStore):
+            raise ValueError(f"store must be a ServerStateStore, got {type(store)!r}")
+        self._store = store
 
     async def list_snippets(self) -> list[Snippet]:
         """Return all snippets sorted by created_at ascending."""

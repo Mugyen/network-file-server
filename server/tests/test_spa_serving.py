@@ -34,6 +34,22 @@ class TestSpaPathResolution:
         assert len(app.routes) > 0
 
 
+class TestAppInstanceIsolation:
+    """Two apps in one process must not share state (no module singletons)."""
+
+    def test_two_apps_have_independent_stores(self, tmp_path: Path) -> None:
+        """Each create_app gets its own ServerStateStore, even on one data dir."""
+        from server.app.config import create_default_config
+
+        shared = tmp_path / "shared"
+        shared.mkdir()
+        config = create_default_config(shared_folder=shared, port=8000)
+        app_a = create_app(config)
+        app_b = create_app(config)
+        assert app_a.state.store is not app_b.state.store
+        assert app_a.state.clipboard_service is not app_b.state.clipboard_service
+
+
 class TestSpaFallbackWithoutBundle:
     """The SPA catch-all must resolve even without a built client bundle.
 

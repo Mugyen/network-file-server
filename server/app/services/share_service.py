@@ -10,13 +10,12 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Callable
 
 from itsdangerous import BadSignature, SignatureExpired, TimestampSigner, URLSafeTimedSerializer
 
 from server.app.models.enums import ShareTTL
-from server.app.services.sqlite_store import ShareLinkRow, get_state_store
+from server.app.services.sqlite_store import ServerStateStore, ShareLinkRow
 
 
 class _ClockedTimestampSigner(TimestampSigner):
@@ -80,7 +79,7 @@ class ShareLinkService:
     def __init__(
         self,
         secret_key: str,
-        data_dir: Path | None = None,
+        store: ServerStateStore | None = None,
         now_fn: Callable[[], float] = time.time,
     ) -> None:
         # Per-instance signer class so each service can have its own clock
@@ -92,7 +91,7 @@ class ShareLinkService:
         # routes use the threadpool). Same pattern as ServerStateStore.
         self._lock = threading.RLock()
         self._active_links: dict[str, ShareLinkRecord] = {}
-        self._store = get_state_store(data_dir) if data_dir is not None else None
+        self._store = store
         if self._store is not None:
             for row in self._store.list_share_links():
                 self._active_links[row.token] = ShareLinkRecord(

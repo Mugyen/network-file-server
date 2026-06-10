@@ -5,18 +5,19 @@ Allows devices to request specific files, and other devices to fulfill them.
 
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 
 from server.app.models.enums import RequestStatus
 from server.app.models.schemas import FileRequest
-from server.app.services.sqlite_store import FileRequestRow, get_state_store
+from server.app.services.sqlite_store import FileRequestRow, ServerStateStore
 
 
 class FileRequestService:
     """CRUD service for file requests backed by SQLite."""
 
-    def __init__(self, data_dir: Path) -> None:
-        self._store = get_state_store(data_dir)
+    def __init__(self, store: ServerStateStore) -> None:
+        if not isinstance(store, ServerStateStore):
+            raise ValueError(f"store must be a ServerStateStore, got {type(store)!r}")
+        self._store = store
 
     async def list_requests(self) -> list[FileRequest]:
         """Return all non-dismissed requests, newest first."""

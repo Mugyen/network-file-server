@@ -429,14 +429,12 @@ class ServerStateStore:
             return {str(row["rel_path"]) for row in rows}
 
 
-_stores: dict[Path, ServerStateStore] = {}
+def open_state_store(data_dir: Path) -> ServerStateStore:
+    """Create a new state store for the given data directory.
 
-
-def get_state_store(data_dir: Path) -> ServerStateStore:
-    """Return a cached SQLite state store for the given data directory."""
-    path = state_db_path(data_dir)
-    store = _stores.get(path)
-    if store is None:
-        store = ServerStateStore(path)
-        _stores[path] = store
-    return store
+    Each app instance owns exactly one store (constructed in create_app and
+    attached to ``app.state.store``); there is deliberately no process-level
+    cache — two apps on the same data dir get independent connections (WAL
+    mode handles concurrent access).
+    """
+    return ServerStateStore(state_db_path(data_dir))

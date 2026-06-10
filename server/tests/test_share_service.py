@@ -14,7 +14,7 @@ from server.app.services.share_service import (
     ShareLinkRevokedError,
     ShareLinkService,
 )
-from server.app.services.sqlite_store import ShareLinkRow, get_state_store
+from server.app.services.sqlite_store import ShareLinkRow, open_state_store
 from server.tests.conftest import AdvanceableClock
 
 
@@ -97,10 +97,10 @@ class TestShareLinkServiceValidate:
         # persistence path (sqlite store row loaded at construction), so
         # validation reaches the signature check and fails there.
         data_dir = tmp_path / "wfs_data"
-        seed_service = ShareLinkService("test-secret-key", data_dir)
+        seed_service = ShareLinkService("test-secret-key", open_state_store(data_dir))
         record = seed_service.create_link("docs/readme.txt", ShareTTL.ONE_HOUR)
         tampered = record.token + "tampered"
-        get_state_store(data_dir).upsert_share_link(
+        open_state_store(data_dir).upsert_share_link(
             ShareLinkRow(
                 token=tampered,
                 file_path=record.file_path,
@@ -108,7 +108,7 @@ class TestShareLinkServiceValidate:
                 ttl_seconds=record.ttl_seconds,
             )
         )
-        service = ShareLinkService("test-secret-key", data_dir)
+        service = ShareLinkService("test-secret-key", open_state_store(data_dir))
         with pytest.raises(BadSignature):
             service.validate_token(tampered)
 
@@ -173,10 +173,10 @@ class TestShareServiceAppWiring:
 class TestShareLinkPersistence:
     def test_share_links_survive_reinstantiation(self, tmp_path) -> None:
         data_dir = tmp_path / "wfs_data"
-        service1 = ShareLinkService("test-secret-key", data_dir)
+        service1 = ShareLinkService("test-secret-key", open_state_store(data_dir))
         token = service1.create_link("docs/readme.txt", ShareTTL.ONE_HOUR).token
 
-        service2 = ShareLinkService("test-secret-key", data_dir)
+        service2 = ShareLinkService("test-secret-key", open_state_store(data_dir))
         active = service2.list_active_links()
         assert len(active) == 1
         assert active[0].token == token
