@@ -8,7 +8,6 @@ SQLite is the source of truth for all metadata (status, TTL, IP, timestamps).
 import logging
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import aiosqlite
@@ -21,6 +20,8 @@ from relay.app.exceptions import (
     MountNotFoundError,
     MountOfflineError,
 )
+from shared.sqlite_kernel import is_new_db, open_wal_db, run_schema
+
 from relay.app.services.mount_registry import (
     AccessRequest,
     MountPolicy,
@@ -130,18 +131,19 @@ class SqliteMountRegistry:
         Opens the database, creates the schema if needed, runs startup
         cleanup, and returns a ready-to-use registry.
         """
-        is_new_db = db_path == ":memory:" or not Path(db_path).exists()
+        new_db = is_new_db(db_path)
 
-        db = await aiosqlite.connect(db_path)
         # WAL: registrations, TTL sweeps, and access-request writes run
         # concurrently — rollback-journal mode serializes them behind an
         # exclusive lock. (Matches the server's ServerStateStore.)
-        await db.execute("PRAGMA journal_mode=WAL")
-        await db.execute(_CREATE_TABLE_SQL)
-        await db.execute(_CREATE_IP_INDEX_SQL)
-        await db.execute(_CREATE_STATUS_INDEX_SQL)
-        await db.execute(_CREATE_POLICY_TABLE_SQL)
-        await db.execute(_CREATE_ACCESS_REQUESTS_SQL)
+        db = await open_wal_db(db_path)
+        await run_schema(db, [
+            _CREATE_TABLE_SQL,
+            _CREATE_IP_INDEX_SQL,
+            _CREATE_STATUS_INDEX_SQL,
+            _CREATE_POLICY_TABLE_SQL,
+            _CREATE_ACCESS_REQUESTS_SQL,
+        ])
 
         # Migrate pre-v1.3 databases: add owner/access columns if missing.
         async with db.execute("PRAGMA table_info(mounts)") as cursor:
@@ -152,7 +154,7 @@ class SqliteMountRegistry:
 
         await db.commit()
 
-        if is_new_db:
+        if new_db:
             logger.info("No existing mount database -- starting fresh")
 
         registry = cls(db)

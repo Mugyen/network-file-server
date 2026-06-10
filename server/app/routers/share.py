@@ -47,7 +47,7 @@ async def create_share_link(
     resolve_safe_path(config.shared_folder, body.file_path)
 
     # create_link returns the full record — no reaching into internals.
-    record = service.create_link(body.file_path, body.ttl)
+    record = await service.create_link(body.file_path, body.ttl)
     file_name = Path(body.file_path).name
     created_at = record.created_at.isoformat()
     expires_at = (record.created_at + timedelta(seconds=record.ttl_seconds)).isoformat()
@@ -70,7 +70,7 @@ async def list_share_links(
     service: ShareLinkService = Depends(get_share_service),
 ) -> list[ShareLinkInfo]:
     """List all active (non-expired) share links."""
-    records = service.list_active_links()
+    records = await service.list_active_links()
     result: list[ShareLinkInfo] = []
     for record in records:
         file_name = Path(record.file_path).name
@@ -98,7 +98,7 @@ async def revoke_share_link(
 
     Raises ShareLinkNotFoundError (-> 404 centrally) for unknown tokens.
     """
-    service.revoke_link(token)
+    await service.revoke_link(token)
     return Response(status_code=204)
 
 
@@ -115,7 +115,7 @@ async def share_page(
     Shows unavailable page if the file was deleted after link creation.
     """
     try:
-        file_path = service.validate_token(token)
+        file_path = await service.validate_token(token)
     except (ShareLinkExpiredError, ShareLinkRevokedError):
         return templates.TemplateResponse(request, "share_expired.html")
     except BadSignature:
@@ -148,7 +148,7 @@ async def share_download(
     Returns expired page for expired/revoked tokens.
     """
     try:
-        file_path = service.validate_token(token)
+        file_path = await service.validate_token(token)
     except (ShareLinkExpiredError, ShareLinkRevokedError):
         return templates.TemplateResponse(request, "share_expired.html")
     except BadSignature:

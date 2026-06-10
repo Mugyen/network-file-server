@@ -6,6 +6,7 @@ When a data directory is provided, active links are also persisted in SQLite
 so they survive restarts.
 """
 
+import asyncio
 import threading
 import time
 from dataclasses import dataclass
@@ -101,12 +102,16 @@ class ShareLinkService:
                     ttl_seconds=row.ttl_seconds,
                 )
 
-    def create_link(self, file_path: str, ttl: ShareTTL) -> ShareLinkRecord:
+    async def create_link(self, file_path: str, ttl: ShareTTL) -> ShareLinkRecord:
         """Create a new share link for the given file path.
 
         Returns the full ShareLinkRecord (token, path, created_at, ttl) so
         callers never reach into the service's internal registry.
+        SQLite writes run in a worker thread (event loop never blocks).
         """
+        return await asyncio.to_thread(self._create_link_sync, file_path, ttl)
+
+    def _create_link_sync(self, file_path: str, ttl: ShareTTL) -> ShareLinkRecord:
         token: str = self._serializer.dumps({"path": file_path}, salt=self.SALT)
         now = datetime.fromtimestamp(self._now_fn(), tz=timezone.utc)
         record = ShareLinkRecord(
@@ -128,13 +133,16 @@ class ShareLinkService:
                 )
         return record
 
-    def validate_token(self, token: str) -> str:
+    async def validate_token(self, token: str) -> str:
         """Validate a share link token and return the embedded file path.
 
         Raises ShareLinkRevokedError if the token was revoked.
         Raises ShareLinkExpiredError if the token has expired.
         Raises BadSignature if the token is tampered or invalid.
         """
+        return await asyncio.to_thread(self._validate_token_sync, token)
+
+    def _validate_token_sync(self, token: str) -> str:
         with self._lock:
             if token not in self._active_links:
                 raise ShareLinkRevokedError(token)
@@ -157,11 +165,14 @@ class ShareLinkService:
 
         return data["path"]
 
-    def revoke_link(self, token: str) -> None:
+    async def revoke_link(self, token: str) -> None:
         """Revoke a share link by removing it from the active registry.
 
         Raises ShareLinkNotFoundError if the token is not in the registry.
         """
+        await asyncio.to_thread(self._revoke_link_sync, token)
+
+    def _revoke_link_sync(self, token: str) -> None:
         with self._lock:
             if token not in self._active_links:
                 raise ShareLinkNotFoundError(token)
@@ -172,11 +183,14 @@ class ShareLinkService:
                 except KeyError:
                     pass  # Already removed from SQLite — nothing to clean.
 
-    def list_active_links(self) -> list[ShareLinkRecord]:
+    async def list_active_links(self) -> list[ShareLinkRecord]:
         """Return all non-expired active share links.
 
         Filters out naturally expired entries during listing.
         """
+        return await asyncio.to_thread(self._list_active_links_sync)
+
+    def _list_active_links_sync(self) -> list[ShareLinkRecord]:
         active: list[ShareLinkRecord] = []
         expired_tokens: list[str] = []
 

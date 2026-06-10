@@ -4,6 +4,12 @@ This store centralizes durable state for clipboard snippets, file requests,
 share links, upload ownership, and persistent secrets. It uses a single
 SQLite database under the server's data directory and keeps the schema
 simple so feature services can stay thin.
+
+Threading contract: this store is deliberately synchronous (sqlite3 +
+RLock). ``create_app`` may call it directly at construction time (no event
+loop yet); request-path callers MUST offload through ``asyncio.to_thread``
+at the service layer so the event loop never blocks — see
+clipboard_service/share_service/file_request_service/upload_index.
 """
 
 from __future__ import annotations

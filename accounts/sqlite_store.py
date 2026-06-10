@@ -100,6 +100,8 @@ class SqliteAccountStore(AccountStore):
         if not isinstance(db_path, str) or len(db_path) == 0:
             raise ValueError("db_path must be a non-empty string")
 
+        # accounts/ is a leaf package (liftable into other projects) and
+        # must not import shared.sqlite_kernel — it keeps its own bootstrap.
         is_new_db = db_path == ":memory:" or not Path(db_path).exists()
 
         db = await aiosqlite.connect(db_path)

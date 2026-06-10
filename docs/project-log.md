@@ -337,3 +337,7 @@ Migrated test_dropbox.py, test_dropbox_ws.py, test_agent_expired_files.py, and i
 ## 2026-06-10: Remediation phase 2 — module-level singletons eliminated
 
 Server (2a): removed get_state_store() process cache; one ServerStateStore per app via DI. Relay (2b): RelayState dataclass on app.state.relay replaces 7 module globals (config/registry/session/account_store/file_ttl_db/dropbox×2) + per-app mount-reg rate limiter; account_store.py deleted; module-level app removed (uvicorn factory=True); slowapi limiter+rates remain the single documented process-global (3rd-party constraint). authorize()/identity_from_cookies()/user_storage take explicit deps. 925 pytest green.
+
+## 2026-06-10: Remediation phase 3 — event loop never blocks on SQLite
+
+Service layer (clipboard/share/file-request/upload_index) now offloads all ServerStateStore calls via asyncio.to_thread; ShareLinkService methods went async (router + tests updated). Deviation from plan documented: store stays sync sqlite3 (create_app is a sync factory; lifespan-less test architecture), threading contract documented in sqlite_store.py. New shared/sqlite_kernel.py (is_new_db/open_wal_db/run_schema) adopted by relay sqlite_registry + file_ttl_db; accounts keeps its own bootstrap (leaf-package import boundary). 933 pytest green (+8 kernel tests).

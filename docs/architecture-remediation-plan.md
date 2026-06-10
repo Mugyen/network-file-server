@@ -111,6 +111,19 @@ thread behind an async API, so the event loop never blocks. Alternative
 considered: `asyncio.to_thread` wrappers — rejected because it keeps a second
 concurrency idiom alive and leaves the RLock dance in place.
 
+**AS-IMPLEMENTED DEVIATION (2026-06-10).** The server store stays sync
+sqlite3; the *service layer* offloads via `asyncio.to_thread`. Reason
+discovered during implementation: ``create_app`` is a synchronous factory
+(services query SQLite at construction — share secret, link preload) and the
+~900-test suite drives apps through lifespan-less ``httpx.ASGITransport``;
+a fully-async store would force lifespan-based construction and a relay-
+phase-2-sized test migration for no additional event-loop benefit. The
+threading contract is documented in sqlite_store.py. The kernel
+(`shared/sqlite_kernel.py`) unifies the two genuinely-async relay stores;
+``accounts/`` keeps its own bootstrap — the import-boundary rule (leaf
+packages import no project packages, shared included) outweighs 8 lines of
+reuse.
+
 **Files.** `server/app/services/sqlite_store.py` (rewrite), its five call
 sites, new `shared/sqlite_kernel.py`, then `relay/app/services/{sqlite_registry,file_ttl_db}.py`
 and `accounts/sqlite_store.py` adopt the kernel (mechanical).

@@ -1,5 +1,11 @@
-"""Clipboard snippet CRUD with SQLite persistence."""
+"""Clipboard snippet CRUD with SQLite persistence.
 
+Store calls run via asyncio.to_thread so SQLite I/O never blocks the
+event loop (the store is sync sqlite3 + RLock by design — see
+sqlite_store.py).
+"""
+
+import asyncio
 import uuid
 from datetime import datetime, timezone
 
@@ -25,7 +31,7 @@ class ClipboardService:
 
     async def list_snippets(self) -> list[Snippet]:
         """Return all snippets sorted by created_at ascending."""
-        rows = self._store.list_clipboard_snippets()
+        rows = await asyncio.to_thread(self._store.list_clipboard_snippets)
         return [Snippet(**row.__dict__) for row in rows]
 
     async def create_snippet(self, title: str) -> Snippet:
@@ -33,7 +39,7 @@ class ClipboardService:
 
         Raises SnippetValidationError if snippet count exceeds MAX_SNIPPETS.
         """
-        if self._store.count_clipboard_snippets() >= MAX_SNIPPETS:
+        if await asyncio.to_thread(self._store.count_clipboard_snippets) >= MAX_SNIPPETS:
             raise SnippetValidationError(
                 f"Maximum snippet count ({MAX_SNIPPETS}) exceeded"
             )
@@ -45,7 +51,7 @@ class ClipboardService:
             created_at=now,
             updated_at=now,
         )
-        self._store.insert_clipboard_snippet(row)
+        await asyncio.to_thread(self._store.insert_clipboard_snippet, row)
         return Snippet(**row.__dict__)
 
     async def update_snippet(self, snippet_id: str, content: str) -> Snippet:
@@ -59,7 +65,9 @@ class ClipboardService:
                 f"Content exceeds maximum length ({MAX_CONTENT_LENGTH} characters)"
             )
         try:
-            row = self._store.update_clipboard_snippet(snippet_id, content=content)
+            row = await asyncio.to_thread(
+                self._store.update_clipboard_snippet, snippet_id, content=content
+            )
         except KeyError as exc:
             # Store speaks KeyError; translate to the domain exception.
             raise SnippetNotFoundError(snippet_id) from exc
@@ -68,7 +76,9 @@ class ClipboardService:
     async def update_title(self, snippet_id: str, title: str) -> Snippet:
         """Update snippet title. Raises SnippetNotFoundError if not found."""
         try:
-            row = self._store.update_clipboard_snippet(snippet_id, title=title)
+            row = await asyncio.to_thread(
+                self._store.update_clipboard_snippet, snippet_id, title=title
+            )
         except KeyError as exc:
             # Store speaks KeyError; translate to the domain exception.
             raise SnippetNotFoundError(snippet_id) from exc
@@ -77,7 +87,7 @@ class ClipboardService:
     async def delete_snippet(self, snippet_id: str) -> None:
         """Delete a snippet. Raises SnippetNotFoundError if not found."""
         try:
-            self._store.delete_clipboard_snippet(snippet_id)
+            await asyncio.to_thread(self._store.delete_clipboard_snippet, snippet_id)
         except KeyError as exc:
             # Store speaks KeyError; translate to the domain exception.
             raise SnippetNotFoundError(snippet_id) from exc

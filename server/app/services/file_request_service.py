@@ -1,8 +1,10 @@
 """File request service with SQLite persistence.
 
 Allows devices to request specific files, and other devices to fulfill them.
+Store calls run via asyncio.to_thread so SQLite I/O never blocks the event loop.
 """
 
+import asyncio
 import uuid
 from datetime import datetime, timezone
 
@@ -21,7 +23,7 @@ class FileRequestService:
 
     async def list_requests(self) -> list[FileRequest]:
         """Return all non-dismissed requests, newest first."""
-        rows = self._store.list_file_requests()
+        rows = await asyncio.to_thread(self._store.list_file_requests)
         return [FileRequest(**row.__dict__) for row in rows]
 
     async def create_request(
@@ -48,7 +50,7 @@ class FileRequestService:
             fulfilled_file_path=None,
             fulfilled_at=None,
         )
-        self._store.insert_file_request(row)
+        await asyncio.to_thread(self._store.insert_file_request, row)
         return FileRequest(**row.__dict__)
 
     async def fulfill_request(
@@ -59,12 +61,13 @@ class FileRequestService:
         file_path: str,
     ) -> FileRequest:
         """Mark a request as fulfilled. Raises KeyError if not found, ValueError if not PENDING."""
-        current = self._store.get_file_request(request_id)
+        current = await asyncio.to_thread(self._store.get_file_request, request_id)
         if current.status != RequestStatus.PENDING.value:
             raise ValueError(f"Can only fulfill PENDING requests, got {current.status}")
 
         now = datetime.now(timezone.utc).isoformat()
-        row = self._store.update_file_request(
+        row = await asyncio.to_thread(
+            self._store.update_file_request,
             request_id,
             status=RequestStatus.FULFILLED.value,
             fulfilled_by_device_name=fulfilled_by_device_name,
@@ -76,7 +79,7 @@ class FileRequestService:
 
     async def dismiss_request(self, request_id: str, caller_device_id: str) -> None:
         """Dismiss a request. Only the requester may dismiss. Raises KeyError/ValueError."""
-        entry = self._store.get_file_request(request_id)
+        entry = await asyncio.to_thread(self._store.get_file_request, request_id)
         if entry.requester_device_id != caller_device_id:
             raise ValueError("Only the requester can dismiss their request")
-        self._store.dismiss_file_request(request_id)
+        await asyncio.to_thread(self._store.dismiss_file_request, request_id)
