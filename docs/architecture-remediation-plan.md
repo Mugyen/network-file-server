@@ -406,6 +406,20 @@ mutate); mode-resolution unit tests. Existing Playwright e2e must pass.
 **Done when.** No manual `loadFiles()` after mutations; one mode decision
 point; client gate + e2e green.
 
+**AS-IMPLEMENTED (2026-06-10).** (a) `@tanstack/react-query` backs the file
+listing: `BrowseProvider` uses `useQuery(["files", path])`; `loadFiles` is now
+`queryClient.invalidateQueries` and mutations invalidate on success (no manual
+refetch threading; concurrent refetches dedup). Mutation errors are tracked in
+a separate `opError` state so a failed delete doesn't clear the valid listing.
+Scoped to the listing (the highest-value race) — clipboard/shares/file-requests
+keep their existing hooks; they can adopt the pattern incrementally.
+(b) `resolveAppMode(pathname)` + an `AppMode` const-object (NOT a TS `enum` —
+`erasableSyntaxOnly` forbids enums; matches FileType/RequestStatus) replace
+`pickRoot`'s if-chain. The SPA's async server-capability probe stays in Root
+(it's a runtime check, not a static route). +6 client tests (appMode ×5,
+invalidation-on-success ×1); a brittle dedup-count test was dropped as it
+over-specified React Query internals. e2e deferred to CI.
+
 ---
 
 ## Phase 11 — Client hook test coverage

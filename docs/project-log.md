@@ -365,3 +365,7 @@ New shared/identity_sig.py (HMAC-SHA256 over user|role|bypass). Agent mints a pe
 ## 2026-06-10: Remediation phase 9 — client API types generated from OpenAPI
 
 New server/app/openapi_dump.py + scripts/gen_api_types.sh dump the server OpenAPI schema and run openapi-typescript into client/src/types/api.gen.ts. Added response_model to the files routes (DirectoryListing/SearchResult/UploadResult) and expires_at to FileEntry so the schema is the true contract. Client types/{files,serverInfo,clipboard,fileRequests}.ts now derive from the generated schema (runtime consts FileType/RequestStatus kept). New CI api-types job regenerates + git diff --exit-code (drift fails the build). 974 pytest + 89 vitest green; tsc/eslint clean.
+
+## 2026-06-10: Remediation phase 10 — React Query state layer + AppMode routing
+
+Added @tanstack/react-query: BrowseProvider backs the file listing with useQuery(["files",path]); loadFiles is now invalidateQueries and mutations invalidate on success (no manual refetch threading; mutation errors tracked separately so a failed op doesn't clear the listing). QueryClientProvider wraps App. New appMode.ts: resolveAppMode() + AppMode const-object replaces main.tsx's pickRoot if-chain (single routing decision). 95 vitest (+6: appMode ×5, invalidation ×1); tsc/eslint/build green.

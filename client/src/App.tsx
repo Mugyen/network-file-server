@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ReactElement } from "react";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { queryClient } from "./queryClient.ts";
 import type { ServerInfo as ServerInfoData } from "./types/serverInfo.ts";
 import { WSMessageType, getDeviceId, getDeviceName } from "./types/websocket.ts";
 import type { ServerMode } from "./types/serverMode.ts";
@@ -200,16 +202,19 @@ function AppContent({ serverMode, onLogout }: AppProps): ReactElement {
   );
 }
 
-/** Composes the context providers around the app shell. */
+/** Composes the context providers around the app shell. The QueryClient
+ *  backs server-state slices (the file listing) — see queryClient.ts. */
 function App({ serverMode, onLogout }: AppProps): ReactElement {
   return (
-    <NotificationsProvider>
-      <BrowseProvider>
-        <UploadProvider>
-          <AppContent serverMode={serverMode} onLogout={onLogout} />
-        </UploadProvider>
-      </BrowseProvider>
-    </NotificationsProvider>
+    <QueryClientProvider client={queryClient}>
+      <NotificationsProvider>
+        <BrowseProvider>
+          <UploadProvider>
+            <AppContent serverMode={serverMode} onLogout={onLogout} />
+          </UploadProvider>
+        </BrowseProvider>
+      </NotificationsProvider>
+    </QueryClientProvider>
   );
 }
 

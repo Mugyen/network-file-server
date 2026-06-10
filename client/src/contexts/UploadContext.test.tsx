@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import type { Root } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowseProvider } from "./BrowseContext.tsx";
 import { UploadProvider, useUploads } from "./UploadContext.tsx";
 
@@ -51,11 +52,15 @@ function dragEvent(): React.DragEvent {
 describe("UploadContext", () => {
   let container: HTMLDivElement;
   let root: Root;
+  let queryClient: QueryClient;
 
   beforeEach(() => {
     vi.clearAllMocks();
     current = null;
     mocks.fetchFiles.mockResolvedValue({ path: "", entries: [] });
+    queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -72,11 +77,13 @@ describe("UploadContext", () => {
   async function mount(): Promise<void> {
     await act(async () => {
       root.render(
-        <BrowseProvider>
-          <UploadProvider>
-            <Harness />
-          </UploadProvider>
-        </BrowseProvider>,
+        <QueryClientProvider client={queryClient}>
+          <BrowseProvider>
+            <UploadProvider>
+              <Harness />
+            </UploadProvider>
+          </BrowseProvider>
+        </QueryClientProvider>,
       );
     });
   }
