@@ -58,3 +58,31 @@ class ReadOnlyError(Exception):
         super().__init__(
             f"Operation '{operation}' is not allowed in read-only mode"
         )
+
+
+class InvalidFileRequestError(Exception):
+    """Raised when a file operation request is semantically invalid.
+
+    Examples: downloading a directory, searching with an empty query.
+    Stores the human-readable reason; maps to HTTP 400 centrally.
+    """
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(reason)
+
+
+class SnippetNotFoundError(Exception):
+    """Raised when a clipboard snippet id does not exist."""
+
+    def __init__(self, snippet_id: str) -> None:
+        self.snippet_id = snippet_id
+        super().__init__(f"No snippet with id '{snippet_id}'")
+
+
+class SnippetValidationError(Exception):
+    """Raised when a clipboard snippet violates a content constraint."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(reason)

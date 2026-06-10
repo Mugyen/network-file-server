@@ -8,6 +8,7 @@ from http.cookies import SimpleCookie
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 
+from server.app.exceptions import SnippetNotFoundError, SnippetValidationError
 from server.app.models.enums import ToastType, WSMessageType
 from server.app.services.connection_manager import ConnectionManager
 
@@ -130,7 +131,7 @@ async def websocket_endpoint(
                         },
                         device_id,
                     )
-                except (KeyError, ValueError) as exc:
+                except (SnippetNotFoundError, SnippetValidationError) as exc:
                     # Don't kill the WS loop over one bad update, but make
                     # the rejection visible — a client is sending stale or
                     # malformed snippet IDs.

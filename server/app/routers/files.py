@@ -2,6 +2,10 @@
 
 Provides endpoints for listing, uploading, downloading, renaming,
 deleting files, creating folders, batch ZIP download, search, and preview.
+
+Error handling: routes raise domain exceptions (server/app/exceptions.py);
+the central handlers registered in server/app/error_handlers.py map them to
+HTTP responses. Routes never construct error responses themselves.
 """
 
 import asyncio
@@ -12,13 +16,8 @@ from urllib.parse import quote
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, Query, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
-from server.app.exceptions import (
-    FileConflictError,
-    InvalidFileNameError,
-    PathTraversalError,
-)
 from server.app.models.enums import ConflictResolution
 from server.app.models.schemas import (
     CreateFolderRequest,
@@ -50,32 +49,6 @@ from server.app.services.file_service import (
 router = APIRouter(prefix="/api", tags=["files"])
 
 
-def _handle_path_traversal(exc: PathTraversalError) -> JSONResponse:
-    return JSONResponse(status_code=403, content={"error": str(exc)})
-
-
-def _handle_not_found(exc: FileNotFoundError) -> JSONResponse:
-    return JSONResponse(status_code=404, content={"error": str(exc)})
-
-
-def _handle_conflict(exc: FileConflictError) -> JSONResponse:
-    return JSONResponse(
-        status_code=409,
-        content={
-            "error": str(exc),
-            "path": exc.path,
-            "existing_path": exc.existing_path,
-        },
-    )
-
-
-def _handle_invalid_name(exc: InvalidFileNameError) -> JSONResponse:
-    return JSONResponse(
-        status_code=400,
-        content={"error": str(exc), "name": exc.name, "reason": exc.reason},
-    )
-
-
 @router.get("/files", dependencies=[Depends(require_browse_access)])
 async def get_files(request: Request, path: str = Query("")) -> dict:
     """List files in the shared folder with optional TTL expiry data.
@@ -85,51 +58,46 @@ async def get_files(request: Request, path: str = Query("")) -> dict:
     Enriches each file entry with expires_at (ISO timestamp or null).
     """
     config = request.app.state.config
-    try:
-        # Offloaded: iterdir+stat block, and this loop also carries tunnel
-        # traffic when the agent runs the server in-process.
-        listing = await asyncio.to_thread(list_directory, config.shared_folder, path)
-        result = listing.model_dump()
+    # Offloaded: iterdir+stat block, and this loop also carries tunnel
+    # traffic when the agent runs the server in-process.
+    listing = await asyncio.to_thread(list_directory, config.shared_folder, path)
+    result = listing.model_dump()
 
-        # RECEIVE role: show only files this user uploaded (hide
-        # directories and everyone else's / pre-existing files).
-        scope_user = receive_scope_user(request)
-        if scope_user is not None:
-            owned = await upload_index.owned_paths(config.shared_folder, scope_user)
-            filtered = []
-            for e in result["entries"]:
-                if e.get("type") == "directory":
-                    continue
-                name = e.get("name", "")
-                key = f"{path}/{name}".lstrip("/") if path else name
-                if key in owned:
-                    filtered.append(e)
-            result["entries"] = filtered
+    # RECEIVE role: show only files this user uploaded (hide
+    # directories and everyone else's / pre-existing files).
+    scope_user = receive_scope_user(request)
+    if scope_user is not None:
+        owned = await upload_index.owned_paths(config.shared_folder, scope_user)
+        filtered = []
+        for e in result["entries"]:
+            if e.get("type") == "directory":
+                continue
+            name = e.get("name", "")
+            key = f"{path}/{name}".lstrip("/") if path else name
+            if key in owned:
+                filtered.append(e)
+        result["entries"] = filtered
 
-        # Enrich file entries with TTL expiry timestamps. The provider is
-        # injected by whoever hosts this app in-process (relay drop box);
-        # standalone mode has none and the feature is absent.
-        ttl_provider = request.app.state.file_ttl_provider
-        if config.mount_code is not None and ttl_provider is not None:
-            ttl_records = await ttl_provider.get_ttl_for_mount(config.mount_code)
-            ttl_map: dict[str, str] = {}
-            for file_path, expires_at in ttl_records:
-                ttl_map[file_path] = datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat()
-            for entry in result.get("entries", []):
-                # Build relative path from listing directory + filename
-                name = entry.get("name", "")
-                file_path_key = f"{path}/{name}".lstrip("/") if path else name
-                entry["expires_at"] = ttl_map.get(file_path_key, None)
-        else:
-            # Standalone mode (no provider) or LAN serving — no TTLs.
-            for entry in result.get("entries", []):
-                entry["expires_at"] = None
+    # Enrich file entries with TTL expiry timestamps. The provider is
+    # injected by whoever hosts this app in-process (relay drop box);
+    # standalone mode has none and the feature is absent.
+    ttl_provider = request.app.state.file_ttl_provider
+    if config.mount_code is not None and ttl_provider is not None:
+        ttl_records = await ttl_provider.get_ttl_for_mount(config.mount_code)
+        ttl_map: dict[str, str] = {}
+        for file_path, expires_at in ttl_records:
+            ttl_map[file_path] = datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat()
+        for entry in result.get("entries", []):
+            # Build relative path from listing directory + filename
+            name = entry.get("name", "")
+            rel = f"{path}/{name}".lstrip("/") if path else name
+            entry["expires_at"] = ttl_map.get(rel)
+    else:
+        # Standalone mode (no provider) or LAN serving — no TTLs.
+        for entry in result.get("entries", []):
+            entry["expires_at"] = None
 
-        return result
-    except PathTraversalError as exc:
-        return _handle_path_traversal(exc)  # type: ignore[return-value]
-    except FileNotFoundError as exc:
-        return _handle_not_found(exc)  # type: ignore[return-value]
+    return result
 
 
 @router.post("/files/upload", response_model=None, dependencies=[Depends(require_write_access)])
@@ -149,62 +117,55 @@ async def upload_files(
     Broadcasts toast to WebSocket clients after successful upload.
     """
     config = request.app.state.config
-    try:
-        results = []
-        for file in files:
-            result = await upload_file(
-                config.shared_folder, path, file, conflict_resolution
-            )
-            results.append(result.model_dump())
+    results = []
+    for file in files:
+        result = await upload_file(
+            config.shared_folder, path, file, conflict_resolution
+        )
+        results.append(result.model_dump())
 
-        # Record the uploader (trusted relay identity) so RECEIVE users
-        # can later see their own uploads.
-        uploader = trusted_user(config, request.headers)
-        if uploader is not None:
+    # Record the uploader (trusted relay identity) so RECEIVE users
+    # can later see their own uploads.
+    uploader = trusted_user(config, request.headers)
+    if uploader is not None:
+        for r in results:
+            name = r.get("name", "")
+            if name:
+                rel = f"{path}/{name}".lstrip("/") if path else name
+                await upload_index.record_upload(
+                    config.shared_folder, rel, uploader
+                )
+
+    # Record file TTL for each uploaded file (when a provider is injected)
+    effective_ttl = ttl if ttl is not None else 86400  # Default 1 day
+    if effective_ttl > 0 and config.mount_code is not None:
+        # None = standalone mode (no provider injected) — nothing to record.
+        ttl_provider = request.app.state.file_ttl_provider
+        if ttl_provider is not None:
             for r in results:
+                # Build relative path from upload directory + filename
                 name = r.get("name", "")
                 if name:
-                    rel = f"{path}/{name}".lstrip("/") if path else name
-                    await upload_index.record_upload(
-                        config.shared_folder, rel, uploader
-                    )
+                    file_path = f"{path}/{name}".lstrip("/") if path else name
+                    await ttl_provider.record_file_ttl(config.mount_code, file_path, effective_ttl)
 
-        # Record file TTL for each uploaded file (when a provider is injected)
-        effective_ttl = ttl if ttl is not None else 86400  # Default 1 day
-        if effective_ttl > 0 and config.mount_code is not None:
-            # None = standalone mode (no provider injected) — nothing to record.
-            ttl_provider = request.app.state.file_ttl_provider
-            if ttl_provider is not None:
-                for r in results:
-                    # Build relative path from upload directory + filename
-                    name = r.get("name", "")
-                    if name:
-                        file_path = f"{path}/{name}".lstrip("/") if path else name
-                        await ttl_provider.record_file_ttl(config.mount_code, file_path, effective_ttl)
+    # Broadcast upload toast to WS clients
+    file_count = len(results)
+    uploader_name = x_device_name if x_device_name is not None else "Someone"
+    file_word = "file" if file_count == 1 else "files"
+    toast_msg = {
+        "type": "toast",
+        "toast_type": ToastType.FILE_UPLOADED.value,
+        "message": f"{file_count} {file_word} uploaded by {uploader_name}",
+        "device_name": uploader_name,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    if x_device_id is not None:
+        await request.app.state.manager.broadcast(toast_msg, x_device_id)
+    else:
+        await request.app.state.manager.broadcast_all(toast_msg)
 
-        # Broadcast upload toast to WS clients
-        file_count = len(results)
-        uploader_name = x_device_name if x_device_name is not None else "Someone"
-        file_word = "file" if file_count == 1 else "files"
-        toast_msg = {
-            "type": "toast",
-            "toast_type": ToastType.FILE_UPLOADED.value,
-            "message": f"{file_count} {file_word} uploaded by {uploader_name}",
-            "device_name": uploader_name,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-        if x_device_id is not None:
-            await request.app.state.manager.broadcast(toast_msg, x_device_id)
-        else:
-            await request.app.state.manager.broadcast_all(toast_msg)
-
-        return results
-    except PathTraversalError as exc:
-        return _handle_path_traversal(exc)
-    except FileNotFoundError as exc:
-        return _handle_not_found(exc)
-    except FileConflictError as exc:
-        return _handle_conflict(exc)
+    return results
 
 
 @router.get("/files/download", response_model=None, dependencies=[Depends(require_browse_access)])
@@ -219,26 +180,19 @@ async def download_single_file(request: Request, path: str = Query(...)) -> Any:
     if scope_user is not None and not await upload_index.is_owned_by(
         config.shared_folder, path, scope_user
     ):
-        return JSONResponse(status_code=404, content={"error": "Not found"})
-    try:
-        file_path = download_file(config.shared_folder, path)
-        encoded_name = quote(file_path.name)
-        return FileResponse(
-            path=str(file_path),
-            filename=file_path.name,
-            media_type="application/octet-stream",
-            headers={
-                "Content-Disposition": (
-                    f"attachment; filename*=UTF-8''{encoded_name}"
-                )
-            },
-        )
-    except PathTraversalError as exc:
-        return _handle_path_traversal(exc)
-    except FileNotFoundError as exc:
-        return _handle_not_found(exc)
-    except ValueError as exc:
-        return JSONResponse(status_code=400, content={"error": str(exc)})
+        raise FileNotFoundError("Not found")
+    file_path = download_file(config.shared_folder, path)
+    encoded_name = quote(file_path.name)
+    return FileResponse(
+        path=str(file_path),
+        filename=file_path.name,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename*=UTF-8''{encoded_name}"
+            )
+        },
+    )
 
 
 @router.post("/files/download-zip", response_model=None, dependencies=[Depends(require_browse_access)])
@@ -249,26 +203,12 @@ async def download_zip(request: Request, body: DownloadZipRequest) -> Any:
     memory-efficient streaming without buffering the full archive.
     """
     config = request.app.state.config
-    scope_user = receive_scope_user(request)
-    if scope_user is not None:
-        for p in body.paths:
-            if not await upload_index.is_owned_by(
-                config.shared_folder, p, scope_user
-            ):
-                return JSONResponse(
-                    status_code=404, content={"error": "Not found"}
-                )
-    try:
-        zip_generator = download_as_zip(config.shared_folder, body.paths)
-        return StreamingResponse(
-            zip_generator,
-            media_type="application/zip",
-            headers={"Content-Disposition": "attachment; filename=download.zip"},
-        )
-    except PathTraversalError as exc:
-        return _handle_path_traversal(exc)
-    except FileNotFoundError as exc:
-        return _handle_not_found(exc)
+    zip_generator = download_as_zip(config.shared_folder, body.paths)
+    return StreamingResponse(
+        zip_generator,
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=download.zip"},
+    )
 
 
 @router.patch("/files/rename", response_model=None, dependencies=[Depends(require_write_access), Depends(require_full_access)])
@@ -279,17 +219,8 @@ def rename_file(http_request: Request, request: RenameRequest) -> Any:
     Returns the new relative path.
     """
     config = http_request.app.state.config
-    try:
-        new_path = rename_path(config.shared_folder, request.path, request.new_name)
-        return {"path": new_path}
-    except PathTraversalError as exc:
-        return _handle_path_traversal(exc)
-    except FileNotFoundError as exc:
-        return _handle_not_found(exc)
-    except FileConflictError as exc:
-        return _handle_conflict(exc)
-    except InvalidFileNameError as exc:
-        return _handle_invalid_name(exc)
+    new_path = rename_path(config.shared_folder, request.path, request.new_name)
+    return {"path": new_path}
 
 
 @router.delete("/files", response_model=None, dependencies=[Depends(require_write_access), Depends(require_full_access)])
@@ -300,13 +231,8 @@ def delete_files(http_request: Request, request: DeleteRequest) -> Any:
     Returns the list of deleted paths.
     """
     config = http_request.app.state.config
-    try:
-        deleted = delete_paths(config.shared_folder, request.paths)
-        return {"deleted": deleted}
-    except PathTraversalError as exc:
-        return _handle_path_traversal(exc)
-    except FileNotFoundError as exc:
-        return _handle_not_found(exc)
+    deleted = delete_paths(config.shared_folder, request.paths)
+    return {"deleted": deleted}
 
 
 @router.post("/folders", status_code=201, response_model=None, dependencies=[Depends(require_write_access), Depends(require_full_access)])
@@ -317,19 +243,10 @@ def create_new_folder(http_request: Request, request: CreateFolderRequest) -> An
     Returns the new folder's relative path.
     """
     config = http_request.app.state.config
-    try:
-        new_path = create_folder(
-            config.shared_folder, request.parent_path, request.name
-        )
-        return {"path": new_path}
-    except PathTraversalError as exc:
-        return _handle_path_traversal(exc)
-    except FileNotFoundError as exc:
-        return _handle_not_found(exc)
-    except FileConflictError as exc:
-        return _handle_conflict(exc)
-    except InvalidFileNameError as exc:
-        return _handle_invalid_name(exc)
+    new_path = create_folder(
+        config.shared_folder, request.parent_path, request.name
+    )
+    return {"path": new_path}
 
 
 @router.get("/files/search", response_model=None, dependencies=[Depends(require_browse_access)])
@@ -350,15 +267,8 @@ def search_files_endpoint(  # sync on purpose: FastAPI runs `def` routes in its 
     config = request.app.state.config
     if receive_scope_user(request) is not None:
         return SearchResult(query=q, path=path, entries=[]).model_dump()
-    try:
-        results = search_files(config.shared_folder, path, q)
-        return SearchResult(query=q, path=path, entries=results).model_dump()
-    except PathTraversalError as exc:
-        return _handle_path_traversal(exc)
-    except FileNotFoundError as exc:
-        return _handle_not_found(exc)
-    except ValueError as exc:
-        return JSONResponse(status_code=400, content={"error": str(exc)})
+    results = search_files(config.shared_folder, path, q)
+    return SearchResult(query=q, path=path, entries=results).model_dump()
 
 
 @router.get("/files/preview", response_model=None, dependencies=[Depends(require_browse_access)])
@@ -377,25 +287,18 @@ async def preview_file(
     if scope_user is not None and not await upload_index.is_owned_by(
         config.shared_folder, path, scope_user
     ):
-        return JSONResponse(status_code=404, content={"error": "Not found"})
-    try:
-        file_path = download_file(config.shared_folder, path)
-        mime_type, _ = mimetypes.guess_type(file_path.name)
-        if mime_type is None:
-            mime_type = "application/octet-stream"
-        encoded_name = quote(file_path.name)
-        return FileResponse(
-            path=str(file_path),
-            media_type=mime_type,
-            headers={
-                "Content-Disposition": (
-                    f"inline; filename*=UTF-8''{encoded_name}"
-                )
-            },
-        )
-    except PathTraversalError as exc:
-        return _handle_path_traversal(exc)
-    except FileNotFoundError as exc:
-        return _handle_not_found(exc)
-    except ValueError as exc:
-        return JSONResponse(status_code=400, content={"error": str(exc)})
+        raise FileNotFoundError("Not found")
+    file_path = download_file(config.shared_folder, path)
+    mime_type, _ = mimetypes.guess_type(file_path.name)
+    if mime_type is None:
+        mime_type = "application/octet-stream"
+    encoded_name = quote(file_path.name)
+    return FileResponse(
+        path=str(file_path),
+        media_type=mime_type,
+        headers={
+            "Content-Disposition": (
+                f"inline; filename*=UTF-8''{encoded_name}"
+            )
+        },
+    )

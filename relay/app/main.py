@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi.errors import RateLimitExceeded
 
 from relay.app.config import get_config, load_config, set_config
+from relay.app.error_handlers import register_exception_handlers
 from relay.app.logging import RelayEnv
 from relay.app.middleware.secure_cookies import SecureCookieMiddleware
 from relay.app.rate_limit import limiter, rate_limit_exceeded_handler
@@ -139,6 +140,9 @@ def create_relay_app(config_path: Path | None = None) -> FastAPI:
     set_config(config)
 
     application = FastAPI(title="Network File Server Relay", lifespan=lifespan)
+
+    # Central domain-exception -> HTTP mapping (see relay/app/error_handlers.py)
+    register_exception_handlers(application)
 
     # SecureCookieMiddleware added first -- becomes inner middleware.
     # It stamps Secure on Set-Cookie headers when behind HTTPS proxy.

@@ -38,7 +38,7 @@ class TestRename:
         )
         assert response.status_code == 409
         data = response.json()
-        assert "error" in data
+        assert "detail" in data
 
     @pytest.mark.asyncio
     async def test_rename_invalid_name_returns_400(self, async_client: AsyncClient) -> None:

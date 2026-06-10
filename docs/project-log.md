@@ -323,3 +323,7 @@ checkout v4→v6, setup-node v4→v6, setup-uv v5→v8 (Node 24-native; GitHub f
 ## 2026-06-10: Architecture remediation plan
 
 Added docs/architecture-remediation-plan.md — 11-phase plan from the architecture review (exception handling, singleton removal, async sqlite, tunnel hardening, dropbox unification, signed identity, client codegen/state layer/tests).
+
+## 2026-06-10: Remediation phase 1 — centralized exception handling
+
+New server/relay error_handlers.py map all domain exceptions to HTTP centrally; routers no longer construct error responses (files/clipboard/share/share_target/access_requests). New domain exceptions: InvalidFileRequestError, SnippetNotFoundError, SnippetValidationError (replacing raw ValueError/KeyError). Error shape standardized to {"detail": ...}. +21 tests (930 pytest).

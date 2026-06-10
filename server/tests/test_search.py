@@ -71,7 +71,7 @@ class TestSearchEndpoint:
         )
         assert response.status_code == 400
         data = response.json()
-        assert "error" in data
+        assert "detail" in data
 
     @pytest.mark.asyncio
     async def test_search_path_traversal_returns_403(
@@ -83,7 +83,7 @@ class TestSearchEndpoint:
         )
         assert response.status_code == 403
         data = response.json()
-        assert "error" in data
+        assert "detail" in data
 
     @pytest.mark.asyncio
     async def test_search_returns_valid_entry_fields(

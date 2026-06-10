@@ -6,6 +6,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+from server.app.exceptions import SnippetNotFoundError, SnippetValidationError
 from server.app.services.clipboard_service import ClipboardService
 
 
@@ -45,7 +46,7 @@ class TestCreateSnippet:
     async def test_max_limit_raises(self, service: ClipboardService) -> None:
         for i in range(50):
             await service.create_snippet(f"Note {i}")
-        with pytest.raises(ValueError, match="Maximum snippet count"):
+        with pytest.raises(SnippetValidationError, match="Maximum snippet count"):
             await service.create_snippet("One too many")
 
 
@@ -59,13 +60,13 @@ class TestUpdateSnippet:
 
     @pytest.mark.asyncio()
     async def test_nonexistent_raises(self, service: ClipboardService) -> None:
-        with pytest.raises(KeyError, match="not found"):
+        with pytest.raises(SnippetNotFoundError, match="No snippet with id"):
             await service.update_snippet("nonexistent", "content")
 
     @pytest.mark.asyncio()
     async def test_max_content_length(self, service: ClipboardService) -> None:
         snippet = await service.create_snippet("Note")
-        with pytest.raises(ValueError, match="maximum length"):
+        with pytest.raises(SnippetValidationError, match="maximum length"):
             await service.update_snippet(snippet.id, "x" * 10001)
 
     @pytest.mark.asyncio()
@@ -84,7 +85,7 @@ class TestUpdateTitle:
 
     @pytest.mark.asyncio()
     async def test_nonexistent_raises(self, service: ClipboardService) -> None:
-        with pytest.raises(KeyError, match="not found"):
+        with pytest.raises(SnippetNotFoundError, match="No snippet with id"):
             await service.update_title("nonexistent", "title")
 
 
@@ -98,7 +99,7 @@ class TestDeleteSnippet:
 
     @pytest.mark.asyncio()
     async def test_nonexistent_raises(self, service: ClipboardService) -> None:
-        with pytest.raises(KeyError, match="not found"):
+        with pytest.raises(SnippetNotFoundError, match="No snippet with id"):
             await service.delete_snippet("nonexistent")
 
 

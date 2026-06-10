@@ -10,7 +10,6 @@ from pydantic import BaseModel
 from accounts import Role, SubjectType, UserNotFoundError
 from relay.app.dependencies import get_current_identity, is_admin_username
 from relay.app.enums import AccessRequestStatus
-from relay.app.exceptions import AccessRequestNotFoundError, MountNotFoundError
 from relay.app.services.account_store import get_account_store
 from relay.app.services.mount_registry import get_registry
 from relay.app.services.session import SessionIdentity
@@ -91,15 +90,10 @@ async def resolve_request(
     identity: SessionIdentity = Depends(get_current_identity),
 ) -> dict[str, object]:
     registry = get_registry()
-    try:
-        req = await registry.get_access_request(request_id)
-    except AccessRequestNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Request not found") from exc
-
-    try:
-        policy = await registry.get_policy(req.code)
-    except MountNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Mount not found") from exc
+    # AccessRequestNotFoundError / MountNotFoundError -> 404 via the central
+    # handlers in relay/app/error_handlers.py.
+    req = await registry.get_access_request(request_id)
+    policy = await registry.get_policy(req.code)
 
     is_owner = (
         policy.owner_user_id is not None

@@ -19,7 +19,6 @@ correct root).
 
 from fastapi import APIRouter, Depends, Header, Request, UploadFile
 from fastapi.responses import RedirectResponse
-from server.app.exceptions import PathTraversalError
 from server.app.middleware.mode_guard import require_write_access
 from server.app.models.enums import ConflictResolution
 from server.app.services.file_service import upload_file
@@ -63,16 +62,14 @@ async def share_upload(
 
     config = request.app.state.config
 
-    try:
-        for upload in files:
-            await upload_file(
-                config.shared_folder,
-                "",
-                upload,
-                ConflictResolution.RENAME,
-            )
-    except PathTraversalError as exc:
-        raise ValueError(str(exc)) from exc
+    # PathTraversalError propagates to the central handler (-> 403).
+    for upload in files:
+        await upload_file(
+            config.shared_folder,
+            "",
+            upload,
+            ConflictResolution.RENAME,
+        )
 
     # Relative redirect — works both at /api/share-upload and
     # /m/{code}/api/share-upload because the browser resolves Location

@@ -6,6 +6,7 @@ import pytest
 from server.app.exceptions import (
     FileConflictError,
     InvalidFileNameError,
+    InvalidFileRequestError,
     PathTraversalError,
 )
 from server.app.models.enums import ConflictResolution, FileType
@@ -277,7 +278,7 @@ class TestDownloadFile:
         assert result.is_file()
 
     def test_download_directory_raises(self, tmp_shared_folder: Path) -> None:
-        with pytest.raises(ValueError, match="directory"):
+        with pytest.raises(InvalidFileRequestError, match="directory"):
             download_file(tmp_shared_folder, "subdir")
 
     def test_download_nonexistent_raises(self, tmp_shared_folder: Path) -> None:
