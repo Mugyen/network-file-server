@@ -108,6 +108,7 @@ class TestTokenServiceAppWiring:
             receive=False,
             mount_code=None,
             relay_url=None,
+            identity_secret=None,
         )
         app = create_app(config)
         token_service = app.state.token_service
@@ -127,6 +128,7 @@ class TestTokenServiceAppWiring:
             receive=False,
             mount_code=None,
             relay_url=None,
+            identity_secret=None,
         )
         app_a = create_app(config)
         app_b = create_app(config)

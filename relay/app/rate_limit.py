@@ -113,3 +113,52 @@ async def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) 
         content={"error": "Rate limit exceeded", "retry_after": retry_after},
         headers={"Retry-After": str(retry_after)},
     )
+
+
+# --- Auth rate providers -------------------------------------------------
+# slowapi constraint: limit-value callables receive no request object, so
+# the @limiter.limit decorators cannot reach app.state. The limiter is
+# already irreducibly process-global (third-party design); the rates live
+# beside it and are registered by create_relay_app() from its config —
+# last-created app wins, mirroring the limiter's own process-global scope.
+# This is the single sanctioned module-level mutable in the relay package.
+_AUTH_RATE_DEFAULTS: dict[str, str] = {
+    "signup": "5/hour",
+    "login": "10/minute",
+    "agent_token": "10/minute",
+    "proxy_request": "300/minute",
+}
+_auth_rates: dict[str, str] = dict(_AUTH_RATE_DEFAULTS)
+
+
+def set_auth_rates(
+    signup: str, login: str, agent_token: str, proxy_request: str
+) -> None:
+    """Register the rate limits from a RelayConfig (factory-time)."""
+    rates = (signup, login, agent_token, proxy_request)
+    if not all(isinstance(r, str) and "/" in r for r in rates):
+        raise ValueError("rates must be 'N/period' strings")
+    _auth_rates["signup"] = signup
+    _auth_rates["login"] = login
+    _auth_rates["agent_token"] = agent_token
+    _auth_rates["proxy_request"] = proxy_request
+
+
+def auth_signup_rate() -> str:
+    """Current signup rate (for @limiter.limit)."""
+    return _auth_rates["signup"]
+
+
+def auth_login_rate() -> str:
+    """Current login rate (for @limiter.limit)."""
+    return _auth_rates["login"]
+
+
+def auth_agent_token_rate() -> str:
+    """Current agent-token rate (for @limiter.limit)."""
+    return _auth_rates["agent_token"]
+
+
+def proxy_request_rate() -> str:
+    """Current proxy request rate (for @limiter.limit)."""
+    return _auth_rates["proxy_request"]

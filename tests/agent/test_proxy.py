@@ -15,11 +15,31 @@ from tunnel.connection import StreamState
 from tunnel.constants import MAX_PAYLOAD_BYTES
 from tunnel.exceptions import StreamNotFoundError
 from tunnel.ws_payload import (
+
     WsMessageKind,
     decode_ws_message,
     encode_binary_message,
     encode_text_message,
 )
+from tunnel.metadata import RequestMetadata, WsOpenMetadata
+
+
+def _as_request_metadata(d: dict) -> RequestMetadata:
+    """Adapt a test's metadata dict to the typed wire contract."""
+    return RequestMetadata(
+        method=d["method"],
+        path=d["path"],
+        query=d.get("query", ""),
+        headers=d.get("headers", {}),
+        content_length=d.get("content_length", 0),
+    )
+
+
+def _as_ws_metadata(d: dict) -> WsOpenMetadata:
+    """Adapt a test's ws metadata dict to the typed wire contract."""
+    return WsOpenMetadata(
+        path=d["path"], query=d.get("query", ""), headers=d.get("headers", {})
+    )
 
 
 def make_test_app_with_body(body: bytes, status_code: int = 200) -> FastAPI:
@@ -129,7 +149,7 @@ async def test_handle_open_frame_sends_metadata_then_body_then_close() -> None:
         "body": "",
     }
 
-    await handle_open_frame(conn, request_id, metadata, asgi_client)
+    await handle_open_frame(conn, request_id, _as_request_metadata(metadata), asgi_client)
 
     # First DATA call should be JSON metadata with status + headers
     assert conn.send_data.call_count >= 1
@@ -166,7 +186,7 @@ async def test_handle_open_frame_streams_in_64k_chunks() -> None:
         "body": "",
     }
 
-    await handle_open_frame(conn, request_id, metadata, asgi_client)
+    await handle_open_frame(conn, request_id, _as_request_metadata(metadata), asgi_client)
 
     # call_count: 1 (metadata) + at least 2 (body chunks)
     assert conn.send_data.call_count >= 3
@@ -199,7 +219,7 @@ async def test_handle_open_frame_cancel_via_stream_not_found_exits_cleanly() -> 
     }
 
     # Should NOT raise
-    await handle_open_frame(conn, request_id, metadata, asgi_client)
+    await handle_open_frame(conn, request_id, _as_request_metadata(metadata), asgi_client)
 
     # send_data called once (failed), send_close NOT called (cancelled)
     assert conn.send_data.call_count == 1
@@ -226,7 +246,7 @@ async def test_handle_open_frame_calls_print_request_line() -> None:
     }
 
     with patch("agent.proxy.print_request_line") as mock_print:
-        await handle_open_frame(conn, request_id, metadata, asgi_client)
+        await handle_open_frame(conn, request_id, _as_request_metadata(metadata), asgi_client)
         mock_print.assert_called_once_with("GET", "/hello", 201)
 
 
@@ -258,8 +278,8 @@ async def test_handle_open_frame_concurrent_dispatch() -> None:
         "body": "",
     }
 
-    task_a = asyncio.create_task(handle_open_frame(conn_a, rid_a, metadata, client_a))
-    task_b = asyncio.create_task(handle_open_frame(conn_b, rid_b, metadata, client_b))
+    task_a = asyncio.create_task(handle_open_frame(conn_a, rid_a, _as_request_metadata(metadata), client_a))
+    task_b = asyncio.create_task(handle_open_frame(conn_b, rid_b, _as_request_metadata(metadata), client_b))
 
     await asyncio.gather(task_a, task_b)
 
@@ -291,7 +311,7 @@ async def test_handle_open_frame_with_query_string() -> None:
         "body": "",
     }
 
-    await handle_open_frame(conn, request_id, metadata, asgi_client)
+    await handle_open_frame(conn, request_id, _as_request_metadata(metadata), asgi_client)
 
     # Should succeed and send CLOSE
     conn.send_close.assert_called_once_with(request_id)
@@ -320,7 +340,7 @@ async def test_handle_open_frame_post_small_body_reconstructed() -> None:
         "content_length": len(request_body),
     }
 
-    await handle_open_frame(conn, request_id, metadata, asgi_client)
+    await handle_open_frame(conn, request_id, _as_request_metadata(metadata), asgi_client)
 
     # Response metadata frame should have status 200
     first_call_payload = conn.send_data.call_args_list[0][0][1]
@@ -365,7 +385,7 @@ async def test_handle_open_frame_post_large_body_multi_chunk() -> None:
         "content_length": len(large_body),
     }
 
-    await handle_open_frame(conn, request_id, metadata, asgi_client)
+    await handle_open_frame(conn, request_id, _as_request_metadata(metadata), asgi_client)
 
     # Response metadata frame should have status 200
     first_call_payload = conn.send_data.call_args_list[0][0][1]
@@ -398,7 +418,7 @@ async def test_handle_open_frame_removes_stream_after_body_read() -> None:
         "content_length": 4,
     }
 
-    await handle_open_frame(conn, request_id, metadata, asgi_client)
+    await handle_open_frame(conn, request_id, _as_request_metadata(metadata), asgi_client)
 
     # remove_stream must have been called to clean up the inbound stream
     conn.remove_stream.assert_called_once_with(request_id)
@@ -454,7 +474,7 @@ async def test_handle_ws_open_frame_bridges_local_ws_messages_to_relay() -> None
     metadata = {"path": "/ws", "query": ""}
 
     task = asyncio.create_task(
-        handle_ws_open_frame(conn, ws_id, metadata, ws_app)
+        handle_ws_open_frame(conn, ws_id, _as_ws_metadata(metadata), ws_app)
     )
 
     # Give the handler time to connect and set up the WS
@@ -504,7 +524,7 @@ async def test_handle_ws_open_frame_bridges_binary_messages() -> None:
     ws_id = uuid.uuid4()
     metadata = {"path": "/ws", "query": ""}
 
-    task = asyncio.create_task(handle_ws_open_frame(conn, ws_id, metadata, ws_app))
+    task = asyncio.create_task(handle_ws_open_frame(conn, ws_id, _as_ws_metadata(metadata), ws_app))
     await asyncio.sleep(0.05)
 
     await conn._relay_to_local_queue.put(encode_binary_message(binary_blob))
@@ -536,7 +556,7 @@ async def test_handle_ws_open_frame_sends_ws_close_on_finish() -> None:
     metadata = {"path": "/ws", "query": ""}
 
     task = asyncio.create_task(
-        handle_ws_open_frame(conn, ws_id, metadata, ws_app)
+        handle_ws_open_frame(conn, ws_id, _as_ws_metadata(metadata), ws_app)
     )
 
     # Give the handler time to connect
@@ -577,7 +597,7 @@ async def test_handle_ws_open_frame_uses_query_string() -> None:
 
     # Run handler — it will connect to local WS which immediately closes
     task = asyncio.create_task(
-        handle_ws_open_frame(conn, ws_id, metadata, ws_app)
+        handle_ws_open_frame(conn, ws_id, _as_ws_metadata(metadata), ws_app)
     )
     await asyncio.sleep(0.1)
     task.cancel()

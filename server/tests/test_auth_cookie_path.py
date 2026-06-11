@@ -22,6 +22,7 @@ def _make_app(tmp_path: Path, mount_code: str | None) -> "object":
         receive=False,
         mount_code=mount_code,
         relay_url=None,
+        identity_secret=None,
     )
     return create_app(config)
 

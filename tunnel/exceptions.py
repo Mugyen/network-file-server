@@ -19,3 +19,20 @@ class FirstByteTimeoutError(TunnelError):
 
 class StreamNotFoundError(TunnelError):
     """Raised when a frame references an unknown or closed stream UUID."""
+
+
+class MetadataError(TunnelError):
+    """Raised when OPEN/WS_OPEN metadata is malformed or missing fields."""
+
+
+class MetadataTooLargeError(MetadataError):
+    """Raised when serialized metadata exceeds METADATA_MAX_BYTES."""
+
+
+class TunnelSendError(TunnelError):
+    """Raised when sending a frame over the transport fails.
+
+    Wraps transport-level errors (closed socket, broken pipe) so callers
+    can convert a mid-request send failure into a clean error response
+    instead of an unhandled exception.
+    """

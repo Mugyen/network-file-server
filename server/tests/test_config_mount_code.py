@@ -24,6 +24,7 @@ class TestServerConfigMountCode:
             receive=False,
             mount_code=None,
             relay_url=None,
+            identity_secret=None,
         )
         assert config.mount_code is None
 
@@ -37,6 +38,7 @@ class TestServerConfigMountCode:
             receive=False,
             mount_code="ABC12345",
             relay_url=None,
+            identity_secret=None,
         )
         assert config.mount_code == "ABC12345"
 

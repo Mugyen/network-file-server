@@ -10,10 +10,12 @@
     "preview": "vite preview",
     "e2e": "playwright test",
     "typecheck": "tsc -b",
-    "test:unit": "vitest run"
+    "test:unit": "vitest run",
+    "gen:api": "../scripts/gen_api_types.sh"
   },
   "dependencies": {
     "@tailwindcss/typography": "^0.5.19",
+    "@tanstack/react-query": "^5.101.0",
     "@types/react-syntax-highlighter": "^15.5.13",
     "lucide-react": "^0.577.0",
     "react": "^19.2.0",
@@ -36,6 +38,7 @@
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
     "jsdom": "^27.0.1",
+    "openapi-typescript": "^7.13.0",
     "tailwindcss": "^4.2.1",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.48.0",

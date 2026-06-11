@@ -319,3 +319,57 @@ Aligned @vitest/coverage-v8 to ^3.2.4 (matching vitest 3.x; 4.0.18 broke `npm ci
 ## 2026-06-10: CI — bump deprecated Node 20 actions
 
 checkout v4→v6, setup-node v4→v6, setup-uv v5→v8 (Node 24-native; GitHub forces Node 24 runtimes from 2026-06-16). Job-level node-version: 20 unchanged.
+
+## 2026-06-10: Architecture remediation plan
+
+Added docs/architecture-remediation-plan.md — 11-phase plan from the architecture review (exception handling, singleton removal, async sqlite, tunnel hardening, dropbox unification, signed identity, client codegen/state layer/tests).
+
+## 2026-06-10: Remediation phase 1 — centralized exception handling
+
+New server/relay error_handlers.py map all domain exceptions to HTTP centrally; routers no longer construct error responses (files/clipboard/share/share_target/access_requests). New domain exceptions: InvalidFileRequestError, SnippetNotFoundError, SnippetValidationError (replacing raw ValueError/KeyError). Error shape standardized to {"detail": ...}. +21 tests (930 pytest).
+
+## 2026-06-10: Relay test migration to per-app RelayState
+
+Migrated 6 relay test files off the deleted module-level singletons (get/set_config, get/set_registry, get/set_relay_session, get/set_account_store, reset_mount_reg_limiter) to app.state.relay wiring; deleted 6 singleton-mechanics tests. 63 tests pass.
+
+Migrated test_dropbox.py, test_dropbox_ws.py, test_agent_expired_files.py, and integration test_full_path.py to app.state.relay wiring (init_dropbox tuple return, RelayState file_ttl_db/dropbox fields, 3-arg _handle_agent_control_for_mount). 18 tests pass.
+
+## 2026-06-10: Remediation phase 2 — module-level singletons eliminated
+
+Server (2a): removed get_state_store() process cache; one ServerStateStore per app via DI. Relay (2b): RelayState dataclass on app.state.relay replaces 7 module globals (config/registry/session/account_store/file_ttl_db/dropbox×2) + per-app mount-reg rate limiter; account_store.py deleted; module-level app removed (uvicorn factory=True); slowapi limiter+rates remain the single documented process-global (3rd-party constraint). authorize()/identity_from_cookies()/user_storage take explicit deps. 925 pytest green.
+
+## 2026-06-10: Remediation phase 3 — event loop never blocks on SQLite
+
+Service layer (clipboard/share/file-request/upload_index) now offloads all ServerStateStore calls via asyncio.to_thread; ShareLinkService methods went async (router + tests updated). Deviation from plan documented: store stays sync sqlite3 (create_app is a sync factory; lifespan-less test architecture), threading contract documented in sqlite_store.py. New shared/sqlite_kernel.py (is_new_db/open_wal_db/run_schema) adopted by relay sqlite_registry + file_ttl_db; accounts keeps its own bootstrap (leaf-package import boundary). 933 pytest green (+8 kernel tests).
+
+## 2026-06-10: Remediation phase 4 — tunnel protocol hardening
+
+PROTOCOL_VERSION=1 exchanged in agent_auth; relay rejects skewed/missing versions at handshake (close 1008). New tunnel/metadata.py: RequestMetadata/WsOpenMetadata wire contract with 16KiB cap + typed MetadataError validation on both ends (malformed OPEN now answers 400 instead of crashing the agent loop). Agent runs its own 30s heartbeat (detects half-dead relay sockets). Relay send paths wrap transport failures as TunnelSendError -> 503/431 instead of unhandled 500. 949 pytest green (+16 tests).
+
+## 2026-06-10: Remediation phase 5 — HTML rewriter extraction + hardening
+
+New relay/app/services/html_rewriter.py: charset-aware decode (Content-Type param, default utf-8), undecodable/unknown-charset bodies pass through unmodified, 5MiB rewrite cap — oversized HTML streams through unrewritten (buffered prefix + remainder) instead of being buffered unbounded. mount_proxy uses it on both tunnel and dropbox paths; the proxy can no longer crash on non-UTF-8 HTML. Rewriter unit tests moved out of test_mount_proxy + 8 hardening tests. 957 pytest green.
+
+## 2026-06-10: Remediation phase 6 — dropbox is a first-class local mount
+
+New relay/app/services/local_mount.py: LocalAsgiMount (app + forwarding client + WS bridge + aclose). RelayState.local_mounts dict replaces dropbox_app/dropbox_client fields; lifespan registers/closes the drop box through it. mount_proxy now has ZERO dropbox references — both HTTP and WS paths dispatch on local_mounts membership; the ~70-line bespoke WS bridge moved into the service. init_dropbox returns the mount. 959 pytest green (+2 tests).
+
+## 2026-06-10: Remediation phase 7 — signed identity headers + AccessMode.LEGACY
+
+New shared/identity_sig.py (HMAC-SHA256 over user|role|bypass). Agent mints a per-mount secret each connect, passes it to its embedded server (ServerConfig.identity_secret) and the relay (agent_auth); relay signs injected X-WFS-* headers (mount_proxy), server verifies before trusting (relay_identity). Closed a LATENT hole: AuthMiddleware did its own raw bypass check — now routes through signature-verifying is_auth_bypassed. Local-mount forward strips client X-WFS-*. AccessMode.LEGACY added; pre-v1.3 access_mode ALTER default → 'legacy'; access_policy logs the fail-open explicitly. 974 pytest green (+17 trust-boundary/sig tests incl. forged/cross-secret/unsigned rejection).
+
+## 2026-06-10: Remediation phase 8 — composition cleanups
+
+(a) server/app/bootstrap.py is the new composition root (build_mount_app, run_mount_agent, run_lan_server); cli.py is now parsing + delegation only and no longer imports the agent; import-boundaries whitelist points at bootstrap. (b) TunnelConnection.run_receive_loop_with_handlers(on_open, on_ws_open) added (shared private core); the agent's two hand-rolled receive loops deleted in favour of _OpenFrameHandlers (task spawn/drain) + a registered expired_files control handler — the agent no longer pokes conn._ws/_dispatch_frame. (c) mount_proxy left at 520 lines (cohesive; high-value extractions already done in 5-6). 974 pytest green.
+
+## 2026-06-10: Remediation phase 9 — client API types generated from OpenAPI
+
+New server/app/openapi_dump.py + scripts/gen_api_types.sh dump the server OpenAPI schema and run openapi-typescript into client/src/types/api.gen.ts. Added response_model to the files routes (DirectoryListing/SearchResult/UploadResult) and expires_at to FileEntry so the schema is the true contract. Client types/{files,serverInfo,clipboard,fileRequests}.ts now derive from the generated schema (runtime consts FileType/RequestStatus kept). New CI api-types job regenerates + git diff --exit-code (drift fails the build). 974 pytest + 89 vitest green; tsc/eslint clean.
+
+## 2026-06-10: Remediation phase 10 — React Query state layer + AppMode routing
+
+Added @tanstack/react-query: BrowseProvider backs the file listing with useQuery(["files",path]); loadFiles is now invalidateQueries and mutations invalidate on success (no manual refetch threading; mutation errors tracked separately so a failed op doesn't clear the listing). QueryClientProvider wraps App. New appMode.ts: resolveAppMode() + AppMode const-object replaces main.tsx's pickRoot if-chain (single routing decision). 95 vitest (+6: appMode ×5, invalidation ×1); tsc/eslint/build green.
+
+## 2026-06-10: Remediation phase 11 — hard-path hook tests (FINAL)
+
+Added unit tests for the three previously-untested stateful hooks: useWebSocket (MockWebSocket + fake timers: connect/open, reconnect-after-backoff, backoff escalation, stable-connection reset, delay cap, message dispatch, unmount stops reconnect — 7 tests), useUpload (concurrency cap of 3, onComplete, 409→conflict→SKIP/OVERWRITE, failure→retry — 5 tests), useClipboard (load, debounce coalescing, WS created/updated/deleted reconciliation, optimistic title rollback — 6 tests). A test bug surfaced a real contract: the clipboard WS-handler effect clears debounce timers on cleanup, so callers MUST pass stable add/removeMessageHandler (App.tsx does via useCallback). 113 vitest green. ALL 11 remediation phases complete.

@@ -8,6 +8,7 @@ from httpx import ASGITransport, AsyncClient
 
 from server.app.models.enums import RequestStatus
 from server.app.services.file_request_service import FileRequestService
+from server.app.services.sqlite_store import open_state_store
 
 
 # --- Service unit tests ---
@@ -15,7 +16,7 @@ from server.app.services.file_request_service import FileRequestService
 
 @pytest_asyncio.fixture
 async def service(tmp_path: Path) -> FileRequestService:
-    return FileRequestService(tmp_path / "data")
+    return FileRequestService(open_state_store(tmp_path / "data"))
 
 
 @pytest.mark.asyncio
@@ -97,11 +98,11 @@ async def test_dismiss_by_non_requester_raises(service: FileRequestService) -> N
 @pytest.mark.asyncio
 async def test_persistence_survives_reinstantiation(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
-    svc1 = FileRequestService(data_dir)
+    svc1 = FileRequestService(open_state_store(data_dir))
     req = await svc1.create_request("Persist me", "dev-1", "Fox")
 
     # New instance from same directory
-    svc2 = FileRequestService(data_dir)
+    svc2 = FileRequestService(open_state_store(data_dir))
     result = await svc2.list_requests()
     assert len(result) == 1
     assert result[0].id == req.id

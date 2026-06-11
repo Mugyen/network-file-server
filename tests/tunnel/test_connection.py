@@ -291,9 +291,13 @@ async def test_send_data_serializes_and_sends_binary_frame(mock_ws):
 @pytest.mark.asyncio
 async def test_send_open_serializes_open_frame_with_json_metadata(mock_ws):
     """send_open serializes OPEN frame with JSON metadata as payload, sends binary."""
+    from tunnel.metadata import RequestMetadata
+
     conn = TunnelConnection(mock_ws)
     rid = uuid.uuid4()
-    metadata = {"method": "GET", "path": "/api/files"}
+    metadata = RequestMetadata(
+        method="GET", path="/api/files", query="", headers={}, content_length=0
+    )
 
     await conn.send_open(rid, metadata)
 
@@ -302,8 +306,7 @@ async def test_send_open_serializes_open_frame_with_json_metadata(mock_ws):
     frame_type, decoded_rid, decoded_payload = deserialize_frame(mock_ws.sent_bytes_frames[0])
     assert frame_type == FrameType.OPEN
     assert decoded_rid == rid
-    decoded_metadata = json.loads(decoded_payload.decode("utf-8"))
-    assert decoded_metadata == metadata
+    assert RequestMetadata.from_payload(decoded_payload) == metadata
 
 
 @pytest.mark.asyncio
@@ -743,3 +746,52 @@ async def test_close_cancels_heartbeat_and_streams(mock_ws):
     # All streams must be closed
     assert state_a.closed.is_set()
     assert state_b.closed.is_set()
+
+
+@pytest.mark.asyncio
+async def test_run_receive_loop_with_handlers_routes_open(mock_ws):
+    """OPEN -> on_open, WS_OPEN -> on_ws_open, other binary -> _dispatch_frame."""
+    import uuid as _uuid
+
+    from tunnel.enums import FrameType
+    from tunnel.frames import serialize_frame
+
+    conn = TunnelConnection(mock_ws)
+
+    dispatched: list = []
+
+    async def fake_dispatch(frame_type, request_id, payload):
+        dispatched.append((frame_type, request_id, payload))
+
+    conn._dispatch_frame = fake_dispatch
+
+    rid_open = _uuid.uuid4()
+    rid_ws = _uuid.uuid4()
+    rid_data = _uuid.uuid4()
+    mock_ws.feed_binary(serialize_frame(FrameType.OPEN, rid_open, b"op"))
+    mock_ws.feed_binary(serialize_frame(FrameType.WS_OPEN, rid_ws, b"wp"))
+    mock_ws.feed_binary(serialize_frame(FrameType.DATA, rid_data, b"dp"))
+
+    opened: list = []
+    ws_opened: list = []
+
+    async def on_open(request_id, payload):
+        opened.append((request_id, payload))
+
+    async def on_ws_open(request_id, payload):
+        ws_opened.append((request_id, payload))
+
+    task = asyncio.create_task(
+        conn.run_receive_loop_with_handlers(on_open, on_ws_open)
+    )
+    await asyncio.sleep(0.05)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+    assert opened == [(rid_open, b"op")]
+    assert ws_opened == [(rid_ws, b"wp")]
+    # The DATA frame was routed to _dispatch_frame, not a handler.
+    assert dispatched == [(FrameType.DATA, rid_data, b"dp")]

@@ -4,7 +4,6 @@ import time
 
 import pytest
 
-from relay.app.services.mount_registry import get_registry
 from tests.relay.conftest import MockTunnelConnection
 
 
@@ -19,9 +18,9 @@ async def test_health_returns_200(relay_client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_health_reports_mount_count(relay_client) -> None:
+async def test_health_reports_mount_count(relay_app, relay_client) -> None:
     """After registering 2 mounts, GET /health returns mounts: 2."""
-    registry = get_registry()
+    registry = relay_app.state.relay.registry
     conn1 = MockTunnelConnection()
     conn2 = MockTunnelConnection()
     await registry.register("mount-a", conn1, agent_ip="127.0.0.1", created_at=time.time(), expires_at=None)

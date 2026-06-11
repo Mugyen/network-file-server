@@ -9,11 +9,13 @@ from typing import Any, AsyncIterator, Callable, Coroutine
 
 from tunnel.constants import MAX_STREAMS, QUEUE_DEPTH
 from tunnel.enums import FrameType
+from tunnel.metadata import RequestMetadata, WsOpenMetadata
 from tunnel.exceptions import (
     FirstByteTimeoutError,
     StreamLimitError,
     StreamNotFoundError,
     TunnelError,
+    TunnelSendError,
 )
 from tunnel.frames import deserialize_frame, serialize_frame
 from tunnel.protocol import WebSocketProtocol
@@ -173,26 +175,45 @@ class TunnelConnection:
     # Sending — binary data frames
     # ------------------------------------------------------------------
 
+    async def _guarded_send(self, frame: bytes) -> None:
+        """Send a binary frame, wrapping transport failures as TunnelSendError.
+
+        Raises:
+            TunnelSendError: If the underlying transport send fails.
+        """
+        try:
+            await self._ws.send_bytes(frame)
+        except (ConnectionError, OSError, RuntimeError) as exc:
+            # Stale/closed socket mid-send — surface as a typed tunnel error
+            # so the proxy can answer 503 instead of crashing the endpoint.
+            raise TunnelSendError(f"frame send failed: {exc}") from exc
+
     async def send_data(self, request_id: uuid.UUID, payload: bytes) -> None:
         """Serialize and send a DATA binary frame.
 
         Args:
             request_id: UUID correlating this data to an open stream on the receiver.
             payload:    Raw bytes to transmit.
+
+        Raises:
+            TunnelSendError: If the transport send fails.
         """
         frame = serialize_frame(FrameType.DATA, request_id, payload)
-        await self._ws.send_bytes(frame)
+        await self._guarded_send(frame)
 
-    async def send_open(self, request_id: uuid.UUID, metadata: dict[str, Any]) -> None:
-        """Serialize and send an OPEN binary frame with JSON metadata payload.
+    async def send_open(self, request_id: uuid.UUID, metadata: RequestMetadata) -> None:
+        """Serialize and send an OPEN binary frame with validated metadata.
 
         Args:
             request_id: UUID for the new stream being opened.
-            metadata:   Dict of request metadata (method, path, headers, etc.).
+            metadata:   Typed request metadata (size-capped at serialization).
+
+        Raises:
+            MetadataTooLargeError: If the metadata exceeds METADATA_MAX_BYTES.
+            TunnelSendError: If the transport send fails.
         """
-        payload = json.dumps(metadata).encode("utf-8")
-        frame = serialize_frame(FrameType.OPEN, request_id, payload)
-        await self._ws.send_bytes(frame)
+        frame = serialize_frame(FrameType.OPEN, request_id, metadata.to_payload())
+        await self._guarded_send(frame)
 
     async def send_close(self, request_id: uuid.UUID) -> None:
         """Serialize and send a CLOSE binary frame with empty payload.
@@ -212,16 +233,19 @@ class TunnelConnection:
         frame = serialize_frame(FrameType.CANCEL, request_id, b"")
         await self._ws.send_bytes(frame)
 
-    async def send_ws_open(self, ws_id: uuid.UUID, metadata: dict[str, Any]) -> None:
-        """Serialize and send a WS_OPEN binary frame with JSON metadata payload.
+    async def send_ws_open(self, ws_id: uuid.UUID, metadata: WsOpenMetadata) -> None:
+        """Serialize and send a WS_OPEN binary frame with validated metadata.
 
         Args:
             ws_id:    UUID for the new WebSocket stream being opened.
-            metadata: Dict of WebSocket metadata (path, query).
+            metadata: Typed WebSocket metadata (size-capped at serialization).
+
+        Raises:
+            MetadataTooLargeError: If the metadata exceeds METADATA_MAX_BYTES.
+            TunnelSendError: If the transport send fails.
         """
-        payload = json.dumps(metadata).encode("utf-8")
-        frame = serialize_frame(FrameType.WS_OPEN, ws_id, payload)
-        await self._ws.send_bytes(frame)
+        frame = serialize_frame(FrameType.WS_OPEN, ws_id, metadata.to_payload())
+        await self._guarded_send(frame)
 
     async def send_ws_data(self, ws_id: uuid.UUID, payload: bytes) -> None:
         """Serialize and send a WS_DATA binary frame with the given payload.
@@ -295,14 +319,39 @@ class TunnelConnection:
     # ------------------------------------------------------------------
 
     async def run_receive_loop(self) -> None:
-        """Async loop that reads frames from the WebSocket and dispatches them.
+        """Read frames and route them; OPEN/WS_OPEN go to _dispatch_frame.
 
-        - Binary frames are deserialized and routed to _dispatch_frame.
-        - Text frames are parsed as JSON control messages; "pong" calls handle_pong().
-        - Disconnect messages (no "bytes" or "text" key) break the loop.
-
-        Runs until the WebSocket is closed or an unrecoverable error occurs.
+        Used by the relay side, where inbound OPEN/DATA frames are correlated
+        to streams the relay opened and consumes via read_stream. Binary
+        frames are deserialized and routed to _dispatch_frame; text control
+        frames are handled (pong/ping/control_handler); a disconnect breaks
+        the loop. Runs until the WebSocket closes or errors.
         """
+        await self._run_receive_loop(None, None)
+
+    async def run_receive_loop_with_handlers(
+        self,
+        on_open: "Callable[[uuid.UUID, bytes], Coroutine[Any, Any, None]]",
+        on_ws_open: "Callable[[uuid.UUID, bytes], Coroutine[Any, Any, None]]",
+    ) -> None:
+        """Like run_receive_loop, but route OPEN/WS_OPEN to the given handlers.
+
+        Used by the agent side, which must intercept OPEN/WS_OPEN to spawn
+        request/WebSocket handlers (the agent is the origin server, not a
+        stream consumer). All other frame handling is identical.
+
+        Args:
+            on_open:    Awaitable invoked with (request_id, payload) for OPEN.
+            on_ws_open: Awaitable invoked with (request_id, payload) for WS_OPEN.
+        """
+        await self._run_receive_loop(on_open, on_ws_open)
+
+    async def _run_receive_loop(
+        self,
+        on_open: "Callable[[uuid.UUID, bytes], Coroutine[Any, Any, None]] | None",
+        on_ws_open: "Callable[[uuid.UUID, bytes], Coroutine[Any, Any, None]] | None",
+    ) -> None:
+        """Core receive loop shared by both public entry points."""
         while True:
             frame_dict = await self._ws.receive()
             if "bytes" in frame_dict:
@@ -310,7 +359,12 @@ class TunnelConnection:
                 if not isinstance(raw, bytes):
                     raise TunnelError(f"adapter returned non-bytes under 'bytes' key: {type(raw)!r}")
                 frame_type, request_id, payload = deserialize_frame(raw)
-                await self._dispatch_frame(frame_type, request_id, payload)
+                if frame_type is FrameType.OPEN and on_open is not None:
+                    await on_open(request_id, payload)
+                elif frame_type is FrameType.WS_OPEN and on_ws_open is not None:
+                    await on_ws_open(request_id, payload)
+                else:
+                    await self._dispatch_frame(frame_type, request_id, payload)
             elif "text" in frame_dict:
                 text = frame_dict["text"]
                 if not isinstance(text, str):

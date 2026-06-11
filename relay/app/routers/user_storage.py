@@ -6,6 +6,7 @@ re-implemented.
 """
 
 import asyncio
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, UploadFile
@@ -22,7 +23,7 @@ from server import (
     upload_file,
 )
 
-from relay.app.dependencies import get_current_identity
+from relay.app.dependencies import get_current_identity, get_relay_state
 from relay.app.services.session import SessionIdentity
 from relay.app.services.user_storage import (
     quota_bytes,
@@ -35,21 +36,30 @@ router = APIRouter(prefix="/me", tags=["user-storage"])
 
 @router.get("/quota")
 async def get_quota(
+    request: Request,
     identity: SessionIdentity = Depends(get_current_identity),
 ) -> dict[str, int]:
+    state = get_relay_state(request)
+    data_dir = Path(state.config.data_dir)
     # usage_bytes walks the whole user dir — keep it off the event loop.
     return {
-        "usage": await asyncio.to_thread(usage_bytes, identity.user_id),
-        "quota": await quota_bytes(identity.user_id),
+        "usage": await asyncio.to_thread(usage_bytes, data_dir, identity.user_id),
+        "quota": await quota_bytes(
+            state.require_account_store(),
+            state.config.default_user_quota_bytes,
+            identity.user_id,
+        ),
     }
 
 
 @router.get("/files")
 async def list_files(
+    request: Request,
     path: str = "",
     identity: SessionIdentity = Depends(get_current_identity),
 ) -> Any:
-    base = user_dir(identity.user_id)
+    state = get_relay_state(request)
+    base = user_dir(Path(state.config.data_dir), identity.user_id)
     try:
         listing = await asyncio.to_thread(list_directory, base, path)
         return listing.model_dump()
@@ -67,13 +77,19 @@ async def upload(
     conflict_resolution: ConflictResolution | None = None,
     identity: SessionIdentity = Depends(get_current_identity),
 ) -> Any:
-    base = user_dir(identity.user_id)
+    state = get_relay_state(request)
+    data_dir = Path(state.config.data_dir)
+    base = user_dir(data_dir, identity.user_id)
 
     # Pre-check using the request size against remaining quota (the
     # Content-Length slightly over-counts via multipart overhead, which
     # is conservative — fine for a quota guard).
-    quota = await quota_bytes(identity.user_id)
-    current = await asyncio.to_thread(usage_bytes, identity.user_id)
+    quota = await quota_bytes(
+        state.require_account_store(),
+        state.config.default_user_quota_bytes,
+        identity.user_id,
+    )
+    current = await asyncio.to_thread(usage_bytes, data_dir, identity.user_id)
     declared = int(request.headers.get("content-length", "0"))
     if declared and current + declared > quota:
         return JSONResponse(
@@ -96,7 +112,7 @@ async def upload(
 
     # Post-write safety net (no/under-reported Content-Length): if the
     # write pushed the user over quota, roll back what we just wrote.
-    if await asyncio.to_thread(usage_bytes, identity.user_id) > quota:
+    if await asyncio.to_thread(usage_bytes, data_dir, identity.user_id) > quota:
         await asyncio.to_thread(
             delete_paths,
             base,
@@ -111,10 +127,12 @@ async def upload(
 
 @router.get("/files/download", response_model=None)
 async def download(
+    request: Request,
     path: str,
     identity: SessionIdentity = Depends(get_current_identity),
 ) -> Any:
-    base = user_dir(identity.user_id)
+    state = get_relay_state(request)
+    base = user_dir(Path(state.config.data_dir), identity.user_id)
     try:
         fp = download_file(base, path)
     except PathTraversalError as exc:
@@ -128,10 +146,12 @@ async def download(
 
 @router.delete("/files", response_model=None)
 async def delete(
+    request: Request,
     body: DeleteRequest,
     identity: SessionIdentity = Depends(get_current_identity),
 ) -> Any:
-    base = user_dir(identity.user_id)
+    state = get_relay_state(request)
+    base = user_dir(Path(state.config.data_dir), identity.user_id)
     try:
         deleted = await asyncio.to_thread(delete_paths, base, body.paths)
     except PathTraversalError as exc:

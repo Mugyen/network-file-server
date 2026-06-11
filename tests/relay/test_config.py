@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from relay.app.config import RelayConfig, get_config, load_config, set_config
+from relay.app.config import RelayConfig, load_config
 from relay.app.logging import RelayEnv
 
 
@@ -69,18 +69,6 @@ def test_load_config_production_requires_allowed_origins() -> None:
 
 
 # ---------------------------------------------------------------------------
-# get_config / set_config singleton
-# ---------------------------------------------------------------------------
-
-
-def test_get_config_raises_before_set_config() -> None:
-    # Reset the global to None to test the error path
-    set_config(None)  # type: ignore[arg-type]
-    with pytest.raises(RuntimeError, match="not been initialized"):
-        get_config()
-
-
-# ---------------------------------------------------------------------------
 # data_dir and dropbox_code fields
 # ---------------------------------------------------------------------------
 
@@ -105,9 +93,3 @@ def test_load_config_dropbox_code_env_override() -> None:
     with patch.dict(os.environ, {"RELAY_DROPBOX_CODE": "public-box"}):
         config = load_config(_CONFIG_YAML)
     assert config.dropbox_code == "public-box"
-
-
-def test_set_config_get_config_round_trip() -> None:
-    config = load_config(_CONFIG_YAML)
-    set_config(config)
-    assert get_config() is config

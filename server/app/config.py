@@ -24,6 +24,7 @@ class ServerConfig:
     receive: bool
     mount_code: str | None
     relay_url: str | None
+    identity_secret: str | None
 
     def __init__(
         self,
@@ -34,6 +35,7 @@ class ServerConfig:
         receive: bool,
         mount_code: str | None,
         relay_url: str | None,
+        identity_secret: str | None,
     ) -> None:
         if not shared_folder.exists():
             raise ValueError(
@@ -50,6 +52,10 @@ class ServerConfig:
         self.receive = receive
         self.mount_code = mount_code
         self.relay_url = relay_url
+        # Shared secret for verifying relay-injected identity headers. None
+        # in LAN mode and for local mounts (drop box) — those never trust
+        # X-WFS-* identity. Set by the agent for tunnel-served mounts.
+        self.identity_secret = identity_secret
 
 
 def create_default_config(shared_folder: Path, port: int) -> ServerConfig:
@@ -67,6 +73,7 @@ def create_default_config(shared_folder: Path, port: int) -> ServerConfig:
         receive=False,
         mount_code=None,
         relay_url=None,
+        identity_secret=None,
     )
 
 
@@ -75,6 +82,8 @@ def create_config_from_args(args: argparse.Namespace) -> ServerConfig:
 
     Expects args to have 'folder' (str), 'port' (int), 'password_hash' (bytes | None),
     'read_only' (bool), and 'receive' (bool) attributes.
+
+    LAN mode: identity_secret is None (no relay, no trusted identity headers).
     """
     folder_path = Path(args.folder).resolve()
     return ServerConfig(
@@ -85,4 +94,5 @@ def create_config_from_args(args: argparse.Namespace) -> ServerConfig:
         receive=args.receive,
         mount_code=None,
         relay_url=None,
+        identity_secret=None,
     )

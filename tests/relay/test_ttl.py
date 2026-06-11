@@ -16,6 +16,7 @@ from relay.app.logging import RelayEnv
 from relay.app.main import create_relay_app
 from relay.app.services.sqlite_registry import SqliteMountRegistry
 from tests.relay.conftest import MockTunnelConnection, _setup_in_memory_registry
+from tunnel.constants import PROTOCOL_VERSION
 
 
 pytestmark = pytest.mark.anyio
@@ -69,7 +70,7 @@ async def _recv_mount_registered(app, path: str) -> dict:
             await ws.send_text(
                 json.dumps(
                     {
-                        "type": "agent_auth",
+                        "type": "agent_auth", "protocol_version": PROTOCOL_VERSION,
                         "token": None,
                         "access_mode": "open",
                         "has_password": False,
@@ -85,7 +86,7 @@ async def test_ttl_capped_to_max() -> None:
     """Connect with ttl=999999, verify mount_registered reports capped TTL."""
     with patch.dict(os.environ, {"RELAY_DB_PATH": ":memory:"}):
         app = create_relay_app()
-    registry = await _setup_in_memory_registry()
+    registry = await _setup_in_memory_registry(app)
     msg = await _recv_mount_registered(app, "/agent/ws?ttl=999999")
     assert msg["type"] == "mount_registered"
     # Default max_ttl_seconds is 86400 (24h)
@@ -98,7 +99,7 @@ async def test_ttl_default_when_omitted() -> None:
     """Connect without ttl param, verify mount_registered reports default TTL."""
     with patch.dict(os.environ, {"RELAY_DB_PATH": ":memory:"}):
         app = create_relay_app()
-    registry = await _setup_in_memory_registry()
+    registry = await _setup_in_memory_registry(app)
     msg = await _recv_mount_registered(app, "/agent/ws")
     assert msg["type"] == "mount_registered"
     assert msg["ttl"] == 86400
@@ -110,7 +111,7 @@ async def test_ttl_respected_when_under_max() -> None:
     """Connect with ttl=3600 (under max), verify it is used as-is."""
     with patch.dict(os.environ, {"RELAY_DB_PATH": ":memory:"}):
         app = create_relay_app()
-    registry = await _setup_in_memory_registry()
+    registry = await _setup_in_memory_registry(app)
     msg = await _recv_mount_registered(app, "/agent/ws?ttl=3600")
     assert msg["type"] == "mount_registered"
     assert msg["ttl"] == 3600
@@ -122,7 +123,7 @@ async def test_mount_record_has_expires_at() -> None:
     """After agent connects with TTL, registry mount has expires_at set."""
     with patch.dict(os.environ, {"RELAY_DB_PATH": ":memory:"}):
         app = create_relay_app()
-    registry = await _setup_in_memory_registry()
+    registry = await _setup_in_memory_registry(app)
     msg = await _recv_mount_registered(app, "/agent/ws?ttl=3600")
     code = msg["code"]
     mounts = await registry.active_mounts()

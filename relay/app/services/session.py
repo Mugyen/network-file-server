@@ -120,25 +120,3 @@ def _to_identity(data: dict) -> SessionIdentity:
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise InvalidSessionError("malformed session payload") from exc
-
-
-_relay_session: RelaySession | None = None
-
-
-def get_relay_session() -> RelaySession:
-    """Return the global RelaySession.
-
-    Raises:
-        RuntimeError: If set_relay_session() has not been called.
-    """
-    if _relay_session is None:
-        raise RuntimeError(
-            "RelaySession has not been set. Call set_relay_session() first."
-        )
-    return _relay_session
-
-
-def set_relay_session(session: RelaySession | None) -> None:
-    """Install (or clear) the global RelaySession singleton."""
-    global _relay_session
-    _relay_session = session

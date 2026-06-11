@@ -26,7 +26,8 @@ def main() -> None:
     configure_logging(env)
 
     uvicorn.run(
-        "relay.app.main:app",
+        "relay.app.main:create_relay_app",
+        factory=True,
         host=host,
         port=port,
         proxy_headers=True,

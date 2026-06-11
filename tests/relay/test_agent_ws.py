@@ -12,8 +12,8 @@ from httpx_ws import aconnect_ws
 from httpx_ws.transport import ASGIWebSocketTransport
 
 from relay.app.main import create_relay_app
-from relay.app.services.mount_registry import get_registry
 from tests.relay.conftest import MockTunnelConnection, _setup_in_memory_registry
+from tunnel.constants import PROTOCOL_VERSION
 
 
 pytestmark = pytest.mark.anyio
@@ -24,14 +24,13 @@ async def agent_ws_app():
     """Create a fresh relay app with in-memory SQLite registry for each test.
 
     Manually creates the SqliteMountRegistry because ASGIWebSocketTransport
-    does not trigger FastAPI lifespan events. Resets the mount registration
-    rate limiter to avoid cross-test pollution.
+    does not trigger FastAPI lifespan events. Each app instance has its own
+    mount-registration rate limiter on ``app.state.relay.mount_reg_limiter``,
+    so no cross-test reset is needed.
     """
     with patch.dict(os.environ, {"RELAY_DB_PATH": ":memory:"}):
         app = create_relay_app()
-    from relay.app.routers.agent_ws import reset_mount_reg_limiter
-    reset_mount_reg_limiter()
-    registry = await _setup_in_memory_registry()
+    registry = await _setup_in_memory_registry(app)
     yield app
     await registry.close()
 
@@ -64,7 +63,7 @@ async def _recv_mount_registered(app, path: str) -> dict:
             await ws.send_text(
                 json.dumps(
                     {
-                        "type": "agent_auth",
+                        "type": "agent_auth", "protocol_version": PROTOCOL_VERSION,
                         "token": None,
                         "access_mode": "open",
                         "has_password": False,
@@ -103,7 +102,7 @@ async def test_agent_connects_with_available_preferred_code_uses_it(agent_ws_app
 async def test_agent_connects_with_occupied_code_generates_new_code(agent_ws_app) -> None:
     """Agent connects with ?code=occupied (already taken) — relay generates a different code."""
     # Register directly with a different IP to truly occupy the code
-    registry = get_registry()
+    registry = agent_ws_app.state.relay.registry
     conn = MockTunnelConnection()
     await registry.register(
         "occupied",
@@ -127,7 +126,7 @@ async def test_agent_disconnect_marks_mount_offline(agent_ws_app) -> None:
     assigned_code = msg["code"]
     # Give the server a moment for the finally block cleanup to run
     await asyncio.sleep(0.1)
-    registry = get_registry()
+    registry = agent_ws_app.state.relay.registry
     # Mount should still exist (OFFLINE) because we use mark_offline instead of deregister
     assert await registry.has_mount(assigned_code)
 
@@ -156,3 +155,49 @@ async def test_agent_reclaims_offline_mount_same_ip(agent_ws_app) -> None:
     assert msg2["reclaimed"] is True
     assert msg2["remaining_ttl"] is not None
     assert msg2["remaining_ttl"] > 0
+
+
+async def test_version_mismatch_rejected(agent_ws_app) -> None:
+    """An agent with a skewed protocol_version is refused before registration."""
+    transport = ASGIWebSocketTransport(app=agent_ws_app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        async with aconnect_ws(
+            "http://testserver/agent/ws",
+            client,
+            keepalive_ping_interval_seconds=None,
+            keepalive_ping_timeout_seconds=None,
+        ) as ws:
+            await ws.send_text(json.dumps({
+                "type": "agent_auth", "protocol_version": PROTOCOL_VERSION + 1,
+                "token": None, "access_mode": "open",
+                "has_password": False, "allowlist": [],
+            }))
+            raw = await ws.receive_text()
+            msg = json.loads(raw)
+    assert msg["type"] == "error"
+    assert "protocol version mismatch" in msg["error"]
+
+
+async def test_missing_version_rejected(agent_ws_app) -> None:
+    """An agent omitting protocol_version (pre-versioning) is refused."""
+    transport = ASGIWebSocketTransport(app=agent_ws_app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        async with aconnect_ws(
+            "http://testserver/agent/ws",
+            client,
+            keepalive_ping_interval_seconds=None,
+            keepalive_ping_timeout_seconds=None,
+        ) as ws:
+            await ws.send_text(json.dumps({
+                "type": "agent_auth",
+                "token": None, "access_mode": "open",
+                "has_password": False, "allowlist": [],
+            }))
+            raw = await ws.receive_text()
+            msg = json.loads(raw)
+    assert msg["type"] == "error"
+    assert "protocol version mismatch" in msg["error"]

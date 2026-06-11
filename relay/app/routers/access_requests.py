@@ -4,15 +4,16 @@ the mount owner OR a relay admin approves/denies.
 
 from enum import Enum
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from accounts import Role, SubjectType, UserNotFoundError
-from relay.app.dependencies import get_current_identity, is_admin_username
+from accounts import AccountStore, Role, SubjectType, UserNotFoundError
+from relay.app.dependencies import (
+    get_current_identity,
+    get_relay_state,
+    is_admin_username,
+)
 from relay.app.enums import AccessRequestStatus
-from relay.app.exceptions import AccessRequestNotFoundError, MountNotFoundError
-from relay.app.services.account_store import get_account_store
-from relay.app.services.mount_registry import get_registry
 from relay.app.services.session import SessionIdentity
 
 router = APIRouter(prefix="/requests", tags=["access-requests"])
@@ -43,9 +44,9 @@ def _serialize_with_username(req, username: str | None) -> dict[str, object]:
     }
 
 
-async def _serialize(req) -> dict[str, object]:
+async def _serialize(req, account_store: AccountStore) -> dict[str, object]:
     try:
-        username = (await get_account_store().get_user_by_id(req.user_id)).username
+        username = (await account_store.get_user_by_id(req.user_id)).username
     except UserNotFoundError:
         username = None
     return _serialize_with_username(req, username)
@@ -53,20 +54,24 @@ async def _serialize(req) -> dict[str, object]:
 
 @router.post("")
 async def create_request(
+    request: Request,
     body: CreateAccessRequest,
     identity: SessionIdentity = Depends(get_current_identity),
 ) -> dict[str, object]:
-    registry = get_registry()
+    state = get_relay_state(request)
+    registry = state.require_registry()
     req = await registry.create_access_request(body.code, identity.user_id)
-    return await _serialize(req)
+    return await _serialize(req, state.require_account_store())
 
 
 @router.get("")
 async def list_requests(
+    request: Request,
     identity: SessionIdentity = Depends(get_current_identity),
 ) -> list[dict[str, object]]:
-    registry = get_registry()
-    if is_admin_username(identity.username):
+    state = get_relay_state(request)
+    registry = state.require_registry()
+    if is_admin_username(identity.username, state.config):
         reqs = await registry.list_all_access_requests()
     else:
         mine = await registry.list_access_requests_for_user(identity.user_id)
@@ -75,7 +80,9 @@ async def list_requests(
         by_id.update({r.id: r for r in owned})
         reqs = sorted(by_id.values(), key=lambda r: r.id, reverse=True)
     # One batch query for all usernames instead of one query per request row.
-    users = await get_account_store().get_users_by_ids([r.user_id for r in reqs])
+    users = await state.require_account_store().get_users_by_ids(
+        [r.user_id for r in reqs]
+    )
     return [
         _serialize_with_username(
             r, users[r.user_id].username if r.user_id in users else None
@@ -86,26 +93,23 @@ async def list_requests(
 
 @router.post("/{request_id}/resolve")
 async def resolve_request(
+    request: Request,
     request_id: int,
     body: ResolveBody,
     identity: SessionIdentity = Depends(get_current_identity),
 ) -> dict[str, object]:
-    registry = get_registry()
-    try:
-        req = await registry.get_access_request(request_id)
-    except AccessRequestNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Request not found") from exc
-
-    try:
-        policy = await registry.get_policy(req.code)
-    except MountNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Mount not found") from exc
+    state = get_relay_state(request)
+    registry = state.require_registry()
+    # AccessRequestNotFoundError / MountNotFoundError -> 404 via the central
+    # handlers in relay/app/error_handlers.py.
+    req = await registry.get_access_request(request_id)
+    policy = await registry.get_policy(req.code)
 
     is_owner = (
         policy.owner_user_id is not None
         and policy.owner_user_id == identity.user_id
     )
-    if not (is_owner or is_admin_username(identity.username)):
+    if not (is_owner or is_admin_username(identity.username, state.config)):
         raise HTTPException(
             status_code=403, detail="Only the mount owner or an admin may resolve"
         )

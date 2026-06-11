@@ -1,8 +1,4 @@
-/** A clipboard snippet with title and content. */
-export interface Snippet {
-  id: string;
-  title: string;
-  content: string;
-  created_at: string;
-  updated_at: string;
-}
+/** Clipboard snippet type, derived from the server's OpenAPI schema. */
+import type { Schemas } from "./api.ts";
+
+export type Snippet = Schemas["Snippet"];

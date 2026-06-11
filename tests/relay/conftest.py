@@ -9,7 +9,6 @@ import pytest
 from httpx import AsyncClient
 
 from relay.app.main import create_relay_app
-from relay.app.services.mount_registry import set_registry
 from relay.app.services.sqlite_registry import SqliteMountRegistry
 
 
@@ -76,14 +75,14 @@ class MockTunnelConnection:
         self.closed = True
 
 
-async def _setup_in_memory_registry() -> SqliteMountRegistry:
-    """Create an in-memory SqliteMountRegistry and install it as the global singleton.
+async def _setup_in_memory_registry(app) -> SqliteMountRegistry:
+    """Create an in-memory SqliteMountRegistry and wire it onto the app's RelayState.
 
     Used by test fixtures and test helpers when the ASGI transport does not
     trigger FastAPI lifespan events (e.g. httpx.ASGITransport, ASGIWebSocketTransport).
     """
     registry = await SqliteMountRegistry.create(":memory:")
-    set_registry(registry)
+    app.state.relay.registry = registry
     return registry
 
 
@@ -108,7 +107,7 @@ async def relay_app(monkeypatch):
     """
     monkeypatch.setenv("RELAY_DB_PATH", ":memory:")
     app = create_relay_app()
-    registry = await _setup_in_memory_registry()
+    registry = await _setup_in_memory_registry(app)
     yield app
     await registry.close()
 
@@ -134,9 +133,7 @@ async def registered_relay_client(relay_app, mock_connection):
     Returns a tuple of (client, registry) so tests can
     access the registry for state manipulation (e.g. mark_offline).
     """
-    from relay.app.services.mount_registry import get_registry
-
-    registry = get_registry()
+    registry = relay_app.state.relay.registry
     await registry.register(
         "testcode",
         mock_connection,
@@ -150,27 +147,26 @@ async def registered_relay_client(relay_app, mock_connection):
 
 
 @pytest.fixture
-async def account_store():
-    """Install an in-memory accounts store as the global singleton."""
+async def account_store(relay_app):
+    """Wire an in-memory accounts store onto the app's RelayState."""
     from accounts import SqliteAccountStore
-    from relay.app.services.account_store import set_account_store
 
     store = await SqliteAccountStore.create(":memory:")
-    set_account_store(store)
+    relay_app.state.relay.account_store = store
     yield store
-    set_account_store(None)
+    relay_app.state.relay.account_store = None
     await store.close()
 
 
 @pytest.fixture
-def relay_session():
-    """Install a deterministic RelaySession as the global singleton."""
-    from relay.app.services.session import RelaySession, set_relay_session
+def relay_session(relay_app):
+    """Wire a deterministic RelaySession onto the app's RelayState."""
+    from relay.app.services.session import RelaySession
 
     s = RelaySession("test-relay-secret")
-    set_relay_session(s)
+    relay_app.state.relay.session = s
     yield s
-    set_relay_session(None)
+    relay_app.state.relay.session = None
 
 
 @pytest.fixture
@@ -182,20 +178,18 @@ async def auth_client(relay_app, account_store, relay_session):
 
 
 @pytest.fixture
-def make_admin():
+def make_admin(relay_app):
     """Return a helper that marks a username as a relay admin.
 
-    Rewrites the global (frozen) RelayConfig; relay_app recreates config
-    per test, so the mutation does not leak across tests.
+    Replaces the app's (frozen) RelayConfig on its RelayState; each test
+    builds a fresh app, so the mutation does not leak across tests.
     """
     import dataclasses
 
-    from relay.app.config import get_config, set_config
-
     def _make_admin(username: str) -> None:
-        cfg = get_config()
-        set_config(
-            dataclasses.replace(cfg, admin_users=[username.strip().lower()])
+        state = relay_app.state.relay
+        state.config = dataclasses.replace(
+            state.config, admin_users=[username.strip().lower()]
         )
 
     return _make_admin

@@ -8,8 +8,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from relay.app.config import get_config
-from relay.app.rate_limit import limiter
+from relay.app.rate_limit import (
+    auth_agent_token_rate,
+    auth_login_rate,
+    auth_signup_rate,
+    limiter,
+)
 
 from accounts import (
     UsernameTakenError,
@@ -18,13 +22,15 @@ from accounts import (
     hash_password,
     verify_password,
 )
-from relay.app.dependencies import get_current_identity, is_admin_username
-from relay.app.services.account_store import get_account_store
+from relay.app.dependencies import (
+    get_current_identity,
+    get_relay_state,
+    is_admin_username,
+)
 from relay.app.services.session import (
     SESSION_COOKIE_NAME,
     SESSION_COOKIE_PATH,
     SessionIdentity,
-    get_relay_session,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -42,12 +48,12 @@ class LoginRequest(BaseModel):
 
 
 @router.post("/signup")
-@limiter.limit(lambda: get_config().auth_signup_rate)
+@limiter.limit(auth_signup_rate)
 async def signup(
     request: Request, response: Response, body: SignupRequest
 ) -> dict[str, object]:
     """Self-register a new account. 409 if the username is taken."""
-    store = get_account_store()
+    store = get_relay_state(request).require_account_store()
     try:
         password_hash = hash_password(body.password)
     except WeakPasswordError as exc:
@@ -75,12 +81,13 @@ def _set_session_cookie(payload: dict[str, object], token: str) -> JSONResponse:
 
 
 @router.post("/login")
-@limiter.limit(lambda: get_config().auth_login_rate)
+@limiter.limit(auth_login_rate)
 async def login(
     request: Request, response: Response, body: LoginRequest
 ) -> JSONResponse:
     """Authenticate and set the session cookie. 401 on bad credentials."""
-    store = get_account_store()
+    state = get_relay_state(request)
+    store = state.require_account_store()
     try:
         user = await store.get_user_by_username(body.username)
     except UserNotFoundError:
@@ -94,11 +101,11 @@ async def login(
     if not ok or not user.is_active:
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
-    token = get_relay_session().issue(user.id, user.username)
+    token = state.require_session().issue(user.id, user.username)
     return _set_session_cookie(
         {
             "username": user.username,
-            "is_admin": is_admin_username(user.username),
+            "is_admin": is_admin_username(user.username, state.config),
         },
         token,
     )
@@ -114,18 +121,21 @@ async def logout() -> JSONResponse:
 
 @router.get("/me")
 async def me(
+    request: Request,
     identity: SessionIdentity = Depends(get_current_identity),
 ) -> dict[str, object]:
     """Return the current identity and admin flag. 401 if anonymous."""
     return {
         "user_id": identity.user_id,
         "username": identity.username,
-        "is_admin": is_admin_username(identity.username),
+        "is_admin": is_admin_username(
+            identity.username, get_relay_state(request).config
+        ),
     }
 
 
 @router.post("/agent-token")
-@limiter.limit(lambda: get_config().auth_agent_token_rate)
+@limiter.limit(auth_agent_token_rate)
 async def agent_token(
     request: Request, response: Response, body: LoginRequest
 ) -> dict[str, object]:
@@ -134,7 +144,8 @@ async def agent_token(
     Used by the agent during the mount registration handshake (Phase 4) to
     prove it acts on behalf of an account. 401 on bad credentials.
     """
-    store = get_account_store()
+    state = get_relay_state(request)
+    store = state.require_account_store()
     try:
         user = await store.get_user_by_username(body.username)
     except UserNotFoundError:
@@ -146,5 +157,5 @@ async def agent_token(
     if not ok or not user.is_active:
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
-    token = get_relay_session().issue_agent_owner_token(user.id)
+    token = state.require_session().issue_agent_owner_token(user.id)
     return {"token": token, "user_id": user.id, "username": user.username}

@@ -45,7 +45,7 @@ class TestFilesRoute:
         response = await async_client.get("/api/files", params={"path": "../etc"})
         assert response.status_code == 403
         data = response.json()
-        assert "error" in data
+        assert "detail" in data
 
     @pytest.mark.asyncio
     async def test_nonexistent_returns_404(
@@ -56,7 +56,7 @@ class TestFilesRoute:
         )
         assert response.status_code == 404
         data = response.json()
-        assert "error" in data
+        assert "detail" in data
 
     @pytest.mark.asyncio
     async def test_entry_has_required_fields(

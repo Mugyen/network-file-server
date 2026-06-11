@@ -4,7 +4,7 @@ boundaries honest (review items C2–C4).
 Rules enforced (application code only; tests are exempt):
 - server/  must never import relay or agent (no cycle, no upward dependency)
 - agent/   must never import server (it tunnels *any* ASGI app; the
-           composition root is server/app/cli.py)
+           composition root is server/app/bootstrap.py)
 - relay/   may depend on server, but only through the declared public
            interface (``from server import ...``), never server.app.* internals
 - tunnel/, accounts/, shared/ must not import any other project package
@@ -44,7 +44,7 @@ def _violations(package: str, predicate) -> list[str]:
 # The CLI is the deliberate composition root: it joins server and agent
 # (builds the app factory and hands it to the agent). It is the ONLY
 # server file allowed to import agent.
-COMPOSITION_ROOT = "server/app/cli.py"
+COMPOSITION_ROOT = "server/app/bootstrap.py"
 
 
 def test_server_does_not_import_relay() -> None:

@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, useEffect } from "react";
+import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import type { Root } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowseProvider, useBrowse } from "./BrowseContext.tsx";
 import type { FileEntry } from "../types/files.ts";
 import { FileType } from "../types/files.ts";
@@ -60,9 +62,16 @@ function hook(): ReturnType<typeof useBrowse> {
   return current;
 }
 
+/** Wrap children in a fresh QueryClientProvider — the BrowseProvider's
+ *  listing query needs one, and per-test isolation avoids cache bleed. */
+function withQuery(client: QueryClient, children: ReactNode): ReactNode {
+  return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+}
+
 describe("BrowseContext", () => {
   let container: HTMLDivElement;
   let root: Root;
+  let queryClient: QueryClient;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -70,6 +79,9 @@ describe("BrowseContext", () => {
     mocks.fetchFiles.mockResolvedValue({
       path: "",
       entries: [fileText, fileImage, dirDocs],
+    });
+    queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
     });
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -87,15 +99,22 @@ describe("BrowseContext", () => {
   async function mount(): Promise<void> {
     await act(async () => {
       root.render(
-        <BrowseProvider>
-          <Harness />
-        </BrowseProvider>,
+        withQuery(
+          queryClient,
+          <BrowseProvider>
+            <Harness />
+          </BrowseProvider>,
+        ),
       );
     });
-    // Flush the initial loadFiles promise chain.
-    await act(async () => {
-      await Promise.resolve();
-    });
+    // Flush React Query's async fetch + the resulting state updates. A few
+    // microtask + macrotask turns settle the query from pending to success.
+    for (let i = 0; i < 5; i++) {
+      await act(async () => {
+        await Promise.resolve();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
   }
 
   it("useBrowse throws a typed Error outside the provider", () => {
@@ -159,5 +178,27 @@ describe("BrowseContext", () => {
     });
 
     expect(hook().error).toBe("server info failed");
+  });
+
+  it("refetches the listing after a successful delete (invalidation)", async () => {
+    await mount();
+    expect(mocks.fetchFiles).toHaveBeenCalledTimes(1);
+    mocks.deleteFiles.mockResolvedValue({ deleted: ["notes.txt"] });
+
+    await act(async () => {
+      await hook().deletePath("notes.txt");
+    });
+    // Let the invalidation-triggered refetch settle.
+    for (let i = 0; i < 5; i++) {
+      await act(async () => {
+        await Promise.resolve();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
+
+    expect(mocks.deleteFiles).toHaveBeenCalledWith(["notes.txt"]);
+    // The listing was reloaded exactly once via React Query invalidation.
+    expect(mocks.fetchFiles).toHaveBeenCalledTimes(2);
+    expect(hook().error).toBeNull();
   });
 });

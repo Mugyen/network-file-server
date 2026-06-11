@@ -32,10 +32,8 @@ async def _register_owned_mount(registry, code, owner_id):
 
 
 @pytest.fixture
-def registry():
-    from relay.app.services.mount_registry import get_registry
-
-    return get_registry()
+def registry(relay_app):
+    return relay_app.state.relay.registry
 
 
 async def test_create_request_requires_login(auth_client):

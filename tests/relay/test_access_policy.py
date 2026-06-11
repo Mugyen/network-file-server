@@ -15,9 +15,8 @@ from accounts import (
 )
 from relay.app.exceptions import AccessDeniedError, AuthenticationRequiredError
 from relay.app.services.access_policy import authorize
-from relay.app.services.account_store import set_account_store
 from relay.app.services.mount_registry import PolicyEntry
-from relay.app.services.session import RelaySession, SessionIdentity, set_relay_session
+from relay.app.services.session import RelaySession, SessionIdentity
 from relay.app.services.sqlite_registry import SqliteMountRegistry
 
 
@@ -25,12 +24,8 @@ from relay.app.services.sqlite_registry import SqliteMountRegistry
 async def policy_env():
     registry = await SqliteMountRegistry.create(":memory:")
     store = await SqliteAccountStore.create(":memory:")
-    set_account_store(store)
     session = RelaySession("secret")
-    set_relay_session(session)
     yield registry, store, session
-    set_account_store(None)
-    set_relay_session(None)
     await store.close()
     await registry.close()
 
@@ -49,13 +44,13 @@ async def test_open_mount_allows_anonymous(policy_env):
     registry, _store, _s = policy_env
     await _register(registry, "open1")
     await registry.set_owner_policy("open1", None, AccessMode.OPEN, False, [])
-    decision = await authorize(registry, "open1", None)
+    decision = await authorize(registry, _store, "open1", None)
     assert decision.identified is False
 
 
 async def test_legacy_mount_without_policy_fails_open(policy_env):
     registry, _store, _s = policy_env
-    decision = await authorize(registry, "nonexistent", None)
+    decision = await authorize(registry, _store, "nonexistent", None)
     assert decision.identified is False
 
 
@@ -64,7 +59,7 @@ async def test_restricted_no_password_anon_requires_auth(policy_env):
     await _register(registry, "r1")
     await registry.set_owner_policy("r1", 1, AccessMode.RESTRICTED, False, [])
     with pytest.raises(AuthenticationRequiredError):
-        await authorize(registry, "r1", None)
+        await authorize(registry, _store, "r1", None)
 
 
 async def test_restricted_no_password_logged_in_not_allowed_denied(policy_env):
@@ -73,14 +68,14 @@ async def test_restricted_no_password_logged_in_not_allowed_denied(policy_env):
     await _register(registry, "r2")
     await registry.set_owner_policy("r2", 1, AccessMode.RESTRICTED, False, [])
     with pytest.raises(AccessDeniedError):
-        await authorize(registry, "r2", _id(user))
+        await authorize(registry, store, "r2", _id(user))
 
 
 async def test_restricted_with_password_falls_through_for_anon(policy_env):
     registry, _store, _s = policy_env
     await _register(registry, "r3")
     await registry.set_owner_policy("r3", 1, AccessMode.RESTRICTED, True, [])
-    decision = await authorize(registry, "r3", None)
+    decision = await authorize(registry, _store, "r3", None)
     assert decision.identified is False  # server password will challenge
 
 
@@ -92,7 +87,7 @@ async def test_allowlisted_user_identified_with_role(policy_env):
         "r4", 1, AccessMode.RESTRICTED, False,
         [PolicyEntry(SubjectType.USER, user.id, Role.WRITE)],
     )
-    decision = await authorize(registry, "r4", _id(user))
+    decision = await authorize(registry, store, "r4", _id(user))
     assert decision.identified is True
     assert decision.username == "alice"
     assert decision.role is Role.WRITE
@@ -110,7 +105,7 @@ async def test_allowlisted_via_nested_group(policy_env):
         "r5", 1, AccessMode.RESTRICTED, False,
         [PolicyEntry(SubjectType.GROUP, org.id, Role.READ)],
     )
-    decision = await authorize(registry, "r5", _id(user))
+    decision = await authorize(registry, store, "r5", _id(user))
     assert decision.identified is True
     assert decision.role is Role.READ
 
@@ -128,7 +123,7 @@ async def test_highest_role_wins_on_multiple_matches(policy_env):
             PolicyEntry(SubjectType.GROUP, grp.id, Role.WRITE),
         ],
     )
-    decision = await authorize(registry, "r6", _id(user))
+    decision = await authorize(registry, store, "r6", _id(user))
     assert decision.role is Role.WRITE
 
 
@@ -138,9 +133,7 @@ async def test_highest_role_wins_on_multiple_matches(policy_env):
 @pytest.fixture
 async def proxy_env(relay_app, account_store, relay_session):
     """relay_app + accounts wired; returns (client, registry, store, session)."""
-    from relay.app.services.mount_registry import get_registry
-
-    registry = get_registry()
+    registry = relay_app.state.relay.registry
     transport = httpx.ASGITransport(app=relay_app)
     async with AsyncClient(
         transport=transport, base_url="http://test"
@@ -223,7 +216,7 @@ async def test_proxy_strips_spoofed_wfs_headers(proxy_env, mock_connection):
         headers={"x-wfs-role": "write", "x-wfs-user": "attacker",
                  "x-wfs-auth-bypass": "1"},
     )
-    fwd = mock_connection.sent_opens[-1][1]["headers"]
+    fwd = mock_connection.sent_opens[-1][1].headers
     lowered = {k.lower() for k in fwd}
     assert "x-wfs-role" not in lowered
     assert "x-wfs-user" not in lowered
@@ -247,7 +240,55 @@ async def test_proxy_injects_identity_for_allowlisted(proxy_env, mock_connection
         cookies={"wfs_session": token},
         headers={"x-wfs-role": "read"},  # spoof attempt — must be overridden
     )
-    fwd = {k.lower(): v for k, v in mock_connection.sent_opens[-1][1]["headers"].items()}
+    fwd = {k.lower(): v for k, v in mock_connection.sent_opens[-1][1].headers.items()}
     assert fwd["x-wfs-user"] == "ivy"
     assert fwd["x-wfs-role"] == "write"
     assert fwd["x-wfs-auth-bypass"] == "1"
+
+
+async def test_proxy_signs_injected_identity(proxy_env, mock_connection):
+    """The proxy adds a valid HMAC signature over the injected identity tuple."""
+    from shared.identity_sig import IDENTITY_SIG_HEADER, verify_identity
+
+    client, registry, store, session = proxy_env
+    user = await store.create_user("signed", hash_password("pw"), None)
+    await registry.register(
+        "sigm", mock_connection, agent_ip="127.0.0.1",
+        created_at=time.time(), expires_at=None,
+    )
+    await registry.set_owner_policy(
+        "sigm", user.id, AccessMode.RESTRICTED, False,
+        [PolicyEntry(SubjectType.USER, user.id, Role.WRITE)],
+    )
+    registry.set_identity_secret("sigm", "mount-secret-xyz")
+    token = session.issue(user.id, user.username)
+    await client.get("/m/sigm/file.txt", cookies={"wfs_session": token})
+
+    fwd = {k.lower(): v for k, v in mock_connection.sent_opens[-1][1].headers.items()}
+    assert verify_identity(
+        "mount-secret-xyz", fwd["x-wfs-user"], fwd["x-wfs-role"], True,
+        fwd[IDENTITY_SIG_HEADER],
+    )
+
+
+async def test_proxy_no_secret_injects_unsigned(proxy_env, mock_connection):
+    """Without a per-mount secret (old agent) identity headers are unsigned."""
+    from shared.identity_sig import IDENTITY_SIG_HEADER
+
+    client, registry, store, session = proxy_env
+    user = await store.create_user("nosig", hash_password("pw"), None)
+    await registry.register(
+        "nosigm", mock_connection, agent_ip="127.0.0.1",
+        created_at=time.time(), expires_at=None,
+    )
+    await registry.set_owner_policy(
+        "nosigm", user.id, AccessMode.RESTRICTED, False,
+        [PolicyEntry(SubjectType.USER, user.id, Role.WRITE)],
+    )
+    # No set_identity_secret call — simulates a pre-signing agent.
+    token = session.issue(user.id, user.username)
+    await client.get("/m/nosigm/file.txt", cookies={"wfs_session": token})
+
+    fwd = {k.lower(): v for k, v in mock_connection.sent_opens[-1][1].headers.items()}
+    assert fwd["x-wfs-user"] == "nosig"
+    assert IDENTITY_SIG_HEADER not in fwd

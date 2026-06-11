@@ -23,6 +23,7 @@ from agent.display import print_request_line
 from tunnel.connection import TunnelConnection
 from tunnel.constants import MAX_PAYLOAD_BYTES
 from tunnel.exceptions import StreamNotFoundError
+from tunnel.metadata import RequestMetadata, WsOpenMetadata
 from tunnel.ws_payload import (
     WsMessageKind,
     decode_ws_message,
@@ -36,7 +37,7 @@ logger = logging.getLogger("agent.proxy")
 async def handle_open_frame(
     conn: TunnelConnection,
     request_id: uuid.UUID,
-    metadata: dict,
+    metadata: RequestMetadata,
     asgi_client: httpx.AsyncClient,
 ) -> None:
     """Proxy an OPEN frame to the local ASGI app and stream DATA+CLOSE back.
@@ -56,10 +57,10 @@ async def handle_open_frame(
         metadata:    Dict containing method, path, query, headers, content_length fields.
         asgi_client: httpx.AsyncClient backed by ASGITransport pointing at local app.
     """
-    method: str = metadata["method"]
-    path: str = metadata["path"]
-    query: str = metadata.get("query", "")
-    headers: dict = metadata.get("headers", {})
+    method: str = metadata.method
+    path: str = metadata.path
+    query: str = metadata.query
+    headers: dict[str, str] = metadata.headers
 
     # Build URL — append query string if present
     url = f"http://local{path}"
@@ -118,7 +119,7 @@ async def handle_open_frame(
 async def handle_ws_open_frame(
     conn: TunnelConnection,
     ws_id: uuid.UUID,
-    metadata: dict,
+    metadata: WsOpenMetadata,
     app: Any,
 ) -> None:
     """Open a local WebSocket to the ASGI app and bridge messages bidirectionally.
@@ -139,9 +140,9 @@ async def handle_ws_open_frame(
     Raises:
         Does not raise — all exceptions are caught and WS_CLOSE is always sent.
     """
-    path: str = metadata["path"]
-    query: str = metadata.get("query", "")
-    headers: dict[str, str] = metadata.get("headers", {})
+    path: str = metadata.path
+    query: str = metadata.query
+    headers: dict[str, str] = metadata.headers
 
     # Register the stream so read_stream_iter can receive WS_DATA frames
     conn.open_stream(ws_id)

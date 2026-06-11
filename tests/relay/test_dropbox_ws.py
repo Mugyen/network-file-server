@@ -15,7 +15,6 @@ from httpx_ws import aconnect_ws
 from httpx_ws.transport import ASGIWebSocketTransport
 
 from relay.app.main import create_relay_app
-from relay.app.services.mount_registry import set_registry
 from relay.app.services.sqlite_registry import SqliteMountRegistry
 
 
@@ -27,13 +26,13 @@ async def dropbox_relay_app(monkeypatch):
     """
     monkeypatch.setenv("RELAY_DB_PATH", ":memory:")
     app = create_relay_app()
+    state = app.state.relay
 
     registry = await SqliteMountRegistry.create(":memory:")
-    set_registry(registry)
+    state.registry = registry
 
     # Register the drop box mount (same as lifespan does)
-    from relay.app.config import get_config
-    config = get_config()
+    config = state.config
     await registry.register(
         code=config.dropbox_code,
         connection=None,
@@ -45,17 +44,16 @@ async def dropbox_relay_app(monkeypatch):
     # Initialize drop box app and store it
     from pathlib import Path
     import tempfile
-    from relay.app.services.dropbox import init_dropbox, set_dropbox_client, set_dropbox_app
+    from relay.app.services.dropbox import init_dropbox
 
     tmpdir = tempfile.mkdtemp()
-    client = await init_dropbox(Path(tmpdir), config.dropbox_code)
-    set_dropbox_client(client)
+    dropbox = await init_dropbox(Path(tmpdir), config.dropbox_code)
+    state.local_mounts[dropbox.code] = dropbox
 
     yield app
 
-    await client.aclose()
-    set_dropbox_client(None)
-    set_dropbox_app(None)
+    await dropbox.aclose()
+    state.local_mounts.pop(dropbox.code, None)
     await registry.close()
 
 
@@ -67,8 +65,7 @@ async def test_dropbox_ws_bridge_connects(dropbox_relay_app) -> None:
     Before the fix, mount_proxy.py would accept and immediately close
     with code 1000. Now it bridges to the drop box server app.
     """
-    from relay.app.config import get_config
-    config = get_config()
+    config = dropbox_relay_app.state.relay.config
 
     async with ASGIWebSocketTransport(app=dropbox_relay_app) as transport:
         async with aconnect_ws(
@@ -88,8 +85,7 @@ async def test_dropbox_ws_bridge_receives_initial_messages(dropbox_relay_app) ->
     The server app's WS endpoint sends device_count and device_list on connect.
     Receiving these proves the bridge forwards messages from server to browser.
     """
-    from relay.app.config import get_config
-    config = get_config()
+    config = dropbox_relay_app.state.relay.config
 
     async with ASGIWebSocketTransport(app=dropbox_relay_app) as transport:
         async with aconnect_ws(

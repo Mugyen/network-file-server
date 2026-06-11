@@ -90,6 +90,7 @@ def configured_app(tmp_shared_folder: Path) -> "FastAPI":  # type: ignore[name-d
         receive=False,
         mount_code=None,
         relay_url=None,
+        identity_secret=None,
     )
     return create_app(config)
 
@@ -129,6 +130,7 @@ def configured_app_with_password(tmp_shared_folder: Path) -> "FastAPI":  # type:
         receive=False,
         mount_code=None,
         relay_url=None,
+        identity_secret=None,
     )
     return create_app(config)
 
@@ -157,6 +159,7 @@ def configured_app_read_only(tmp_shared_folder: Path) -> "FastAPI":  # type: ign
         receive=False,
         mount_code=None,
         relay_url=None,
+        identity_secret=None,
     )
     return create_app(config)
 
@@ -185,6 +188,7 @@ def configured_app_receive(tmp_shared_folder: Path) -> "FastAPI":  # type: ignor
         receive=True,
         mount_code=None,
         relay_url=None,
+        identity_secret=None,
     )
     return create_app(config)
 

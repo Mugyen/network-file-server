@@ -8,7 +8,6 @@ SQLite is the source of truth for all metadata (status, TTL, IP, timestamps).
 import logging
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import aiosqlite
@@ -21,6 +20,8 @@ from relay.app.exceptions import (
     MountNotFoundError,
     MountOfflineError,
 )
+from shared.sqlite_kernel import is_new_db, open_wal_db, run_schema
+
 from relay.app.services.mount_registry import (
     AccessRequest,
     MountPolicy,
@@ -76,7 +77,9 @@ CREATE TABLE IF NOT EXISTS access_requests (
 # Columns added after the initial v1.2 schema; migrated on existing DBs.
 _MIGRATION_COLUMNS: dict[str, str] = {
     "owner_user_id": "ALTER TABLE mounts ADD COLUMN owner_user_id INTEGER",
-    "access_mode": "ALTER TABLE mounts ADD COLUMN access_mode TEXT NOT NULL DEFAULT 'open'",
+    # Pre-v1.3 rows predate the access-policy model: mark them LEGACY (treated
+    # as OPEN, but as a named, auditable state) rather than silently 'open'.
+    "access_mode": "ALTER TABLE mounts ADD COLUMN access_mode TEXT NOT NULL DEFAULT 'legacy'",
     "has_password": "ALTER TABLE mounts ADD COLUMN has_password INTEGER NOT NULL DEFAULT 0",
 }
 
@@ -122,6 +125,22 @@ class SqliteMountRegistry:
     def __init__(self, db: aiosqlite.Connection) -> None:
         self._db: aiosqlite.Connection = db
         self._connections: dict[str, "TunnelConnection"] = {}
+        # Per-mount identity-signing secrets (in-memory, never persisted):
+        # each agent mints a fresh secret per connect and sends it in
+        # agent_auth; the proxy signs injected identity headers with it.
+        self._identity_secrets: dict[str, str] = {}
+
+    def set_identity_secret(self, code: str, secret: str) -> None:
+        """Store the per-mount identity-signing secret from agent_auth."""
+        if not isinstance(code, str) or len(code) == 0:
+            raise ValueError("code must be a non-empty string")
+        if not isinstance(secret, str) or len(secret) == 0:
+            raise ValueError("secret must be a non-empty string")
+        self._identity_secrets[code] = secret
+
+    def get_identity_secret(self, code: str) -> str | None:
+        """Return the per-mount identity-signing secret, or None if unset."""
+        return self._identity_secrets.get(code)
 
     @classmethod
     async def create(cls, db_path: str) -> "SqliteMountRegistry":
@@ -130,18 +149,19 @@ class SqliteMountRegistry:
         Opens the database, creates the schema if needed, runs startup
         cleanup, and returns a ready-to-use registry.
         """
-        is_new_db = db_path == ":memory:" or not Path(db_path).exists()
+        new_db = is_new_db(db_path)
 
-        db = await aiosqlite.connect(db_path)
         # WAL: registrations, TTL sweeps, and access-request writes run
         # concurrently — rollback-journal mode serializes them behind an
         # exclusive lock. (Matches the server's ServerStateStore.)
-        await db.execute("PRAGMA journal_mode=WAL")
-        await db.execute(_CREATE_TABLE_SQL)
-        await db.execute(_CREATE_IP_INDEX_SQL)
-        await db.execute(_CREATE_STATUS_INDEX_SQL)
-        await db.execute(_CREATE_POLICY_TABLE_SQL)
-        await db.execute(_CREATE_ACCESS_REQUESTS_SQL)
+        db = await open_wal_db(db_path)
+        await run_schema(db, [
+            _CREATE_TABLE_SQL,
+            _CREATE_IP_INDEX_SQL,
+            _CREATE_STATUS_INDEX_SQL,
+            _CREATE_POLICY_TABLE_SQL,
+            _CREATE_ACCESS_REQUESTS_SQL,
+        ])
 
         # Migrate pre-v1.3 databases: add owner/access columns if missing.
         async with db.execute("PRAGMA table_info(mounts)") as cursor:
@@ -152,7 +172,7 @@ class SqliteMountRegistry:
 
         await db.commit()
 
-        if is_new_db:
+        if new_db:
             logger.info("No existing mount database -- starting fresh")
 
         registry = cls(db)
@@ -204,6 +224,7 @@ class SqliteMountRegistry:
             raise MountNotFoundError(code)
         await self._db.commit()
         self._connections.pop(code, None)
+        self._identity_secrets.pop(code, None)
 
     async def get_connection(self, code: str) -> "TunnelConnection":
         """Return the live TunnelConnection for a mount code.
@@ -265,6 +286,7 @@ class SqliteMountRegistry:
             )
             await self._db.commit()
             self._connections.pop(code, None)
+        self._identity_secrets.pop(code, None)
 
     async def expire(self, code: str) -> None:
         """Transition a mount to EXPIRED status, retaining the SQLite record.
@@ -289,6 +311,7 @@ class SqliteMountRegistry:
         )
         await self._db.commit()
         self._connections.pop(code, None)
+        self._identity_secrets.pop(code, None)
 
     async def mark_ttl_warned(self, code: str) -> None:
         """Persist that a TTL warning was sent for this mount.

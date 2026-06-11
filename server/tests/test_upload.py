@@ -62,7 +62,7 @@ class TestUploadEndpoint:
         )
         assert response.status_code == 409
         data = response.json()
-        assert "error" in data
+        assert "detail" in data
 
     @pytest.mark.asyncio
     async def test_upload_overwrite_replaces(

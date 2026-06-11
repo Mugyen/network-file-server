@@ -18,6 +18,7 @@ from zipstream import ZipStream
 from server.app.exceptions import (
     FileConflictError,
     InvalidFileNameError,
+    InvalidFileRequestError,
     PathTraversalError,
 )
 from server.app.models.enums import ConflictResolution, FileType
@@ -230,10 +231,10 @@ def search_files(base_dir: Path, search_root: str, query: str) -> list[FileEntry
     Returns FileEntry list with paths relative to search_root.
 
     Raises PathTraversalError if search_root resolves outside base_dir.
-    Raises ValueError if query is an empty string.
+    Raises InvalidFileRequestError if query is an empty string.
     """
     if query == "":
-        raise ValueError("Search query must not be empty")
+        raise InvalidFileRequestError("Search query must not be empty")
 
     base_resolved = base_dir.resolve()
     root_resolved = resolve_safe_path(base_dir, search_root)
@@ -282,14 +283,14 @@ def search_files(base_dir: Path, search_root: str, query: str) -> list[FileEntry
 def download_file(base_dir: Path, relative_path: str) -> Path:
     """Validate and return the resolved Path for a downloadable file.
 
-    Raises ValueError if the path points to a directory.
+    Raises InvalidFileRequestError if the path points to a directory.
     Raises PathTraversalError for traversal attempts.
     Raises FileNotFoundError if file does not exist.
     """
     resolved = resolve_safe_path(base_dir, relative_path)
 
     if resolved.is_dir():
-        raise ValueError(
+        raise InvalidFileRequestError(
             f"Path '{relative_path}' is a directory, not a downloadable file"
         )
 

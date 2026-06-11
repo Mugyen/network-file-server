@@ -11,6 +11,8 @@ import time
 
 import aiosqlite
 
+from shared.sqlite_kernel import open_wal_db
+
 _CREATE_FILE_TTL_TABLE = """
 CREATE TABLE IF NOT EXISTS file_ttl (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -40,10 +42,7 @@ class FileTtlDb:
         Production path — gives TTL traffic its own connection instead of
         queueing behind the registry's.
         """
-        if not isinstance(db_path, str) or len(db_path) == 0:
-            raise ValueError("db_path must be a non-empty string")
-        db = await aiosqlite.connect(db_path)
-        await db.execute("PRAGMA journal_mode=WAL")
+        db = await open_wal_db(db_path)
         instance = cls(db)
         await instance.init_table()
         return instance
@@ -119,23 +118,3 @@ class FileTtlDb:
             )
             await self._db.commit()
         return paths
-
-
-_file_ttl_db: FileTtlDb | None = None
-
-
-def get_file_ttl_db() -> FileTtlDb:
-    """Return the global FileTtlDb singleton.
-
-    Raises:
-        RuntimeError: If set_file_ttl_db() has not been called.
-    """
-    if _file_ttl_db is None:
-        raise RuntimeError("FileTtlDb not initialized. Call set_file_ttl_db() first.")
-    return _file_ttl_db
-
-
-def set_file_ttl_db(db: FileTtlDb | None) -> None:
-    """Install the global FileTtlDb singleton."""
-    global _file_ttl_db
-    _file_ttl_db = db

@@ -6,12 +6,7 @@ import pytest
 
 from relay.app.enums import MountStatus
 from relay.app.exceptions import MountExpiredError, MountNotFoundError, MountOfflineError
-from relay.app.services.mount_registry import (
-    MountRegistry,
-    generate_mount_code,
-    get_registry,
-    set_registry,
-)
+from relay.app.services.mount_registry import MountRegistry, generate_mount_code
 from tests.relay.conftest import MockTunnelConnection
 
 
@@ -34,23 +29,6 @@ def test_generate_mount_code_returns_8_char_string() -> None:
 def test_generate_mount_code_returns_unique_values() -> None:
     codes = {generate_mount_code() for _ in range(20)}
     assert len(codes) == 20
-
-
-# ---------------------------------------------------------------------------
-# get_registry / set_registry
-# ---------------------------------------------------------------------------
-
-
-def test_get_registry_raises_if_not_set() -> None:
-    set_registry(None)  # type: ignore[arg-type]
-    with pytest.raises(RuntimeError, match="MountRegistry has not been initialized"):
-        get_registry()
-
-
-def test_set_registry_and_get_registry_round_trip() -> None:
-    reg = MountRegistry()
-    set_registry(reg)
-    assert get_registry() is reg
 
 
 # ---------------------------------------------------------------------------

@@ -6,7 +6,9 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+from server.app.exceptions import SnippetNotFoundError, SnippetValidationError
 from server.app.services.clipboard_service import ClipboardService
+from server.app.services.sqlite_store import open_state_store
 
 
 # --- ClipboardService unit tests ---
@@ -21,7 +23,7 @@ def data_dir(tmp_path: Path) -> Path:
 @pytest_asyncio.fixture()
 async def service(data_dir: Path) -> ClipboardService:
     """Provide a fresh ClipboardService instance."""
-    return ClipboardService(data_dir)
+    return ClipboardService(open_state_store(data_dir))
 
 
 class TestListSnippets:
@@ -45,7 +47,7 @@ class TestCreateSnippet:
     async def test_max_limit_raises(self, service: ClipboardService) -> None:
         for i in range(50):
             await service.create_snippet(f"Note {i}")
-        with pytest.raises(ValueError, match="Maximum snippet count"):
+        with pytest.raises(SnippetValidationError, match="Maximum snippet count"):
             await service.create_snippet("One too many")
 
 
@@ -59,13 +61,13 @@ class TestUpdateSnippet:
 
     @pytest.mark.asyncio()
     async def test_nonexistent_raises(self, service: ClipboardService) -> None:
-        with pytest.raises(KeyError, match="not found"):
+        with pytest.raises(SnippetNotFoundError, match="No snippet with id"):
             await service.update_snippet("nonexistent", "content")
 
     @pytest.mark.asyncio()
     async def test_max_content_length(self, service: ClipboardService) -> None:
         snippet = await service.create_snippet("Note")
-        with pytest.raises(ValueError, match="maximum length"):
+        with pytest.raises(SnippetValidationError, match="maximum length"):
             await service.update_snippet(snippet.id, "x" * 10001)
 
     @pytest.mark.asyncio()
@@ -84,7 +86,7 @@ class TestUpdateTitle:
 
     @pytest.mark.asyncio()
     async def test_nonexistent_raises(self, service: ClipboardService) -> None:
-        with pytest.raises(KeyError, match="not found"):
+        with pytest.raises(SnippetNotFoundError, match="No snippet with id"):
             await service.update_title("nonexistent", "title")
 
 
@@ -98,21 +100,21 @@ class TestDeleteSnippet:
 
     @pytest.mark.asyncio()
     async def test_nonexistent_raises(self, service: ClipboardService) -> None:
-        with pytest.raises(KeyError, match="not found"):
+        with pytest.raises(SnippetNotFoundError, match="No snippet with id"):
             await service.delete_snippet("nonexistent")
 
 
 class TestPersistence:
     @pytest.mark.asyncio()
     async def test_survives_reinstantiation(self, data_dir: Path) -> None:
-        svc1 = ClipboardService(data_dir)
+        svc1 = ClipboardService(open_state_store(data_dir))
         await svc1.create_snippet("Persistent Note")
         await svc1.update_snippet(
             (await svc1.list_snippets())[0].id, "Some content"
         )
 
         # New instance loads from the same file
-        svc2 = ClipboardService(data_dir)
+        svc2 = ClipboardService(open_state_store(data_dir))
         snippets = await svc2.list_snippets()
         assert len(snippets) == 1
         assert snippets[0].title == "Persistent Note"

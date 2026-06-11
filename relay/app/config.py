@@ -201,26 +201,3 @@ def load_config(config_path: Path) -> RelayConfig:
         auth_login_rate=auth_login_rate,
         auth_agent_token_rate=auth_agent_token_rate,
     )
-
-
-_config: RelayConfig | None = None
-
-
-def get_config() -> RelayConfig:
-    """Return the global RelayConfig singleton.
-
-    Raises:
-        RuntimeError: If set_config() has not been called.
-    """
-    if _config is None:
-        raise RuntimeError("RelayConfig has not been initialized. Call set_config() first.")
-    return _config
-
-
-def set_config(config: RelayConfig) -> None:
-    """Install the global RelayConfig singleton.
-
-    Called by the app factory during startup and by tests to inject config.
-    """
-    global _config
-    _config = config

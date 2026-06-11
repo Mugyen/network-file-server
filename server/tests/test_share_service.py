@@ -14,7 +14,7 @@ from server.app.services.share_service import (
     ShareLinkRevokedError,
     ShareLinkService,
 )
-from server.app.services.sqlite_store import ShareLinkRow, get_state_store
+from server.app.services.sqlite_store import ShareLinkRow, open_state_store
 from server.tests.conftest import AdvanceableClock
 
 
@@ -45,62 +45,62 @@ class TestShareTTL:
 
 
 class TestShareLinkServiceCreate:
-    def test_create_link_returns_record_with_nonempty_token(self) -> None:
+    async def test_create_link_returns_record_with_nonempty_token(self) -> None:
         service = ShareLinkService("test-secret-key")
-        record = service.create_link("docs/readme.txt", ShareTTL.ONE_HOUR)
+        record = await service.create_link("docs/readme.txt", ShareTTL.ONE_HOUR)
         assert isinstance(record, ShareLinkRecord)
         assert isinstance(record.token, str)
         assert len(record.token) > 0
         assert record.file_path == "docs/readme.txt"
         assert record.ttl_seconds == int(ShareTTL.ONE_HOUR)
 
-    def test_create_link_registers_in_active_links(self) -> None:
+    async def test_create_link_registers_in_active_links(self) -> None:
         service = ShareLinkService("test-secret-key")
-        token = service.create_link("docs/readme.txt", ShareTTL.ONE_HOUR).token
-        active = service.list_active_links()
+        token = (await service.create_link("docs/readme.txt", ShareTTL.ONE_HOUR)).token
+        active = await service.list_active_links()
         assert len(active) == 1
         assert active[0].token == token
 
-    def test_create_link_different_files_different_tokens(self) -> None:
+    async def test_create_link_different_files_different_tokens(self) -> None:
         service = ShareLinkService("test-secret-key")
-        t1 = service.create_link("file1.txt", ShareTTL.ONE_HOUR).token
-        t2 = service.create_link("file2.txt", ShareTTL.ONE_HOUR).token
+        t1 = (await service.create_link("file1.txt", ShareTTL.ONE_HOUR)).token
+        t2 = (await service.create_link("file2.txt", ShareTTL.ONE_HOUR)).token
         assert t1 != t2
 
 
 class TestShareLinkServiceValidate:
-    def test_validate_valid_token_returns_file_path(self) -> None:
+    async def test_validate_valid_token_returns_file_path(self) -> None:
         service = ShareLinkService("test-secret-key")
-        token = service.create_link("docs/readme.txt", ShareTTL.ONE_HOUR).token
-        result = service.validate_token(token)
+        token = (await service.create_link("docs/readme.txt", ShareTTL.ONE_HOUR)).token
+        result = await service.validate_token(token)
         assert result == "docs/readme.txt"
 
-    def test_validate_revoked_token_raises_revoked_error(self) -> None:
+    async def test_validate_revoked_token_raises_revoked_error(self) -> None:
         service = ShareLinkService("test-secret-key")
-        token = service.create_link("docs/readme.txt", ShareTTL.ONE_HOUR).token
-        service.revoke_link(token)
+        token = (await service.create_link("docs/readme.txt", ShareTTL.ONE_HOUR)).token
+        await service.revoke_link(token)
         with pytest.raises(ShareLinkRevokedError):
-            service.validate_token(token)
+            await service.validate_token(token)
 
-    def test_validate_expired_token_raises_expired_error(self) -> None:
+    async def test_validate_expired_token_raises_expired_error(self) -> None:
         # Drive expiry through the public clock seam instead of mutating
         # the service's internal registry.
         clock = AdvanceableClock()
         service = ShareLinkService("test-secret-key", now_fn=clock)
-        token = service.create_link("docs/readme.txt", ShareTTL.FIFTEEN_MINUTES).token
+        token = (await service.create_link("docs/readme.txt", ShareTTL.FIFTEEN_MINUTES)).token
         clock.advance(int(ShareTTL.FIFTEEN_MINUTES) + 1)
         with pytest.raises(ShareLinkExpiredError):
-            service.validate_token(token)
+            await service.validate_token(token)
 
-    def test_validate_tampered_token_raises_bad_signature(self, tmp_path) -> None:
+    async def test_validate_tampered_token_raises_bad_signature(self, tmp_path) -> None:
         # Seed a tampered token into the registry through the public
         # persistence path (sqlite store row loaded at construction), so
         # validation reaches the signature check and fails there.
         data_dir = tmp_path / "wfs_data"
-        seed_service = ShareLinkService("test-secret-key", data_dir)
-        record = seed_service.create_link("docs/readme.txt", ShareTTL.ONE_HOUR)
+        seed_service = ShareLinkService("test-secret-key", open_state_store(data_dir))
+        record = await seed_service.create_link("docs/readme.txt", ShareTTL.ONE_HOUR)
         tampered = record.token + "tampered"
-        get_state_store(data_dir).upsert_share_link(
+        open_state_store(data_dir).upsert_share_link(
             ShareLinkRow(
                 token=tampered,
                 file_path=record.file_path,
@@ -108,41 +108,41 @@ class TestShareLinkServiceValidate:
                 ttl_seconds=record.ttl_seconds,
             )
         )
-        service = ShareLinkService("test-secret-key", data_dir)
+        service = ShareLinkService("test-secret-key", open_state_store(data_dir))
         with pytest.raises(BadSignature):
-            service.validate_token(tampered)
+            await service.validate_token(tampered)
 
 
 class TestShareLinkServiceRevoke:
-    def test_revoke_link_removes_from_active(self) -> None:
+    async def test_revoke_link_removes_from_active(self) -> None:
         service = ShareLinkService("test-secret-key")
-        token = service.create_link("docs/readme.txt", ShareTTL.ONE_HOUR).token
-        service.revoke_link(token)
-        assert len(service.list_active_links()) == 0
+        token = (await service.create_link("docs/readme.txt", ShareTTL.ONE_HOUR)).token
+        await service.revoke_link(token)
+        assert len(await service.list_active_links()) == 0
 
-    def test_revoke_unknown_token_raises_not_found(self) -> None:
+    async def test_revoke_unknown_token_raises_not_found(self) -> None:
         service = ShareLinkService("test-secret-key")
         with pytest.raises(ShareLinkNotFoundError):
-            service.revoke_link("nonexistent-token")
+            await service.revoke_link("nonexistent-token")
 
 
 class TestShareLinkServiceListActive:
-    def test_list_active_links_returns_non_expired(self) -> None:
+    async def test_list_active_links_returns_non_expired(self) -> None:
         service = ShareLinkService("test-secret-key")
-        service.create_link("file1.txt", ShareTTL.ONE_HOUR)
-        service.create_link("file2.txt", ShareTTL.SIX_HOURS)
-        active = service.list_active_links()
+        await service.create_link("file1.txt", ShareTTL.ONE_HOUR)
+        await service.create_link("file2.txt", ShareTTL.SIX_HOURS)
+        active = await service.list_active_links()
         assert len(active) == 2
 
-    def test_list_active_links_filters_expired(self) -> None:
+    async def test_list_active_links_filters_expired(self) -> None:
         # Advance the injected clock past the first link's TTL but within
         # the second's, so only the expired one is filtered out.
         clock = AdvanceableClock()
         service = ShareLinkService("test-secret-key", now_fn=clock)
-        service.create_link("file1.txt", ShareTTL.FIFTEEN_MINUTES)
-        service.create_link("file2.txt", ShareTTL.ONE_HOUR)
+        await service.create_link("file1.txt", ShareTTL.FIFTEEN_MINUTES)
+        await service.create_link("file2.txt", ShareTTL.ONE_HOUR)
         clock.advance(int(ShareTTL.FIFTEEN_MINUTES) + 1)
-        active = service.list_active_links()
+        active = await service.list_active_links()
         assert len(active) == 1
         assert active[0].file_path == "file2.txt"
 
@@ -157,30 +157,32 @@ class TestShareServiceAppWiring:
         app = create_app(create_default_config(shared_folder=shared, port=8000))
         assert isinstance(app.state.share_service, ShareLinkService)
 
-    def test_share_secret_persists_across_app_instances(self, tmp_path) -> None:
+    async def test_share_secret_persists_across_app_instances(self, tmp_path) -> None:
         """Tokens survive an app rebuild: the secret lives in the sqlite state store."""
         shared = tmp_path / "shared"
         shared.mkdir()
         app1 = create_app(create_default_config(shared_folder=shared, port=8000))
-        token = app1.state.share_service.create_link(
-            "docs/readme.txt", ShareTTL.ONE_HOUR
+        token = (
+            await app1.state.share_service.create_link(
+                "docs/readme.txt", ShareTTL.ONE_HOUR
+            )
         ).token
 
         app2 = create_app(create_default_config(shared_folder=shared, port=8000))
-        assert app2.state.share_service.validate_token(token) == "docs/readme.txt"
+        assert (await app2.state.share_service.validate_token(token)) == "docs/readme.txt"
 
 
 class TestShareLinkPersistence:
-    def test_share_links_survive_reinstantiation(self, tmp_path) -> None:
+    async def test_share_links_survive_reinstantiation(self, tmp_path) -> None:
         data_dir = tmp_path / "wfs_data"
-        service1 = ShareLinkService("test-secret-key", data_dir)
-        token = service1.create_link("docs/readme.txt", ShareTTL.ONE_HOUR).token
+        service1 = ShareLinkService("test-secret-key", open_state_store(data_dir))
+        token = (await service1.create_link("docs/readme.txt", ShareTTL.ONE_HOUR)).token
 
-        service2 = ShareLinkService("test-secret-key", data_dir)
-        active = service2.list_active_links()
+        service2 = ShareLinkService("test-secret-key", open_state_store(data_dir))
+        active = await service2.list_active_links()
         assert len(active) == 1
         assert active[0].token == token
-        assert service2.validate_token(token) == "docs/readme.txt"
+        assert (await service2.validate_token(token)) == "docs/readme.txt"
 
 
 # --- ShareLinkRecord dataclass tests ---

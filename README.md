@@ -132,6 +132,16 @@ cd client && npm install && npm run dev
 
 Vite proxies `/api` requests to `localhost:8000`. Run the backend in a separate terminal.
 
+API response/request types are generated from the server's OpenAPI schema into
+`client/src/types/api.gen.ts` (never edit by hand). After changing a backend
+schema, regenerate and commit:
+
+```bash
+./scripts/gen_api_types.sh   # or: cd client && npm run gen:api
+```
+
+CI fails if the committed types drift from the live schema.
+
 ## Features
 
 - Browse files and folders with double-click navigation and breadcrumbs

@@ -13,6 +13,7 @@ import { fetchServerInfo } from "./api/serverInfo.ts";
 import { API_ROUTES } from "./api/endpoints.ts";
 import type { ServerMode } from "./types/serverMode.ts";
 import { getApiBase } from "./utils/remoteMount.ts";
+import { AppMode, resolveAppMode } from "./appMode.ts";
 import { Loader2 } from "lucide-react";
 
 function Root() {
@@ -106,39 +107,42 @@ function Root() {
   return <App serverMode={mode} onLogout={() => setIsAuthenticated(false)} />;
 }
 
-/** Relay-served account pages are matched by exact path before the
- *  mount/SPA flow runs. */
+/** Map the resolved app mode to its root component, each wrapped in an
+ *  ErrorBoundary. Relay account pages are matched by exact path; everything
+ *  else is the SPA (see resolveAppMode). */
 function pickRoot() {
-  const path = window.location.pathname;
-  if (path === "/login")
-    return (
-      <ErrorBoundary label="login">
-        <RelayLoginPage />
-      </ErrorBoundary>
-    );
-  if (path === "/signup")
-    return (
-      <ErrorBoundary label="signup">
-        <SignupPage />
-      </ErrorBoundary>
-    );
-  if (path === "/admin")
-    return (
-      <ErrorBoundary label="admin">
-        <AdminDashboard />
-      </ErrorBoundary>
-    );
-  if (path === "/403")
-    return (
-      <ErrorBoundary label="403">
-        <Forbidden403 />
-      </ErrorBoundary>
-    );
-  return (
-    <ErrorBoundary label="root">
-      <Root />
-    </ErrorBoundary>
-  );
+  switch (resolveAppMode(window.location.pathname)) {
+    case AppMode.RelayLogin:
+      return (
+        <ErrorBoundary label="login">
+          <RelayLoginPage />
+        </ErrorBoundary>
+      );
+    case AppMode.RelaySignup:
+      return (
+        <ErrorBoundary label="signup">
+          <SignupPage />
+        </ErrorBoundary>
+      );
+    case AppMode.RelayAdmin:
+      return (
+        <ErrorBoundary label="admin">
+          <AdminDashboard />
+        </ErrorBoundary>
+      );
+    case AppMode.Relay403:
+      return (
+        <ErrorBoundary label="403">
+          <Forbidden403 />
+        </ErrorBoundary>
+      );
+    case AppMode.Spa:
+      return (
+        <ErrorBoundary label="root">
+          <Root />
+        </ErrorBoundary>
+      );
+  }
 }
 
 createRoot(document.getElementById("root")!).render(

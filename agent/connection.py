@@ -7,6 +7,7 @@ Provides connect_and_serve (single connection attempt) and run_agent_loop
 import asyncio
 import functools
 import json
+import secrets
 import time
 import uuid
 from dataclasses import dataclass
@@ -26,11 +27,36 @@ from agent.ws_adapter import WebSocketClientAdapter
 from shared.backoff import compute_backoff
 from agent.display import print_connected_status, print_mounted, print_reconnect_status
 from tunnel.connection import TunnelConnection
-from tunnel.enums import FrameType
-from tunnel.frames import deserialize_frame
+from tunnel.constants import (
+    AGENT_HEARTBEAT_INTERVAL_S,
+    HEARTBEAT_MISSED_LIMIT,
+    PROTOCOL_VERSION,
+)
+from tunnel.exceptions import MetadataError
+from tunnel.metadata import RequestMetadata, WsOpenMetadata
+
+import logging
+
+logger = logging.getLogger("agent.connection")
 
 # Alias for patching in tests
 asyncio_sleep = asyncio.sleep
+
+
+async def _reject_open(conn: TunnelConnection, request_id: uuid.UUID) -> None:
+    """Answer a malformed OPEN with an HTTP 400 so the relay's request resolves.
+
+    Best-effort: a send failure here means the connection is going down
+    anyway and the relay's first-byte timeout will produce the 504.
+    """
+    try:
+        await conn.send_data(
+            request_id,
+            json.dumps({"status": 400, "headers": {}}).encode("utf-8"),
+        )
+        await conn.send_close(request_id)
+    except Exception as exc:  # noqa: BLE001 — best-effort by contract; logged, never raised
+        logger.debug("Could not deliver 400 for malformed OPEN: %r", exc)
 
 
 @dataclass(frozen=True)
@@ -47,128 +73,94 @@ class MountAppContext:
     password_hash: bytes | None
     mount_code: str
     relay_url: str
+    # Per-mount secret the relay uses to sign injected identity headers and
+    # the embedded server uses to verify them (see shared.identity_sig).
+    identity_secret: str
 
 
 AppFactory = Callable[[MountAppContext], Any]
 
 
-async def _agent_receive_loop(
-    conn: TunnelConnection,
-    on_open: Callable[[uuid.UUID], Awaitable[None]],
-) -> None:
-    """Read frames from the WebSocket and dispatch OPEN frames via create_task.
+class _OpenFrameHandlers:
+    """Spawns + tracks per-request handler tasks for the agent receive loop.
 
-    Reads raw frames from conn._ws.receive():
-    - Binary frames: deserialize; if OPEN, dispatch via on_open callback
-      (passing only request_id — metadata is stored externally by the caller)
-      as a new asyncio task; otherwise route through conn._dispatch_frame.
-    - Text frames: parse JSON; if type=="pong", call conn.handle_pong().
-
-    Tracks pending tasks in a set for proper cleanup on exit.
-
-    Args:
-        conn:    TunnelConnection whose _ws is the raw WebSocket adapter.
-        on_open: Async callable invoked with request_id for each OPEN frame.
-
-    Raises:
-        Re-raises any exception from conn._ws.receive() except for normal
-        WebSocket close signals.
+    Wires OPEN/WS_OPEN frames (delivered by
+    ``TunnelConnection.run_receive_loop_with_handlers``) to the HTTP and
+    WebSocket proxy handlers, tracking the spawned tasks so they can be
+    drained on shutdown. This replaces the agent's former hand-rolled receive
+    loops that poked ``conn._ws``/``conn._dispatch_frame`` directly.
     """
-    pending_tasks: set[asyncio.Task] = set()
 
-    try:
-        while True:
-            frame_dict = await conn._ws.receive()
-            if "bytes" in frame_dict:
-                raw: bytes = frame_dict["bytes"]
-                frame_type, request_id, payload = deserialize_frame(raw)
-                if frame_type == FrameType.OPEN:
-                    task = asyncio.create_task(on_open(request_id))
-                    pending_tasks.add(task)
-                    task.add_done_callback(pending_tasks.discard)
-                else:
-                    await conn._dispatch_frame(frame_type, request_id, payload)
-            elif "text" in frame_dict:
-                text: str = frame_dict["text"]
-                message: dict = json.loads(text)
-                if message.get("type") == "pong":
-                    conn.handle_pong()
-                elif message.get("type") == "ping":
-                    await conn.send_control({"type": "pong"})
-    finally:
-        # Drain in-flight handler tasks before returning. On cancellation
-        # (Ctrl+C / TTL teardown) cancel them first — a handler blocked on a
-        # body frame that will never arrive would otherwise hang the agent's
-        # shutdown forever.
-        if pending_tasks:
-            if asyncio.current_task() is not None and asyncio.current_task().cancelling():
-                for task in pending_tasks:
-                    task.cancel()
-            await asyncio.gather(*pending_tasks, return_exceptions=True)
+    def __init__(
+        self,
+        conn: TunnelConnection,
+        asgi_client: httpx.AsyncClient,
+        app: object,
+    ) -> None:
+        self._conn = conn
+        self._asgi_client = asgi_client
+        self._app = app
+        self._pending: set[asyncio.Task] = set()
+
+    def _track(self, task: asyncio.Task) -> None:
+        self._pending.add(task)
+        task.add_done_callback(self._pending.discard)
+
+    async def on_open(self, request_id: uuid.UUID, payload: bytes) -> None:
+        """Spawn an HTTP request handler for an OPEN frame."""
+        try:
+            metadata = RequestMetadata.from_payload(payload)
+        except MetadataError as exc:
+            # Malformed OPEN must not kill the receive loop — answer 400 so
+            # the relay's waiting request resolves.
+            logger.warning("Rejected malformed OPEN metadata: %s", exc)
+            await _reject_open(self._conn, request_id)
+            return
+        # Open the stream BEFORE spawning so DATA frames dispatched by later
+        # loop iterations land in the queue instead of being dropped.
+        self._conn.open_stream(request_id)
+        self._track(asyncio.create_task(
+            handle_open_frame(self._conn, request_id, metadata, self._asgi_client)
+        ))
+
+    async def on_ws_open(self, request_id: uuid.UUID, payload: bytes) -> None:
+        """Spawn a WebSocket bridge handler for a WS_OPEN frame."""
+        try:
+            ws_metadata = WsOpenMetadata.from_payload(payload)
+        except MetadataError as exc:
+            logger.warning("Rejected malformed WS_OPEN metadata: %s", exc)
+            await self._conn.send_ws_close(request_id)
+            return
+        self._track(asyncio.create_task(
+            handle_ws_open_frame(self._conn, request_id, ws_metadata, self._app)
+        ))
+
+    async def drain(self) -> None:
+        """Await in-flight handler tasks; cancel them first if shutting down.
+
+        On cancellation (Ctrl+C / TTL teardown) a handler blocked on a body
+        frame that will never arrive would otherwise hang the agent's
+        shutdown forever, so cancel before gathering.
+        """
+        if not self._pending:
+            return
+        current = asyncio.current_task()
+        if current is not None and current.cancelling():
+            for task in self._pending:
+                task.cancel()
+        await asyncio.gather(*self._pending, return_exceptions=True)
 
 
-async def _agent_receive_loop_with_metadata(
+def _make_agent_control_handler(
     conn: TunnelConnection,
-    asgi_client: httpx.AsyncClient,
-    app: object,
-) -> None:
-    """Receive loop that extracts OPEN/WS_OPEN frame metadata and dispatches handlers.
+) -> Callable[[dict], Awaitable[None]]:
+    """Return a control-message handler for relay→agent control frames."""
 
-    Extends _agent_receive_loop by parsing OPEN and WS_OPEN frame JSON payloads
-    and dispatching to handle_open_frame or handle_ws_open_frame respectively.
+    async def _handle(message: dict) -> None:
+        if message.get("type") == "expired_files":
+            await _handle_expired_files(conn, message)
 
-    Args:
-        conn:        TunnelConnection to read from and send responses on.
-        asgi_client: httpx.AsyncClient backed by ASGITransport for HTTP dispatch.
-        app:         The ASGI application used for local WebSocket bridging.
-    """
-    pending_tasks: set[asyncio.Task] = set()
-
-    try:
-        while True:
-            frame_dict = await conn._ws.receive()
-            if "bytes" in frame_dict:
-                raw: bytes = frame_dict["bytes"]
-                frame_type, request_id, payload = deserialize_frame(raw)
-                if frame_type == FrameType.OPEN:
-                    metadata = json.loads(payload.decode("utf-8"))
-                    # Open stream BEFORE spawning task so DATA frames dispatched
-                    # by subsequent loop iterations land in the queue instead of
-                    # being silently dropped by StreamNotFoundError.
-                    conn.open_stream(request_id)
-                    task = asyncio.create_task(
-                        handle_open_frame(conn, request_id, metadata, asgi_client)
-                    )
-                    pending_tasks.add(task)
-                    task.add_done_callback(pending_tasks.discard)
-                elif frame_type == FrameType.WS_OPEN:
-                    metadata = json.loads(payload.decode("utf-8"))
-                    task = asyncio.create_task(
-                        handle_ws_open_frame(conn, request_id, metadata, app)
-                    )
-                    pending_tasks.add(task)
-                    task.add_done_callback(pending_tasks.discard)
-                else:
-                    await conn._dispatch_frame(frame_type, request_id, payload)
-            elif "text" in frame_dict:
-                text: str = frame_dict["text"]
-                message: dict = json.loads(text)
-                if message.get("type") == "pong":
-                    conn.handle_pong()
-                elif message.get("type") == "ping":
-                    await conn.send_control({"type": "pong"})
-                elif message.get("type") == "expired_files":
-                    await _handle_expired_files(conn, message)
-    finally:
-        # Drain in-flight handler tasks before returning. On cancellation
-        # (Ctrl+C / TTL teardown) cancel them first — a handler blocked on a
-        # body frame that will never arrive would otherwise hang the agent's
-        # shutdown forever.
-        if pending_tasks:
-            if asyncio.current_task() is not None and asyncio.current_task().cancelling():
-                for task in pending_tasks:
-                    task.cancel()
-            await asyncio.gather(*pending_tasks, return_exceptions=True)
+    return _handle
 
 
 async def _handle_expired_files(conn: TunnelConnection, message: dict) -> None:
@@ -296,6 +288,12 @@ async def connect_and_serve(
         adapter = WebSocketClientAdapter(raw_ws)
         conn = TunnelConnection(adapter)
 
+        # Per-mount identity-signing secret: minted fresh each connect and
+        # shared only with this relay (in agent_auth) and this mount's
+        # embedded server (via MountAppContext). A LAN client that reaches
+        # the server directly cannot forge signed identity headers.
+        identity_secret = secrets.token_urlsafe(32)
+
         # Owner/policy handshake: the relay reads exactly one agent_auth
         # control message after accepting the socket and before sending
         # mount_registered. Anonymous/open mounts still send it (token=None).
@@ -306,6 +304,8 @@ async def connect_and_serve(
             )
         await conn.send_control({
             "type": "agent_auth",
+            "protocol_version": PROTOCOL_VERSION,
+            "identity_secret": identity_secret,
             "token": token,
             "access_mode": (
                 owner.access_mode.value
@@ -331,8 +331,11 @@ async def connect_and_serve(
 
         assigned_code: str = control["code"]
 
-        # Agent does NOT start its own heartbeat — the relay initiates pings,
-        # and the agent's receive loop responds with pongs automatically.
+        # Mutual heartbeat: the relay pings every HEARTBEAT_INTERVAL_S; the
+        # agent pings at a slower cadence so it also detects a half-dead
+        # relay socket (otherwise it would believe the mount is online while
+        # browsers get 503s). The relay's receive loop answers with pongs.
+        conn.start_heartbeat(AGENT_HEARTBEAT_INTERVAL_S, HEARTBEAT_MISSED_LIMIT)
 
         print_connected_status(reconnected=preferred_code is not None)
         print_mounted(relay_url, assigned_code, folder, name)
@@ -345,6 +348,7 @@ async def connect_and_serve(
                 password_hash=password_hash,
                 mount_code=assigned_code,
                 relay_url=relay_url,
+                identity_secret=identity_secret,
             )
         )
         transport = ASGITransport(app=app)
@@ -364,12 +368,20 @@ async def connect_and_serve(
             ttl_tasks.append(asyncio.create_task(_ttl_countdown(ttl_seconds)))
             ttl_tasks.append(asyncio.create_task(_print_ttl_countdown(ttl_seconds)))
 
+        handlers = _OpenFrameHandlers(conn, asgi_client, app)
+        conn.set_control_handler(_make_agent_control_handler(conn))
         try:
-            await _agent_receive_loop_with_metadata(conn, asgi_client, app)
+            await conn.run_receive_loop_with_handlers(
+                handlers.on_open, handlers.on_ws_open
+            )
         except (ConnectionError, ConnectionClosed, EOFError, OSError):
             # Normal WebSocket disconnect — treat as clean exit
             pass
         finally:
+            # Drain in-flight request handlers before tearing down (cancel
+            # first on shutdown so a handler awaiting a never-arriving body
+            # frame cannot hang the agent).
+            await handlers.drain()
             for task in ttl_tasks:
                 task.cancel()
             await conn.close()

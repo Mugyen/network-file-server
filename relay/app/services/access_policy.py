@@ -17,22 +17,24 @@ Header injection (X-WFS-*) is layered on top of this in the proxy
 """
 
 from collections.abc import Mapping
+import logging
 from dataclasses import dataclass
 
-from accounts import AccessMode, Role, SubjectType, UserNotFoundError
+from accounts import AccessMode, AccountStore, Role, SubjectType, UserNotFoundError
 from relay.app.exceptions import (
     AccessDeniedError,
     AuthenticationRequiredError,
     InvalidSessionError,
     MountNotFoundError,
 )
-from relay.app.services.account_store import get_account_store
 from relay.app.services.mount_registry import MountPolicy
 from relay.app.services.session import (
     SESSION_COOKIE_NAME,
+    RelaySession,
     SessionIdentity,
-    get_relay_session,
 )
+
+logger = logging.getLogger("relay.access_policy")
 
 # Most-permissive-wins ordering when a user matches several allowlist
 # entries (e.g. directly and via a group).
@@ -56,16 +58,21 @@ class AccessDecision:
 
 def identity_from_cookies(
     cookies: Mapping[str, str],
+    session: "RelaySession | None",
 ) -> SessionIdentity | None:
     """Resolve a relay session identity from request/websocket cookies.
 
-    Returns None for missing/invalid sessions (anonymous is valid).
+    Returns None for missing/invalid sessions (anonymous is valid). A None
+    ``session`` (signer not wired — e.g. minimal test apps) also resolves
+    to anonymous rather than failing the request.
     """
     token = cookies.get(SESSION_COOKIE_NAME)
     if not token:
         return None
+    if session is None:
+        return None
     try:
-        return get_relay_session().verify_session_cookie(token)
+        return session.verify_session_cookie(token)
     except InvalidSessionError:
         return None
 
@@ -75,10 +82,15 @@ def _highest_role(roles: list[Role]) -> Role:
 
 
 async def _matched_role(
-    policy: MountPolicy, identity: SessionIdentity
+    policy: MountPolicy, identity: SessionIdentity, store: "AccountStore | None"
 ) -> Role | None:
-    """Return the effective role if the identity is on the allowlist, else None."""
-    store = get_account_store()
+    """Return the effective role if the identity is on the allowlist, else None.
+
+    A None ``store`` (accounts not wired) matches nothing — the request
+    proceeds as non-allowlisted rather than erroring.
+    """
+    if store is None:
+        return None
     try:
         group_ids = await store.resolve_user_group_ids(identity.user_id)
     except UserNotFoundError:
@@ -104,6 +116,7 @@ async def _matched_role(
 
 async def authorize(
     registry,
+    account_store: "AccountStore | None",
     code: str,
     identity: SessionIdentity | None,
 ) -> AccessDecision:
@@ -118,16 +131,27 @@ async def authorize(
     try:
         policy: MountPolicy = await registry.get_policy(code)
     except MountNotFoundError:
-        # Legacy mounts (pre-v1.3) and the drop box have no policy row —
-        # fail open to preserve prior behaviour.
+        # Mount row absent (vanished between checks): fail open here — the
+        # proxy's subsequent get_connection() renders the not_found page.
+        logger.debug("authorize: no policy row for code=%s, failing open", code)
         return AccessDecision(identified=False, username=None, role=None)
 
     if identity is not None:
-        role = await _matched_role(policy, identity)
+        role = await _matched_role(policy, identity, account_store)
         if role is not None:
             return AccessDecision(
                 identified=True, username=identity.username, role=role
             )
+
+    # LEGACY (pre-v1.3, no policy ever recorded) is treated as OPEN, but as a
+    # named, logged state rather than an implicit absence.
+    if policy.access_mode is AccessMode.LEGACY:
+        logger.info("authorize: legacy mount code=%s treated as open", code)
+        return AccessDecision(
+            identified=False,
+            username=identity.username if identity is not None else None,
+            role=None,
+        )
 
     if policy.access_mode is AccessMode.OPEN:
         return AccessDecision(

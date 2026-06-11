@@ -8,65 +8,9 @@ import uuid
 import httpx
 import pytest
 
-from relay.app.routers.mount_proxy import rewrite_html_asset_paths
-from relay.app.services.mount_registry import get_registry
-from tests.relay.conftest import _setup_in_memory_registry
 
 
 pytestmark = pytest.mark.anyio
-
-
-# ---------------------------------------------------------------------------
-# rewrite_html_asset_paths unit tests
-# ---------------------------------------------------------------------------
-
-
-class TestRewriteHtmlAssetPaths:
-    """Unit tests for HTML asset path rewriting in mount proxy."""
-
-    def test_rewrites_script_src(self) -> None:
-        html = '<script src="/assets/index-abc.js"></script>'
-        result = rewrite_html_asset_paths(html, "/m/CODE1")
-        assert result == '<script src="/m/CODE1/assets/index-abc.js"></script>'
-
-    def test_rewrites_link_href(self) -> None:
-        html = '<link rel="stylesheet" href="/assets/index-xyz.css">'
-        result = rewrite_html_asset_paths(html, "/m/CODE1")
-        assert result == '<link rel="stylesheet" href="/m/CODE1/assets/index-xyz.css">'
-
-    def test_rewrites_favicon(self) -> None:
-        html = '<link rel="icon" href="/favicon.ico">'
-        result = rewrite_html_asset_paths(html, "/m/CODE1")
-        assert result == '<link rel="icon" href="/m/CODE1/favicon.ico">'
-
-    def test_does_not_double_rewrite(self) -> None:
-        """Paths already containing /m/ prefix are not rewritten."""
-        html = '<script src="/m/CODE1/assets/index.js"></script>'
-        result = rewrite_html_asset_paths(html, "/m/CODE1")
-        assert result == html
-
-    def test_rewrites_single_quoted_attributes(self) -> None:
-        html = "<script src='/assets/app.js'></script>"
-        result = rewrite_html_asset_paths(html, "/m/XYZ")
-        assert result == "<script src='/m/XYZ/assets/app.js'></script>"
-
-    def test_full_index_html(self) -> None:
-        """Full realistic index.html is rewritten correctly."""
-        html = (
-            '<!doctype html><html><head>'
-            '<script type="module" src="/assets/index-C4XEGJkC.js"></script>'
-            '<link rel="stylesheet" href="/assets/index-BZCOt5Ge.css">'
-            '</head><body><div id="root"></div></body></html>'
-        )
-        result = rewrite_html_asset_paths(html, "/m/t7F5Twps")
-        assert '"/m/t7F5Twps/assets/index-C4XEGJkC.js"' in result
-        assert '"/m/t7F5Twps/assets/index-BZCOt5Ge.css"' in result
-
-    def test_preserves_non_asset_content(self) -> None:
-        """Non src/href content with slashes is not rewritten."""
-        html = '<div data-path="/some/thing">text</div>'
-        result = rewrite_html_asset_paths(html, "/m/CODE")
-        assert result == html
 
 
 async def test_proxy_get(registered_relay_client):
@@ -88,8 +32,8 @@ async def test_proxy_send_open_metadata(registered_relay_client):
 
     assert len(conn.sent_opens) == 1
     _request_id, metadata = conn.sent_opens[0]
-    assert metadata["method"] == "GET"
-    assert metadata["path"] == "/some/path"
+    assert metadata.method == "GET"
+    assert metadata.path == "/some/path"
 
 
 async def test_proxy_post_body(registered_relay_client):
@@ -101,10 +45,10 @@ async def test_proxy_post_body(registered_relay_client):
 
     assert len(conn.sent_opens) == 1
     _request_id, metadata = conn.sent_opens[0]
-    assert metadata["method"] == "POST"
-    assert metadata["path"] == "/upload"
+    assert metadata.method == "POST"
+    assert metadata.path == "/upload"
     # Body must NOT be embedded in OPEN metadata
-    assert "body" not in metadata
+    assert not hasattr(metadata, "body")
     # Body must arrive as DATA frames followed by zero-length sentinel
     payloads = [payload for (_rid, payload) in conn.sent_data]
     assert len(payloads) >= 2, "Expected at least one body chunk and one sentinel"
@@ -119,7 +63,7 @@ async def test_proxy_large_upload_streams_body(relay_app):
 
     transport = httpx.ASGITransport(app=relay_app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        registry = get_registry()
+        registry = relay_app.state.relay.registry
         conn = MockTunnelConnection()
         await registry.register("largecode", conn, agent_ip="127.0.0.1", created_at=time.time(), expires_at=None)
 
@@ -131,7 +75,7 @@ async def test_proxy_large_upload_streams_body(relay_app):
     assert len(conn.sent_opens) == 1
     _request_id, metadata = conn.sent_opens[0]
     # Body must NOT be in OPEN metadata
-    assert "body" not in metadata
+    assert not hasattr(metadata, "body")
     # Must have multiple DATA frames
     payloads = [payload for (_rid, payload) in conn.sent_data]
     assert len(payloads) >= 3, "Expected multiple body chunks plus sentinel for large body"
@@ -153,7 +97,7 @@ async def test_proxy_get_no_body_sends_sentinel(registered_relay_client):
 
     assert len(conn.sent_opens) == 1
     _request_id, metadata = conn.sent_opens[0]
-    assert metadata["method"] == "GET"
+    assert metadata.method == "GET"
     # GET has no body — only the zero-length sentinel DATA frame
     payloads = [payload for (_rid, payload) in conn.sent_data]
     assert payloads == [b""], "GET must send exactly the zero-length sentinel DATA frame"
@@ -195,7 +139,7 @@ async def test_proxy_expired_page(relay_app):
 
     transport = httpx.ASGITransport(app=relay_app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        registry = get_registry()
+        registry = relay_app.state.relay.registry
         conn = MockTunnelConnection()
         await registry.register("expiredcode", conn, agent_ip="127.0.0.1", created_at=time.time(), expires_at=None)
         await registry.expire("expiredcode")
@@ -220,7 +164,7 @@ async def test_proxy_rewrites_html_asset_paths(relay_app):
 
     transport = httpx.ASGITransport(app=relay_app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        registry = get_registry()
+        registry = relay_app.state.relay.registry
         conn = MockTunnelConnection()
         conn.first_chunk = json.dumps(
             {"status": 200, "headers": {"content-type": "text/html; charset=utf-8"}}
@@ -267,7 +211,7 @@ async def test_proxy_strips_hop_by_hop_headers(registered_relay_client):
 
     assert len(conn.sent_opens) == 1
     _request_id, metadata = conn.sent_opens[0]
-    fwd_headers = {k.lower(): v for k, v in metadata["headers"].items()}
+    fwd_headers = {k.lower(): v for k, v in metadata.headers.items()}
     assert "connection" not in fwd_headers
     assert "transfer-encoding" not in fwd_headers
 
@@ -283,7 +227,7 @@ async def test_proxy_first_byte_timeout(relay_app):
 
     transport = httpx.ASGITransport(app=relay_app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        registry = get_registry()
+        registry = relay_app.state.relay.registry
         conn = TimeoutMockConnection()
         await registry.register("timeoutcode", conn, agent_ip="127.0.0.1", created_at=time.time(), expires_at=None)
 
@@ -347,8 +291,9 @@ async def test_proxy_websocket_accepts_upgrade(relay_app):
     from httpx_ws import aconnect_ws
     from httpx_ws.transport import ASGIWebSocketTransport
 
-    # Pre-create registry since ASGIWebSocketTransport doesn't trigger lifespan
-    registry = await _setup_in_memory_registry()
+    # relay_app fixture pre-wires the in-memory registry (ASGIWebSocketTransport
+    # doesn't trigger lifespan) and closes it at teardown.
+    registry = relay_app.state.relay.registry
     conn = MockWSConnection()
     await registry.register("wscode", conn, agent_ip="127.0.0.1", created_at=time.time(), expires_at=None)
 
@@ -356,7 +301,6 @@ async def test_proxy_websocket_accepts_upgrade(relay_app):
         async with aconnect_ws("ws://test/m/wscode/ws", httpx.AsyncClient(transport=ws_transport)) as _ws:
             # Connection opened successfully — just close it
             pass
-    await registry.close()
 
 
 async def test_proxy_websocket_sends_ws_open_frame(relay_app):
@@ -364,7 +308,7 @@ async def test_proxy_websocket_sends_ws_open_frame(relay_app):
     from httpx_ws import aconnect_ws
     from httpx_ws.transport import ASGIWebSocketTransport
 
-    registry = await _setup_in_memory_registry()
+    registry = relay_app.state.relay.registry
     conn = MockWSConnection()
     await registry.register("wscode2", conn, agent_ip="127.0.0.1", created_at=time.time(), expires_at=None)
 
@@ -374,9 +318,8 @@ async def test_proxy_websocket_sends_ws_open_frame(relay_app):
 
     assert len(conn.sent_ws_opens) == 1
     _ws_id, metadata = conn.sent_ws_opens[0]
-    assert metadata["path"] == "/ws"
-    assert "foo=bar" in metadata["query"]
-    await registry.close()
+    assert metadata.path == "/ws"
+    assert "foo=bar" in metadata.query
 
 
 async def test_proxy_websocket_sends_ws_close_on_disconnect(relay_app):
@@ -384,7 +327,7 @@ async def test_proxy_websocket_sends_ws_close_on_disconnect(relay_app):
     from httpx_ws import aconnect_ws
     from httpx_ws.transport import ASGIWebSocketTransport
 
-    registry = await _setup_in_memory_registry()
+    registry = relay_app.state.relay.registry
     conn = MockWSConnection()
     await registry.register("wscode3", conn, agent_ip="127.0.0.1", created_at=time.time(), expires_at=None)
 
@@ -393,7 +336,6 @@ async def test_proxy_websocket_sends_ws_close_on_disconnect(relay_app):
             pass
 
     assert len(conn.sent_ws_closes) == 1
-    await registry.close()
 
 
 async def test_proxy_websocket_forwards_browser_text_to_agent(relay_app):
@@ -403,7 +345,7 @@ async def test_proxy_websocket_forwards_browser_text_to_agent(relay_app):
 
     from tunnel.ws_payload import WsMessageKind, decode_ws_message
 
-    registry = await _setup_in_memory_registry()
+    registry = relay_app.state.relay.registry
     conn = MockWSConnection()
     await registry.register("wscode4", conn, agent_ip="127.0.0.1", created_at=time.time(), expires_at=None)
 
@@ -416,7 +358,6 @@ async def test_proxy_websocket_forwards_browser_text_to_agent(relay_app):
     # The send_ws_data payloads carry a kind marker (tunnel.ws_payload)
     decoded = [decode_ws_message(payload) for (_ws_id, payload) in conn.sent_ws_data]
     assert (WsMessageKind.TEXT, b"hello from browser") in decoded
-    await registry.close()
 
 
 async def test_proxy_websocket_forwards_browser_binary_to_agent(relay_app):
@@ -428,7 +369,7 @@ async def test_proxy_websocket_forwards_browser_binary_to_agent(relay_app):
 
     binary_blob = bytes(range(256))  # not valid UTF-8
 
-    registry = await _setup_in_memory_registry()
+    registry = relay_app.state.relay.registry
     conn = MockWSConnection()
     await registry.register("wscode5", conn, agent_ip="127.0.0.1", created_at=time.time(), expires_at=None)
 
@@ -439,7 +380,6 @@ async def test_proxy_websocket_forwards_browser_binary_to_agent(relay_app):
 
     decoded = [decode_ws_message(payload) for (_ws_id, payload) in conn.sent_ws_data]
     assert (WsMessageKind.BINARY, binary_blob) in decoded
-    await registry.close()
 
 
 async def test_proxy_websocket_not_found_accepts_then_closes(relay_app):
@@ -447,11 +387,9 @@ async def test_proxy_websocket_not_found_accepts_then_closes(relay_app):
     from httpx_ws import aconnect_ws
     from httpx_ws.transport import ASGIWebSocketTransport
 
-    # Pre-create registry since ASGIWebSocketTransport doesn't trigger lifespan
-    registry = await _setup_in_memory_registry()
-
+    # relay_app fixture pre-wires the in-memory registry (ASGIWebSocketTransport
+    # doesn't trigger lifespan).
     async with ASGIWebSocketTransport(app=relay_app) as ws_transport:
         # Must not raise WebSocketUpgradeError — server accepts before closing
         async with aconnect_ws("ws://test/m/unknown_ws_code/ws", httpx.AsyncClient(transport=ws_transport)):
             pass
-    await registry.close()

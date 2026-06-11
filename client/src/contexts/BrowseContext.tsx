@@ -2,13 +2,15 @@ import {
   createContext,
   useCallback,
   useContext,
-  useEffect,
+  useMemo,
   useState,
 } from "react";
 import type { ReactElement, ReactNode } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { FileEntry } from "../types/files.ts";
 import { FileType } from "../types/files.ts";
 import { FileCategory, getFileCategory } from "../types/fileCategories.ts";
+import { queryKeys } from "../queryClient.ts";
 import {
   fetchFiles,
   downloadFile,
@@ -22,6 +24,10 @@ import { useSearch } from "../hooks/useSearch.ts";
 import { useSort } from "../hooks/useSort.ts";
 import { useFileSelection } from "../hooks/useFileSelection.ts";
 import { usePreview } from "../hooks/usePreview.ts";
+
+// Stable empty-listing reference so `files` keeps referential identity while
+// the query is pending (avoids re-running selection/sort on every render).
+const _EMPTY_FILES: FileEntry[] = [];
 
 interface BrowseContextValue {
   /** Raw directory listing for the current path. */
@@ -67,9 +73,28 @@ interface BrowseProviderProps {
  */
 export function BrowseProvider({ children }: BrowseProviderProps): ReactElement {
   const { currentPath, navigateTo } = usePathNavigation();
-  const [files, setFiles] = useState<FileEntry[]>([]);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+
+  // The directory listing is server state: React Query dedups concurrent
+  // refetches (an upload completing AND a WS push both invalidate the same
+  // key and coalesce into one fetch) and caches per path.
+  const filesQuery = useQuery({
+    queryKey: queryKeys.files(currentPath),
+    queryFn: () => fetchFiles(currentPath),
+  });
+  const files = useMemo(
+    () => filesQuery.data?.entries ?? _EMPTY_FILES,
+    [filesQuery.data],
+  );
+  const loading = filesQuery.isPending;
+
+  // Operation (mutation) failures are surfaced separately from the listing
+  // query's own error so a failed delete doesn't hide the (still valid) list.
+  const [opError, setOpError] = useState<string | null>(null);
+  const queryError =
+    filesQuery.error instanceof Error ? filesQuery.error.message : null;
+  const error = opError ?? queryError;
+
   const search = useSearch(currentPath);
   const sort = useSort();
   const preview = usePreview(currentPath);
@@ -80,28 +105,17 @@ export function BrowseProvider({ children }: BrowseProviderProps): ReactElement 
     () => new Set([FileCategory.ALL]),
   );
 
+  // Refetch the listing (invalidate the cached query). Callers that mutate
+  // server state await this; concurrent calls are deduped by React Query.
   const loadFiles = useCallback(async (): Promise<void> => {
-    setLoading(true);
-    setError(null);
-    try {
-      const listing = await fetchFiles(currentPath);
-      setFiles(listing.entries);
-    } catch (err: unknown) {
-      const message =
-        err instanceof Error ? err.message : "Failed to load files";
-      setError(message);
-    } finally {
-      setLoading(false);
-    }
-  }, [currentPath]);
-
-  // Reload file listing when path changes
-  useEffect(() => {
-    void loadFiles();
-  }, [loadFiles]);
+    setOpError(null);
+    await queryClient.invalidateQueries({
+      queryKey: queryKeys.files(currentPath),
+    });
+  }, [queryClient, currentPath]);
 
   const reportError = useCallback((message: string): void => {
-    setError(message);
+    setOpError(message);
   }, []);
 
   // --- Category filter ---
@@ -156,7 +170,7 @@ export function BrowseProvider({ children }: BrowseProviderProps): ReactElement 
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : "ZIP download failed";
-      setError(message);
+      setOpError(message);
     }
   }
 
@@ -168,7 +182,7 @@ export function BrowseProvider({ children }: BrowseProviderProps): ReactElement 
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : "Delete failed";
-      setError(message);
+      setOpError(message);
     }
   }
 
@@ -181,7 +195,7 @@ export function BrowseProvider({ children }: BrowseProviderProps): ReactElement 
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : "Delete failed";
-      setError(message);
+      setOpError(message);
     }
   }
 
@@ -192,7 +206,7 @@ export function BrowseProvider({ children }: BrowseProviderProps): ReactElement 
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : "Rename failed";
-      setError(message);
+      setOpError(message);
     }
   }
 
@@ -207,7 +221,7 @@ export function BrowseProvider({ children }: BrowseProviderProps): ReactElement 
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : "Create folder failed";
-      setError(message);
+      setOpError(message);
     }
   }
 

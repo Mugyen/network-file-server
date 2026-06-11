@@ -1,45 +1,33 @@
 """Auth endpoints are per-IP rate limited (v1.3 phase 9)."""
 
-import os
-from unittest.mock import patch
-
 import httpx
 import pytest
 from httpx import AsyncClient
 
 from accounts import SqliteAccountStore
 from relay.app.main import create_relay_app
-from relay.app.services.account_store import set_account_store
-from relay.app.services.mount_registry import set_registry
-from relay.app.services.session import RelaySession, set_relay_session
+from relay.app.services.session import RelaySession
 from relay.app.services.sqlite_registry import SqliteMountRegistry
 
 pytestmark = pytest.mark.anyio
 
 
 @pytest.fixture
-async def limited_client():
+async def limited_client(monkeypatch):
     # Override the autouse relaxed limits with a strict signup limit.
-    with patch.dict(
-        os.environ,
-        {
-            "RELAY_DB_PATH": ":memory:",
-            "RELAY_AUTH_SIGNUP_RATE": "2/minute",
-            "RELAY_AUTH_LOGIN_RATE": "2/minute",
-        },
-    ):
-        app = create_relay_app()
+    monkeypatch.setenv("RELAY_DB_PATH", ":memory:")
+    monkeypatch.setenv("RELAY_AUTH_SIGNUP_RATE", "2/minute")
+    monkeypatch.setenv("RELAY_AUTH_LOGIN_RATE", "2/minute")
+    app = create_relay_app()
     registry = await SqliteMountRegistry.create(":memory:")
-    set_registry(registry)
+    app.state.relay.registry = registry
     store = await SqliteAccountStore.create(":memory:")
-    set_account_store(store)
-    set_relay_session(RelaySession("secret"))
+    app.state.relay.account_store = store
+    app.state.relay.session = RelaySession("secret")
     async with AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as c:
         yield c
-    set_account_store(None)
-    set_relay_session(None)
     await store.close()
     await registry.close()
 

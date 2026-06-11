@@ -3,7 +3,6 @@
 import asyncio
 import json
 import logging
-import re
 import time
 import uuid
 from typing import AsyncGenerator
@@ -12,12 +11,8 @@ from urllib.parse import quote
 from fastapi import APIRouter, Request, WebSocket
 from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 
-import httpx
-import httpx_ws
-from httpx_ws.transport import ASGIWebSocketTransport
-from wsproto.events import BytesMessage, CloseConnection, TextMessage
 
-from relay.app.config import get_config
+from relay.app.state import RelayState
 from relay.app.exceptions import (
     AccessDeniedError,
     AuthenticationRequiredError,
@@ -25,13 +20,21 @@ from relay.app.exceptions import (
     MountNotFoundError,
     MountOfflineError,
 )
-from relay.app.rate_limit import get_client_ip, limiter
+from relay.app.rate_limit import get_client_ip, limiter, proxy_request_rate
 from relay.app.routers.landing import templates
 from relay.app.services.access_policy import authorize, identity_from_cookies
-from relay.app.services.dropbox import get_dropbox_app, get_dropbox_client
-from relay.app.services.mount_registry import get_registry
+from relay.app.services.html_rewriter import (
+    HTML_REWRITE_MAX_BYTES,
+    rewrite_html_body,
+)
+from shared.identity_sig import IDENTITY_SIG_HEADER, sign_identity
 from tunnel.constants import FIRST_BYTE_TIMEOUT_S, MAX_PAYLOAD_BYTES
-from tunnel.exceptions import FirstByteTimeoutError
+from tunnel.exceptions import (
+    FirstByteTimeoutError,
+    MetadataTooLargeError,
+    TunnelSendError,
+)
+from tunnel.metadata import RequestMetadata, WsOpenMetadata
 from tunnel.ws_payload import (
     WsMessageKind,
     decode_ws_message,
@@ -58,37 +61,39 @@ HOP_BY_HOP: frozenset[str] = frozenset(
     }
 )
 
-# Pattern matching src="/ or href="/ attribute values pointing to absolute paths.
-# Captures the attribute prefix so we can rewrite only the path portion.
-_ASSET_PATH_RE: re.Pattern[str] = re.compile(r'((?:src|href)=["\'])/(?!m/)')
+# HTML asset-path rewriting lives in relay/app/services/html_rewriter.py.
 
 
-def rewrite_html_asset_paths(html: str, mount_prefix: str) -> str:
-    """Rewrite absolute asset paths in HTML to include the mount prefix.
+def _inject_identity(
+    headers: dict[str, str], username: str, role_value: str, secret: str | None
+) -> None:
+    """Inject signed X-WFS-* identity headers for an allowlisted user.
 
-    Transforms ``src="/assets/..."`` into ``src="/m/{code}/assets/..."`` (and
-    likewise for ``href``). Only rewrites paths that don't already start with
-    ``/m/`` to avoid double-rewriting.
-
-    Args:
-        html:         Raw HTML string from the agent response.
-        mount_prefix: The mount URL prefix, e.g. ``/m/ABC123``.
-
-    Returns:
-        HTML string with asset paths rewritten to include the mount prefix.
+    Sets user/role/auth-bypass plus an HMAC signature over the tuple when a
+    per-mount secret is available. Without a secret (old agent), the headers
+    are injected unsigned — the server then ignores them (fail closed on
+    identity), so allowlisted users degrade to password/anonymous rather
+    than being silently trusted.
     """
-    return _ASSET_PATH_RE.sub(rf"\1{mount_prefix}/", html)
+    headers["x-wfs-user"] = username
+    headers["x-wfs-role"] = role_value
+    headers["x-wfs-auth-bypass"] = "1"
+    if secret is not None:
+        headers[IDENTITY_SIG_HEADER] = sign_identity(
+            secret, username, role_value, True
+        )
 
 
 @router.get("/m/{code}/status")
-async def mount_status(code: str) -> dict[str, str]:
+async def mount_status(request: Request, code: str) -> dict[str, str]:
     """Return the current status of a mount code.
 
     Returns JSON: {"status": "online"|"offline"|"expired"|"not_found"}
     Not rate-limited — status polling at 30s intervals should not consume
     the proxy rate limit budget.
     """
-    registry = get_registry()
+    state: RelayState = request.app.state.relay
+    registry = state.require_registry()
     try:
         await registry.get_connection(code)
         return {"status": "online"}
@@ -107,7 +112,7 @@ async def mount_status(code: str) -> dict[str, str]:
     "/m/{code}/{path:path}",
     methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
 )
-@limiter.limit(lambda: get_config().proxy_request_rate)
+@limiter.limit(proxy_request_rate)
 async def proxy_request(request: Request, code: str, path: str) -> Response:
     """Proxy a browser HTTP request through the tunnel to the registered agent.
 
@@ -127,23 +132,33 @@ async def proxy_request(request: Request, code: str, path: str) -> Response:
     """
     start: float = time.monotonic()
 
-    # Drop box interception — forward to local server app via httpx ASGITransport
-    dropbox_client = get_dropbox_client()
-    config = get_config()
-    if dropbox_client is not None and code == config.dropbox_code:
-        resp = await dropbox_client.request(
+    # Local ASGI mounts (e.g. the drop box) are forwarded in-process.
+    state: RelayState = request.app.state.relay
+    local = state.local_mounts.get(code)
+    if local is not None:
+        # Strip any client-supplied X-WFS-* identity headers — local mounts
+        # carry no trusted identity (the embedded server has no secret and
+        # ignores them regardless; stripping makes that explicit).
+        local_headers = {
+            k: v for k, v in request.headers.items()
+            if not k.lower().startswith("x-wfs-")
+        }
+        resp = await local.forward_request(
             method=request.method,
-            url=f"/{path}",
-            headers=dict(request.headers),
+            path=path,
+            headers=local_headers,
             content=await request.body(),
-            params=str(request.url.query) if request.url.query else None,
+            query=str(request.url.query),
         )
         resp_content_type = resp.headers.get("content-type", "application/octet-stream")
-        # Apply same HTML rewriting as tunnel-proxied responses
+        # Apply same HTML rewriting as tunnel-proxied responses (hardened:
+        # passthrough on oversize/undecodable bodies).
         if resp_content_type.startswith("text/html"):
-            rewritten = rewrite_html_asset_paths(resp.text, f"/m/{code}")
+            rewritten_body = rewrite_html_body(
+                resp.content, resp_content_type, f"/m/{code}"
+            )
             return Response(
-                content=rewritten,
+                content=rewritten_body,
                 status_code=resp.status_code,
                 headers={k: v for k, v in resp.headers.items() if k.lower() not in HOP_BY_HOP and k.lower() != "content-length"},
                 media_type=resp_content_type,
@@ -158,10 +173,10 @@ async def proxy_request(request: Request, code: str, path: str) -> Response:
     # --- Account access enforcement (allowlisted users bypass the server
     # password; non-allowlisted users fall back to it on RESTRICTED+pw
     # mounts; RESTRICTED+no-pw mounts require login/allowlist). ---
-    registry = get_registry()
-    identity = identity_from_cookies(request.cookies)
+    registry = state.require_registry()
+    identity = identity_from_cookies(request.cookies, state.session)
     try:
-        decision = await authorize(registry, code, identity)
+        decision = await authorize(registry, state.account_store, code, identity)
     except AuthenticationRequiredError:
         next_url = request.url.path
         if request.url.query:
@@ -209,33 +224,46 @@ async def proxy_request(request: Request, code: str, path: str) -> Response:
         forward_headers[header_name] = header_value
     forward_headers["host"] = request.headers.get("host", "")
     if decision.identified:
-        forward_headers["x-wfs-user"] = decision.username
-        forward_headers["x-wfs-role"] = decision.role.value
-        forward_headers["x-wfs-auth-bypass"] = "1"
+        _inject_identity(
+            forward_headers,
+            decision.username,
+            decision.role.value,
+            registry.get_identity_secret(code),
+        )
 
     content_length: int = int(request.headers.get("content-length", "0"))
 
-    metadata: dict = {
-        "method": request.method,
-        "path": f"/{path}",
-        "query": str(request.url.query),
-        "headers": forward_headers,
-        "content_length": content_length,
-    }
+    metadata = RequestMetadata(
+        method=request.method,
+        path=f"/{path}",
+        query=str(request.url.query),
+        headers=forward_headers,
+        content_length=content_length,
+    )
 
     request_id = uuid.uuid4()
     conn.open_stream(request_id)
-    await conn.send_open(request_id, metadata)
+    try:
+        await conn.send_open(request_id, metadata)
 
-    # Stream request body as DATA frames so frames never exceed MAX_PAYLOAD_BYTES.
-    # A zero-length DATA frame acts as the end-of-body sentinel.
-    async for chunk in request.stream():
-        offset = 0
-        while offset < len(chunk):
-            end = offset + MAX_PAYLOAD_BYTES
-            await conn.send_data(request_id, chunk[offset:end])
-            offset = end
-    await conn.send_data(request_id, b"")
+        # Stream request body as DATA frames so frames never exceed
+        # MAX_PAYLOAD_BYTES. A zero-length DATA frame is the end-of-body
+        # sentinel.
+        async for chunk in request.stream():
+            offset = 0
+            while offset < len(chunk):
+                end = offset + MAX_PAYLOAD_BYTES
+                await conn.send_data(request_id, chunk[offset:end])
+                offset = end
+        await conn.send_data(request_id, b"")
+    except MetadataTooLargeError:
+        # Pathological header set from the browser — reject, do not crash.
+        return Response("Request Header Fields Too Large", status_code=431)
+    except TunnelSendError:
+        # Socket went stale between lookup and send — clean 503, and the
+        # heartbeat/receive loop will mark the mount offline shortly.
+        logger.warning("Send failed mid-proxy: code=%s path=/%s", code, path)
+        return Response("Mount connection lost", status_code=503)
 
     try:
         first_chunk = await conn.read_stream(request_id, FIRST_BYTE_TIMEOUT_S)
@@ -261,24 +289,59 @@ async def proxy_request(request: Request, code: str, path: str) -> Response:
     # Extract content-type separately so StreamingResponse can set media_type
     resp_content_type: str = resp_headers.pop("content-type", "application/octet-stream")
 
-    # For HTML responses, buffer the full body and rewrite absolute asset paths
-    # so that /assets/... becomes /m/{code}/assets/... in the browser.
-    # Drop content-length since rewriting changes the body size; Response
-    # will set the correct value from the actual content.
+    # For HTML responses, buffer the body (up to HTML_REWRITE_MAX_BYTES) and
+    # rewrite absolute asset paths so /assets/... becomes /m/{code}/assets/...
+    # in the browser. Oversized or undecodable bodies pass through unchanged
+    # (see html_rewriter) — the rewrite is cosmetic, the proxy must not die.
     if resp_content_type.startswith("text/html"):
-        resp_headers.pop("content-length", None)
         body_parts: list[bytes] = []
-        async for chunk in conn.read_stream_iter(request_id):
+        buffered = 0
+        over_cap = False
+        body_iter = conn.read_stream_iter(request_id)
+        async for chunk in body_iter:
             body_parts.append(chunk)
-        html_body = b"".join(body_parts).decode("utf-8")
-        rewritten = rewrite_html_asset_paths(html_body, f"/m/{code}")
+            buffered += len(chunk)
+            if buffered > HTML_REWRITE_MAX_BYTES:
+                over_cap = True
+                break
+
         duration_ms = round((time.monotonic() - start) * 1000)
         logger.info(
             "%s /%s -> %d %dms client=%s",
             request.method, path, resp_status, duration_ms, client_ip,
         )
-        return Response(
-            content=rewritten,
+
+        if not over_cap:
+            # Drop content-length since rewriting changes the body size;
+            # Response sets the correct value from the actual content.
+            resp_headers.pop("content-length", None)
+            rewritten = rewrite_html_body(
+                b"".join(body_parts), resp_content_type, f"/m/{code}"
+            )
+            return Response(
+                content=rewritten,
+                status_code=resp_status,
+                headers=resp_headers,
+                media_type=resp_content_type,
+            )
+
+        async def passthrough_generator() -> AsyncGenerator[bytes, None]:
+            """Stream the buffered prefix plus the remainder, unrewritten."""
+            for part in body_parts:
+                yield part
+            async for chunk in body_iter:
+                if await request.is_disconnected():
+                    await conn.send_cancel(request_id)
+                    return
+                yield chunk
+
+        logger.info(
+            "HTML body exceeds rewrite cap (%d bytes buffered) — streaming "
+            "unrewritten: code=%s path=/%s",
+            buffered, code, path,
+        )
+        return StreamingResponse(
+            passthrough_generator(),
             status_code=resp_status,
             headers=resp_headers,
             media_type=resp_content_type,
@@ -322,84 +385,27 @@ async def proxy_websocket(websocket: WebSocket, code: str, path: str) -> None:
         code:      Mount code extracted from the URL path.
         path:      Remaining path after the mount code.
     """
-    # Drop box WebSocket: bridge to local server app via ASGIWebSocketTransport
-    if code == get_config().dropbox_code:
-        app = get_dropbox_app()
+    # Local ASGI mounts (e.g. the drop box) bridge in-process.
+    state: RelayState = websocket.app.state.relay
+    local = state.local_mounts.get(code)
+    if local is not None:
         await websocket.accept()
-        query = str(websocket.url.query) if websocket.url.query else ""
-        local_ws_url = f"ws://dropbox/{path}"
-        if query:
-            local_ws_url = f"{local_ws_url}?{query}"
         forward_headers = {
             k: v for k, v in websocket.headers.items()
             if k.lower() not in HOP_BY_HOP and k.lower() != "host"
         }
-        try:
-            async with ASGIWebSocketTransport(app=app) as ws_transport:
-                async with httpx_ws.aconnect_ws(
-                    local_ws_url,
-                    httpx.AsyncClient(transport=ws_transport),
-                    headers=forward_headers,
-                    keepalive_ping_interval_seconds=None,
-                ) as local_ws:
-
-                    async def browser_to_local() -> None:
-                        """Forward browser messages (text or binary) to the drop box app."""
-                        while True:
-                            message = await websocket.receive()
-                            if message["type"] == "websocket.disconnect":
-                                return
-                            text = message.get("text")
-                            if text is not None:
-                                await local_ws.send_text(text)
-                                continue
-                            data = message.get("bytes")
-                            if data is not None:
-                                await local_ws.send_bytes(data)
-
-                    async def local_to_browser() -> None:
-                        """Forward drop box app messages to browser, mirroring frame kind."""
-                        while True:
-                            event = await local_ws.receive()
-                            if isinstance(event, TextMessage):
-                                await websocket.send_text(event.data)
-                            elif isinstance(event, BytesMessage):
-                                await websocket.send_bytes(event.data)
-                            elif isinstance(event, CloseConnection):
-                                return
-
-                    b2l = asyncio.create_task(browser_to_local())
-                    l2b = asyncio.create_task(local_to_browser())
-                    done, pending = await asyncio.wait(
-                        {b2l, l2b}, return_when=asyncio.FIRST_COMPLETED,
-                    )
-                    for t in done:
-                        exc = t.exception()
-                        if exc is not None:
-                            logger.debug(
-                                "Drop box WS bridge task ended with error: path=%s error=%r",
-                                path,
-                                exc,
-                            )
-                    for t in pending:
-                        t.cancel()
-                        try:
-                            await t
-                        except asyncio.CancelledError:
-                            pass  # Expected — we just cancelled it.
-                        except Exception:
-                            logger.exception(
-                                "Drop box WS bridge task raised during cancellation: path=%s",
-                                path,
-                            )
-        except Exception:
-            logger.exception("Drop box WS bridge failed: path=%s", path)
+        await local.bridge_websocket(
+            websocket,
+            path,
+            str(websocket.url.query) if websocket.url.query else "",
+            forward_headers,
+        )
         return
 
-    registry = get_registry()
-    identity = identity_from_cookies(websocket.cookies)
+    registry = state.require_registry()
+    identity = identity_from_cookies(websocket.cookies, state.session)
     try:
-        decision = await authorize(registry, code, identity)
+        decision = await authorize(registry, state.account_store, code, identity)
     except (AuthenticationRequiredError, AccessDeniedError):
         await websocket.accept()
         await websocket.close(code=1008)
@@ -424,20 +430,30 @@ async def proxy_websocket(websocket: WebSocket, code: str, path: str) -> None:
         forward_headers[header_name] = header_value
     forward_headers["host"] = websocket.headers.get("host", "")
     if decision.identified:
-        forward_headers["x-wfs-user"] = decision.username
-        forward_headers["x-wfs-role"] = decision.role.value
-        forward_headers["x-wfs-auth-bypass"] = "1"
+        _inject_identity(
+            forward_headers,
+            decision.username,
+            decision.role.value,
+            registry.get_identity_secret(code),
+        )
 
     ws_id = uuid.uuid4()
     conn.open_stream(ws_id)
-    await conn.send_ws_open(
-        ws_id,
-        {
-            "path": f"/{path}",
-            "query": str(websocket.url.query),
-            "headers": forward_headers,
-        },
-    )
+    try:
+        await conn.send_ws_open(
+            ws_id,
+            WsOpenMetadata(
+                path=f"/{path}",
+                query=str(websocket.url.query),
+                headers=forward_headers,
+            ),
+        )
+    except (MetadataTooLargeError, TunnelSendError) as exc:
+        # Cannot reach the agent (oversized headers or stale socket) —
+        # close the browser socket cleanly instead of crashing the bridge.
+        logger.warning("WS open failed: code=%s path=/%s error=%s", code, path, exc)
+        await websocket.close(code=1011)
+        return
 
     async def browser_to_agent() -> None:
         """Forward browser messages (text or binary) to agent as WS_DATA frames."""

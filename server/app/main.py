@@ -12,13 +12,13 @@ Routes access services via ``server.app.dependencies`` with ``Depends``.
 import logging
 import secrets
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from server.app.config import ServerConfig
-from server.app.exceptions import AccessDeniedError, ReadOnlyError
+from server.app.error_handlers import register_exception_handlers
 from server.app.middleware.auth_middleware import AuthMiddleware
 from server.app.routers.auth import router as auth_router
 from server.app.routers.clipboard import router as clipboard_router
@@ -33,7 +33,7 @@ from server.app.services.clipboard_service import ClipboardService
 from server.app.services.connection_manager import ConnectionManager
 from server.app.services.file_request_service import FileRequestService
 from server.app.services.share_service import ShareLinkService
-from server.app.services.sqlite_store import get_state_store
+from server.app.services.sqlite_store import open_state_store
 from shared.paths import repo_root
 from shared.spa import spa_shell_response
 
@@ -58,10 +58,13 @@ def create_app(config: ServerConfig) -> FastAPI:
     application.state.config = config
 
     data_dir = config.shared_folder.parent / ".wfs_data"
-    share_secret = get_state_store(data_dir).get_or_create_share_secret()
-    application.state.share_service = ShareLinkService(share_secret, data_dir)
-    application.state.clipboard_service = ClipboardService(data_dir)
-    application.state.file_request_service = FileRequestService(data_dir)
+    # One store per app instance — no process-level cache (see open_state_store).
+    store = open_state_store(data_dir)
+    application.state.store = store
+    share_secret = store.get_or_create_share_secret()
+    application.state.share_service = ShareLinkService(share_secret, store)
+    application.state.clipboard_service = ClipboardService(store)
+    application.state.file_request_service = FileRequestService(store)
     application.state.manager = ConnectionManager()
 
     # Injected by an in-process host (relay drop box) after creation; None
@@ -91,7 +94,7 @@ def create_app(config: ServerConfig) -> FastAPI:
         application.add_middleware(
             AuthMiddleware,
             token_service=application.state.token_service,
-            relay_served=config.mount_code is not None,
+            config=config,
         )
 
     # --- Routers ------------------------------------------------------------
@@ -104,20 +107,8 @@ def create_app(config: ServerConfig) -> FastAPI:
     application.include_router(share_target_router)
     application.include_router(websocket_router)
 
-    # Exception handlers for access control errors
-    @application.exception_handler(ReadOnlyError)
-    async def read_only_handler(request: Request, exc: ReadOnlyError) -> JSONResponse:
-        return JSONResponse(
-            status_code=403,
-            content={"detail": "Server is in read-only mode"},
-        )
-
-    @application.exception_handler(AccessDeniedError)
-    async def access_denied_handler(request: Request, exc: AccessDeniedError) -> JSONResponse:
-        return JSONResponse(
-            status_code=403,
-            content={"detail": "Access denied"},
-        )
+    # Central domain-exception -> HTTP mapping (see server/app/error_handlers.py)
+    register_exception_handlers(application)
 
     # SPA catch-all: serve the built client bundle when present; fall back to
     # the shared placeholder shell when client/dist is absent (dev/CI without

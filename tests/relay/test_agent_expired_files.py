@@ -4,26 +4,25 @@ import time
 
 import pytest
 
-from relay.app.services.file_ttl_db import FileTtlDb, set_file_ttl_db
-from relay.app.services.mount_registry import get_registry
+from relay.app.services.file_ttl_db import FileTtlDb
 from tests.relay.conftest import MockTunnelConnection
 
 
 @pytest.fixture
 async def file_ttl_with_registry(relay_app):
     """Set up file_ttl_db using the same in-memory SQLite as the registry."""
-    registry = get_registry()
-    file_ttl_db = FileTtlDb(registry._db)
+    state = relay_app.state.relay
+    file_ttl_db = FileTtlDb(state.registry._db)
     await file_ttl_db.init_table()
-    set_file_ttl_db(file_ttl_db)
+    state.file_ttl_db = file_ttl_db
     yield file_ttl_db
-    set_file_ttl_db(None)
+    state.file_ttl_db = None
 
 
 @pytest.mark.asyncio
 async def test_reclaim_sends_expired_files_control(relay_app, file_ttl_with_registry) -> None:
     """When a mount is reclaimed with expired file_ttl records, the relay sends expired_files."""
-    registry = get_registry()
+    registry = relay_app.state.relay.registry
     file_ttl_db = file_ttl_with_registry
 
     # Register and disconnect the mount
@@ -68,7 +67,7 @@ async def test_reclaim_sends_expired_files_control(relay_app, file_ttl_with_regi
 @pytest.mark.asyncio
 async def test_reclaim_no_expired_files_no_control(relay_app, file_ttl_with_registry) -> None:
     """When no expired files exist, no expired_files control message is sent."""
-    registry = get_registry()
+    registry = relay_app.state.relay.registry
 
     conn1 = MockTunnelConnection()
     await registry.register("agentcode2", conn1, agent_ip="127.0.0.1", created_at=time.time(), expires_at=time.time() + 3600)
@@ -98,7 +97,7 @@ async def test_reclaim_no_expired_files_no_control(relay_app, file_ttl_with_regi
 @pytest.mark.asyncio
 async def test_delete_expired_files_clears_records(relay_app, file_ttl_with_registry) -> None:
     """Agent sending delete_expired_files clears expired TTL records for that mount."""
-    registry = get_registry()
+    registry = relay_app.state.relay.registry
     file_ttl_db = file_ttl_with_registry
 
     # Register mount and add expired records
@@ -112,6 +111,7 @@ async def test_delete_expired_files_clears_records(relay_app, file_ttl_with_regi
     await _handle_agent_control_for_mount(
         {"type": "delete_expired_files", "code": "agentmnt"},
         "agentmnt",
+        relay_app.state.relay,
     )
 
     # Expired records should be cleared
@@ -122,7 +122,7 @@ async def test_delete_expired_files_clears_records(relay_app, file_ttl_with_regi
 @pytest.mark.asyncio
 async def test_keep_expired_files_clears_records(relay_app, file_ttl_with_registry) -> None:
     """Agent sending keep_expired_files also clears expired TTL records (no re-prompt)."""
-    registry = get_registry()
+    registry = relay_app.state.relay.registry
     file_ttl_db = file_ttl_with_registry
 
     conn = MockTunnelConnection()
@@ -133,6 +133,7 @@ async def test_keep_expired_files_clears_records(relay_app, file_ttl_with_regist
     await _handle_agent_control_for_mount(
         {"type": "keep_expired_files", "code": "agentmnt2"},
         "agentmnt2",
+        relay_app.state.relay,
     )
 
     expired = await file_ttl_db.get_expired_for_mount("agentmnt2")

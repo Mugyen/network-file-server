@@ -19,7 +19,6 @@ from server.app.models.schemas import CreateShareRequest, ShareLinkInfo
 from server.app.services.file_service import format_file_size, resolve_safe_path
 from server.app.services.share_service import (
     ShareLinkExpiredError,
-    ShareLinkNotFoundError,
     ShareLinkRevokedError,
     ShareLinkService,
 )
@@ -44,17 +43,11 @@ async def create_share_link(
     Validates that the file exists in the shared folder before creating the link.
     Returns 404 if the file does not exist.
     """
-    try:
-        resolve_safe_path(config.shared_folder, body.file_path)
-    except FileNotFoundError:
-        return Response(  # type: ignore[return-value]
-            content='{"detail":"File not found"}',
-            status_code=404,
-            media_type="application/json",
-        )
+    # Raises FileNotFoundError (-> 404 centrally) if the file is gone.
+    resolve_safe_path(config.shared_folder, body.file_path)
 
     # create_link returns the full record — no reaching into internals.
-    record = service.create_link(body.file_path, body.ttl)
+    record = await service.create_link(body.file_path, body.ttl)
     file_name = Path(body.file_path).name
     created_at = record.created_at.isoformat()
     expires_at = (record.created_at + timedelta(seconds=record.ttl_seconds)).isoformat()
@@ -77,7 +70,7 @@ async def list_share_links(
     service: ShareLinkService = Depends(get_share_service),
 ) -> list[ShareLinkInfo]:
     """List all active (non-expired) share links."""
-    records = service.list_active_links()
+    records = await service.list_active_links()
     result: list[ShareLinkInfo] = []
     for record in records:
         file_name = Path(record.file_path).name
@@ -101,15 +94,11 @@ async def revoke_share_link(
     token: str,
     service: ShareLinkService = Depends(get_share_service),
 ) -> Response:
-    """Revoke a share link by token. Returns 404 if not found."""
-    try:
-        service.revoke_link(token)
-    except ShareLinkNotFoundError:
-        return Response(
-            content='{"detail":"Share link not found"}',
-            status_code=404,
-            media_type="application/json",
-        )
+    """Revoke a share link by token.
+
+    Raises ShareLinkNotFoundError (-> 404 centrally) for unknown tokens.
+    """
+    await service.revoke_link(token)
     return Response(status_code=204)
 
 
@@ -126,7 +115,7 @@ async def share_page(
     Shows unavailable page if the file was deleted after link creation.
     """
     try:
-        file_path = service.validate_token(token)
+        file_path = await service.validate_token(token)
     except (ShareLinkExpiredError, ShareLinkRevokedError):
         return templates.TemplateResponse(request, "share_expired.html")
     except BadSignature:
@@ -159,7 +148,7 @@ async def share_download(
     Returns expired page for expired/revoked tokens.
     """
     try:
-        file_path = service.validate_token(token)
+        file_path = await service.validate_token(token)
     except (ShareLinkExpiredError, ShareLinkRevokedError):
         return templates.TemplateResponse(request, "share_expired.html")
     except BadSignature:
