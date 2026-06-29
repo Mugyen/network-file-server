@@ -4,6 +4,7 @@
 
 env: development
 allowed_origins: []  # Empty means wildcard in dev; must be set in production
+public_url: ""  # Public base URL the relay names itself by (drop box QR etc.); empty = first allowed origin, else local-IP fallback; override via RELAY_PUBLIC_URL
 db_path: /tmp/mounts.db  # SQLite mount registry; override via RELAY_DB_PATH env var
 data_dir: /tmp/relay-data  # Persistent data directory; override via RELAY_DATA_DIR env var (use /data/ in Docker)
 dropbox_code: dropbox  # Reserved mount code for always-on drop box; override via RELAY_DROPBOX_CODE env var

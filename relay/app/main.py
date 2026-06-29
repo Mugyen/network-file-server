@@ -64,7 +64,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     state.file_ttl_db = file_ttl_db
 
     # Initialize the drop box as a first-class local ASGI mount.
-    dropbox = await init_dropbox(Path(config.data_dir), config.dropbox_code)
+    dropbox = await init_dropbox(
+        Path(config.data_dir), config.dropbox_code, config.public_url
+    )
     state.local_mounts[dropbox.code] = dropbox
     # Inject the TTL provider into the in-process server (drop box) — the
     # server consumes the FileTtlProvider protocol it owns; FileTtlDb

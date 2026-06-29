@@ -17,3 +17,6 @@ wheels/
 
 # Local test fixtures — large binaries, not for version control
 test-files/
+
+# Relay service env (contains RELAY_SESSION_SECRET) — never commit
+.relay.env

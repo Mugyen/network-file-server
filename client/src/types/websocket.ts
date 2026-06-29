@@ -118,6 +118,20 @@ export function getDeviceName(): string {
   return name;
 }
 
+/** Generate a UUIDv4. crypto.randomUUID() requires a secure context
+ *  (HTTPS or localhost), but HTTP + LAN/public IP is a primary use case;
+ *  crypto.getRandomValues() has no such restriction. */
+function generateUuid(): string {
+  if (typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
+  bytes[8] = (bytes[8] & 0x3f) | 0x80; // RFC 4122 variant
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 /** Get this browser's stable device ID, generating and persisting one if absent.
  *
  * Unlike the display name (which is cosmetic and may collide across devices),
@@ -128,7 +142,7 @@ export function getDeviceId(): string {
   if (stored !== null) {
     return stored;
   }
-  const id = crypto.randomUUID();
+  const id = generateUuid();
   localStorage.setItem(DEVICE_ID_KEY, id);
   return id;
 }

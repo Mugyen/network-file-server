@@ -47,7 +47,7 @@ async def dropbox_relay_app(monkeypatch):
     from relay.app.services.dropbox import init_dropbox
 
     tmpdir = tempfile.mkdtemp()
-    dropbox = await init_dropbox(Path(tmpdir), config.dropbox_code)
+    dropbox = await init_dropbox(Path(tmpdir), config.dropbox_code, None)
     state.local_mounts[dropbox.code] = dropbox
 
     yield app

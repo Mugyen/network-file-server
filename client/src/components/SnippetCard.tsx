@@ -1,6 +1,7 @@
 import { useState, useRef } from "react";
 import { ChevronDown, ChevronRight, Copy, Check, X } from "lucide-react";
 import type { Snippet } from "../types/clipboard.ts";
+import { copyToClipboard } from "../utils/copyToClipboard.ts";
 
 interface SnippetCardProps {
   snippet: Snippet;
@@ -22,20 +23,7 @@ function SnippetCard({
   const titleRef = useRef<HTMLInputElement>(null);
 
   function handleCopy(): void {
-    // navigator.clipboard requires secure context (HTTPS or localhost).
-    // Fall back to execCommand for HTTP-over-LAN (e.g., phone access).
-    if (navigator.clipboard && window.isSecureContext) {
-      navigator.clipboard.writeText(snippet.content);
-    } else {
-      const textarea = document.createElement("textarea");
-      textarea.value = snippet.content;
-      textarea.style.position = "fixed";
-      textarea.style.opacity = "0";
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand("copy");
-      document.body.removeChild(textarea);
-    }
+    void copyToClipboard(snippet.content);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   }

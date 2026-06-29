@@ -12,7 +12,9 @@ from relay.app.services.local_mount import LocalAsgiMount
 from server import ServerConfig, create_app
 
 
-async def init_dropbox(data_dir: Path, dropbox_code: str) -> LocalAsgiMount:
+async def init_dropbox(
+    data_dir: Path, dropbox_code: str, public_url: str | None
+) -> LocalAsgiMount:
     """Create the drop box server app wrapped as a LocalAsgiMount.
 
     Creates the drop box directory if it doesn't exist, configures a
@@ -22,6 +24,11 @@ async def init_dropbox(data_dir: Path, dropbox_code: str) -> LocalAsgiMount:
     Args:
         data_dir: Root data directory (e.g. /data/). Drop box files go in data_dir/dropbox/.
         dropbox_code: The reserved mount code for the drop box.
+        public_url: Public base URL of the relay (RelayConfig.public_url).
+            Passed as the embedded server's relay_url so /api/server-info
+            (and thus the QR code) advertises the public mount URL rather
+            than the relay host's own IP. None preserves the local-IP
+            fallback (dev without configured origins).
 
     Returns:
         The LocalAsgiMount; the caller owns its lifecycle (``aclose()``).
@@ -36,7 +43,7 @@ async def init_dropbox(data_dir: Path, dropbox_code: str) -> LocalAsgiMount:
         read_only=False,
         receive=False,
         mount_code=dropbox_code,
-        relay_url=None,
+        relay_url=public_url,
         # Local mount: never trusts X-WFS-* identity (no allowlist, anonymous).
         identity_secret=None,
     )

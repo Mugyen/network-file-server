@@ -91,6 +91,83 @@ Set `RELAY_ENV=production` for JSON logging (Cloud Logging compatible).
 
 Set `RELAY_DB_PATH=/path/to/mounts.db` to override SQLite mount registry location (default: `/tmp/mounts.db`).
 
+## GCP VM deployment (systemd)
+
+Run the relay as a persistent service on a Compute Engine VM (alternative to
+Cloud Run), with TLS terminated by Caddy in front of the plain-HTTP relay.
+Full walkthrough incl. the HTTPS/secure-context rationale:
+[docs/deployment.md](docs/deployment.md).
+
+The service runs `scripts/run.sh relay --host 127.0.0.1`, which syncs Python
+deps (via `uv run`) and rebuilds the client bundle when `client/src` is newer
+than `client/dist` — so a `git pull` + `systemctl restart` is a full deploy.
+The relay binds localhost only; Caddy is the sole public entrypoint.
+
+Create an env file at the repo root (`.relay.env`, `chmod 600`) so data
+survives reboots and sessions survive restarts:
+
+```bash
+RELAY_ENV=production
+RELAY_ALLOWED_ORIGINS=https://<your-hostname>   # the public origin Caddy serves
+PORT=8001
+RELAY_DB_PATH=$HOME/relay-data/mounts.db
+RELAY_DATA_DIR=$HOME/relay-data/data
+RELAY_SESSION_SECRET=<openssl rand -base64 32>
+```
+
+Install the unit at `/etc/systemd/system/network-relay.service`:
+
+```ini
+[Unit]
+Description=Network File Server relay
+After=network-online.target
+Wants=network-online.target
+# Stop retrying if startup (incl. the client rebuild in run.sh) keeps failing
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+User=<user>
+WorkingDirectory=<repo>
+EnvironmentFile=<repo>/.relay.env
+# uv and node are usually user-local installs, not on systemd's default PATH
+Environment=PATH=<home>/.local/bin:<path-to-node-bin>:/usr/local/bin:/usr/bin:/bin
+ExecStart=<repo>/scripts/run.sh relay --host 127.0.0.1
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=<home>/relay-data
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now network-relay
+sudo journalctl -u network-relay -f   # logs
+```
+
+Put Caddy in front for HTTPS (`sudo apt install caddy`). It auto-issues and
+renews Let's Encrypt certs and redirects HTTP→HTTPS. `/etc/caddy/Caddyfile`:
+
+```
+<your-hostname> {
+    reverse_proxy localhost:8001
+}
+```
+
+No domain yet? `<external-ip>.nip.io` (e.g. `34.30.19.224.nip.io`) resolves
+to your IP and gets real Let's Encrypt certs. Swapping in a real domain later
+is a one-line Caddyfile change + `RELAY_ALLOWED_ORIGINS` update.
+
+Firewall: only 80/443 need to be open (the standard `http-server` /
+`https-server` GCP tags). Do **not** expose the relay port itself.
+
+Verify from outside: `curl https://<your-hostname>/health`.
+
 ## API
 
 - `GET /api/files?path=` -- list directory contents

@@ -82,7 +82,7 @@ async def dropbox_client(relay_app, tmp_path):
 
     # Initialize the drop box server app backed by tmp_path, then inject the
     # TTL provider per-app via app.state (mirrors relay/app/main.py lifespan)
-    dropbox = await init_dropbox(tmp_path, config.dropbox_code)
+    dropbox = await init_dropbox(tmp_path, config.dropbox_code, None)
     state.local_mounts[dropbox.code] = dropbox
     dropbox.app.state.file_ttl_provider = file_ttl_db
 
@@ -217,6 +217,38 @@ async def test_local_mount_close_releases_client(tmp_path) -> None:
     """aclose() shuts the forwarding client down."""
     from relay.app.services.dropbox import init_dropbox
 
-    mount = await init_dropbox(tmp_path, "dropbox")
+    mount = await init_dropbox(tmp_path, "dropbox", None)
     await mount.aclose()
     assert mount.client.is_closed
+
+
+@pytest.mark.asyncio
+async def test_dropbox_server_info_advertises_public_url(tmp_path) -> None:
+    """With a public_url configured, the drop box QR/server-info must point at
+    the public mount URL, not the relay host's own IP (which browsers can't
+    reach) — regression test for the http://<internal-ip>:0 QR code."""
+    from relay.app.services.dropbox import init_dropbox
+
+    mount = await init_dropbox(tmp_path, "dropbox", "https://relay.example.com")
+    try:
+        resp = await mount.client.get("http://local/api/server-info")
+        assert resp.status_code == 200
+        info = resp.json()
+        assert info["url"] == "https://relay.example.com/m/dropbox"
+        assert info["qr_svg"] != ""  # QR encodes the url field
+    finally:
+        await mount.aclose()
+
+
+@pytest.mark.asyncio
+async def test_dropbox_server_info_without_public_url_keeps_local_fallback(tmp_path) -> None:
+    """No public_url (dev) -> server-info keeps the local http://ip:port form."""
+    from relay.app.services.dropbox import init_dropbox
+
+    mount = await init_dropbox(tmp_path, "dropbox", None)
+    try:
+        resp = await mount.client.get("http://local/api/server-info")
+        assert resp.status_code == 200
+        assert resp.json()["url"].startswith("http://")
+    finally:
+        await mount.aclose()

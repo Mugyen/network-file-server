@@ -40,6 +40,9 @@ class RelayConfig:
     auth_signup_rate: str
     auth_login_rate: str
     auth_agent_token_rate: str
+    # Public base URL the relay names itself by (drop box QR etc.).
+    # None = no public identity known (dev fallback to local IP).
+    public_url: str | None = None
 
 
 def load_config(config_path: Path) -> RelayConfig:
@@ -48,6 +51,7 @@ def load_config(config_path: Path) -> RelayConfig:
     Each field can be overridden by a corresponding env var:
       - RELAY_ENV -> env
       - RELAY_ALLOWED_ORIGINS -> allowed_origins (comma-separated)
+      - RELAY_PUBLIC_URL -> public_url (defaults to the first allowed origin)
       - RELAY_MOUNT_REG_RATE -> mount_reg_rate
       - RELAY_PROXY_REQUEST_RATE -> proxy_request_rate
       - RELAY_MAX_TTL_SECONDS -> max_ttl_seconds
@@ -84,6 +88,17 @@ def load_config(config_path: Path) -> RelayConfig:
         allowed_origins: list[str] = [o.strip() for o in origins_env.split(",") if o.strip()]
     else:
         allowed_origins = raw.get("allowed_origins", [])
+
+    # Public base URL the relay is reached at (scheme + host), used wherever
+    # the relay must name itself (e.g. the drop box QR code). Explicit env/yaml
+    # value wins; otherwise the first allowed origin is the canonical one.
+    public_url_raw: str = os.environ.get(
+        "RELAY_PUBLIC_URL",
+        raw.get("public_url") or "",
+    ).strip()
+    if not public_url_raw and allowed_origins:
+        public_url_raw = allowed_origins[0]
+    public_url: str | None = public_url_raw.rstrip("/") or None
 
     mount_reg_rate: str = os.environ.get(
         "RELAY_MOUNT_REG_RATE",
@@ -184,6 +199,7 @@ def load_config(config_path: Path) -> RelayConfig:
     return RelayConfig(
         env=env,
         allowed_origins=allowed_origins,
+        public_url=public_url,
         mount_reg_rate=mount_reg_rate,
         proxy_request_rate=proxy_request_rate,
         max_ttl_seconds=max_ttl_seconds,

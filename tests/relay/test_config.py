@@ -93,3 +93,40 @@ def test_load_config_dropbox_code_env_override() -> None:
     with patch.dict(os.environ, {"RELAY_DROPBOX_CODE": "public-box"}):
         config = load_config(_CONFIG_YAML)
     assert config.dropbox_code == "public-box"
+
+
+# ---------------------------------------------------------------------------
+# public_url
+# ---------------------------------------------------------------------------
+
+
+def test_load_config_public_url_defaults_to_none() -> None:
+    config = load_config(_CONFIG_YAML)
+    assert config.public_url is None
+
+
+def test_load_config_public_url_env_override() -> None:
+    with patch.dict(os.environ, {"RELAY_PUBLIC_URL": "https://relay.example.com/"}):
+        config = load_config(_CONFIG_YAML)
+    assert config.public_url == "https://relay.example.com"  # trailing slash stripped
+
+
+def test_load_config_public_url_falls_back_to_first_allowed_origin() -> None:
+    with patch.dict(
+        os.environ,
+        {"RELAY_ALLOWED_ORIGINS": "https://a.example.com,https://b.example.com"},
+    ):
+        config = load_config(_CONFIG_YAML)
+    assert config.public_url == "https://a.example.com"
+
+
+def test_load_config_explicit_public_url_beats_allowed_origins() -> None:
+    with patch.dict(
+        os.environ,
+        {
+            "RELAY_PUBLIC_URL": "https://canonical.example.com",
+            "RELAY_ALLOWED_ORIGINS": "https://other.example.com",
+        },
+    ):
+        config = load_config(_CONFIG_YAML)
+    assert config.public_url == "https://canonical.example.com"

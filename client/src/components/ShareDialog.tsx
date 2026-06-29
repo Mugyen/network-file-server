@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { X, Copy, Check, Loader2 } from "lucide-react";
 import { createShareLink, ShareTTL, TTL_LABELS, TTL_OPTIONS } from "../api/shares.ts";
+import { copyToClipboard } from "../utils/copyToClipboard.ts";
 
 interface ShareDialogProps {
   filePath: string;
@@ -47,7 +48,7 @@ function ShareDialog({ filePath, fileName, onClose }: ShareDialogProps) {
   async function handleCopy(): Promise<void> {
     if (shareUrl === null) return;
     try {
-      await navigator.clipboard.writeText(shareUrl);
+      await copyToClipboard(shareUrl);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
