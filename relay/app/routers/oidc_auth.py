@@ -27,6 +27,7 @@ from accounts import (
     DuplicateMembershipError,
     GroupNameTakenError,
     GroupNotFoundError,
+    MembershipNotFoundError,
     SubjectType,
     UsernameTakenError,
     UserNotFoundError,
@@ -184,18 +185,25 @@ async def _resolve_or_create(store, sub: str, claims: dict):
 
 
 async def _sync_groups(store, user_id: int, claims: dict, prefix: str) -> None:
-    """Additively mirror IdP groups matching ``prefix`` into local groups.
+    """Reconcile the user's membership in ``prefix`` groups to the IdP claim.
 
-    Additive only: memberships are added, never revoked, so manual grants and
-    access-request approvals are never fought. Group names are the contract's
-    ``app:<service>:<role>`` strings, referenced by mount allowlists.
+    Authoritative for groups whose name starts with ``prefix`` (e.g.
+    ``app:files:``): groups present in the token's ``groups`` claim are ensured
+    (created + joined); prefix-matching groups the user is a DIRECT member of
+    but no longer claimed are revoked — so removing someone upstream propagates
+    on their next login. Groups WITHOUT the prefix, nested (group-in-group)
+    edges, and other users are never touched, so manual grants and
+    access-request approvals outside the SSO namespace are preserved. Group
+    names are the contract's ``app:<service>:<role>`` strings, referenced by
+    mount allowlists (``--allow group:app:files:eng:read``).
     """
-    groups = claims.get("groups")
-    if not isinstance(groups, list):
-        return
-    for name in groups:
-        if not isinstance(name, str) or not name.startswith(prefix):
-            continue
+    claimed = claims.get("groups")
+    if not isinstance(claimed, list):
+        claimed = []
+    desired = {g for g in claimed if isinstance(g, str) and g.startswith(prefix)}
+
+    # 1. Ensure each desired group exists and the user is a member.
+    for name in desired:
         try:
             group = await store.get_group_by_name(name)
         except GroupNotFoundError:
@@ -207,3 +215,12 @@ async def _sync_groups(store, user_id: int, claims: dict, prefix: str) -> None:
             await store.add_member(group.id, SubjectType.USER, user_id)
         except DuplicateMembershipError:
             pass
+
+    # 2. Revoke DIRECT memberships in prefix groups no longer claimed.
+    for gid in await store.list_parent_group_ids(SubjectType.USER, user_id):
+        group = await store.get_group_by_id(gid)
+        if group.name.startswith(prefix) and group.name not in desired:
+            try:
+                await store.remove_member(gid, SubjectType.USER, user_id)
+            except MembershipNotFoundError:
+                pass

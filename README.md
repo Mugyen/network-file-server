@@ -95,9 +95,12 @@ RELAY_OIDC_GROUP_PREFIX=app:files:           # sync IdP groups with this prefix
 - Accounts are keyed on the IdP's opaque `sub` (a UUID) — never email; a new
   subject gets a **new** local account (no auto-merge with password accounts).
 - With `RELAY_OIDC_GROUP_PREFIX` set, matching IdP groups (e.g. `app:files:eng`)
-  are mirrored into local relay groups on login (additive; never revoked), so
-  mount allowlists can grant access to them. Admin is still username-based
-  (`RELAY_ADMIN_USERS`); an SSO account's generated username can be added there.
+  are **reconciled** into local relay groups on each login — added when present,
+  revoked when dropped upstream (for prefix-matching groups only; manual grants
+  and non-prefix groups are untouched). Mount allowlists then grant access with
+  `--allow group:app:files:eng:read` (group names may contain `:`). Admin is
+  still username-based (`RELAY_ADMIN_USERS`); an SSO account's generated
+  username can be added there.
 - Unset the credentials and the SSO route/button disappear — no other effect.
 
 ## Docker (Cloud Run)

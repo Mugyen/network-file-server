@@ -37,15 +37,21 @@ class AgentOwner:
 def parse_allow_entry(spec: str) -> AgentAllowEntry:
     """Parse a ``--allow`` value ``type:ref:role`` into an AgentAllowEntry.
 
+    The ``ref`` may itself contain ``:`` — identity-broker group names follow
+    the ``app:<service>:<role>`` convention (e.g. ``app:files:eng``) — so the
+    type is peeled off the front and the role off the back rather than a plain
+    3-way split.
+
     Raises:
         ValueError: if the spec is malformed or uses unknown type/role.
     """
-    parts = spec.split(":")
-    if len(parts) != 3:
+    type_str, sep_head, rest = spec.partition(":")
+    ref, sep_tail, role_str = rest.rpartition(":")
+    if not sep_head or not sep_tail:
         raise ValueError(
             f"--allow must be 'type:ref:role' (e.g. user:alice:write), got {spec!r}"
         )
-    type_str, ref, role_str = (p.strip() for p in parts)
+    type_str, ref, role_str = type_str.strip(), ref.strip(), role_str.strip()
     if not ref:
         raise ValueError(f"--allow reference must be non-empty in {spec!r}")
     try:

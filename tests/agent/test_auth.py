@@ -22,6 +22,15 @@ def test_parse_allow_entry_group_read():
     assert e.role is Role.READ
 
 
+def test_parse_allow_entry_group_with_colons():
+    # Identity-broker group names contain ':' (app:<service>:<role>); the ref
+    # must survive intact so these groups can be granted mount access.
+    e = parse_allow_entry("group:app:files:eng:read")
+    assert e.subject_type is SubjectType.GROUP
+    assert e.subject_ref == "app:files:eng"
+    assert e.role is Role.READ
+
+
 @pytest.mark.parametrize(
     "spec",
     ["bad", "user:alice", "user:alice:write:extra", "user::write", "bogus:a:read", "user:a:admin"],
