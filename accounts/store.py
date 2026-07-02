@@ -53,6 +53,30 @@ class AccountStore(ABC):
         """Return all users ordered by id ascending."""
 
     # ------------------------------------------------------------------
+    # External identities (SSO / federated login)
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    async def get_user_by_external_id(self, provider: str, subject: str) -> User:
+        """Return the user linked to (provider, subject).
+
+        ``subject`` is the identity provider's opaque, stable subject id
+        (e.g. an OIDC ``sub`` UUID) — never an email or username. Raises
+        UserNotFoundError if no link exists.
+        """
+
+    @abstractmethod
+    async def create_external_user(
+        self, provider: str, subject: str, username: str, email: str | None
+    ) -> User:
+        """Create an SSO-only account and link it to (provider, subject) atomically.
+
+        The account has no usable password (a random, unguessable hash is
+        stored so password login can never succeed for it). Raises
+        UsernameTakenError if the username is taken.
+        """
+
+    # ------------------------------------------------------------------
     # Groups
     # ------------------------------------------------------------------
 

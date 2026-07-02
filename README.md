@@ -72,6 +72,34 @@ allowlisted login; non-allowlisted users can submit an access request that
 the mount owner or an admin approves. **LAN-direct** access (no relay) is
 unaffected and still guarded only by the per-mount password.
 
+## Optional SSO (OIDC)
+
+The relay can *additionally* offer "Sign in with Mugyen" (an OIDC login against
+an identity broker such as Authentik) **alongside** anonymous access and local
+password accounts — nothing existing changes. It's a confidential
+authorization-code client; enable it by setting all three credentials:
+
+```bash
+RELAY_OIDC_ISSUER=https://auth.apps.mugyen.com/application/o/files/
+RELAY_OIDC_CLIENT_ID=<client id>
+RELAY_OIDC_CLIENT_SECRET=<client secret>     # keep in .relay.env (gitignored)
+# optional:
+RELAY_OIDC_REDIRECT_PATH=/auth/oidc/callback # default; register this at the IdP
+RELAY_OIDC_SCOPES="openid profile email"     # default
+RELAY_OIDC_GROUP_PREFIX=app:files:           # sync IdP groups with this prefix
+```
+
+- Redirect URI to register at the IdP is `${RELAY_PUBLIC_URL}${RELAY_OIDC_REDIRECT_PATH}`.
+- SSO login (`GET /auth/oidc/login`) mints the **same** `wfs_session` cookie as
+  password login, so all mount/storage/admin authorization works unchanged.
+- Accounts are keyed on the IdP's opaque `sub` (a UUID) — never email; a new
+  subject gets a **new** local account (no auto-merge with password accounts).
+- With `RELAY_OIDC_GROUP_PREFIX` set, matching IdP groups (e.g. `app:files:eng`)
+  are mirrored into local relay groups on login (additive; never revoked), so
+  mount allowlists can grant access to them. Admin is still username-based
+  (`RELAY_ADMIN_USERS`); an SSO account's generated username can be added there.
+- Unset the credentials and the SSO route/button disappear — no other effect.
+
 ## Docker (Cloud Run)
 
 ```bash

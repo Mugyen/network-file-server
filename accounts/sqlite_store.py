@@ -6,6 +6,7 @@ Mirrors the lifecycle conventions of the relay's ``SqliteMountRegistry``
 """
 
 import logging
+import secrets
 import time
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,7 @@ from typing import Any
 import aiosqlite
 
 from accounts.enums import SubjectType
+from accounts.passwords import hash_password
 from accounts.exceptions import (
     DuplicateMembershipError,
     GroupCycleError,
@@ -77,6 +79,24 @@ CREATE TABLE IF NOT EXISTS user_quota (
 )
 """
 
+# SSO / federated login: maps an identity provider's opaque subject id
+# (OIDC ``sub``, never email) to a local account. (provider, subject) is the
+# stable key an app must key on — see the switchboard identity contract.
+_CREATE_EXTERNAL_IDENTITIES_SQL = """
+CREATE TABLE IF NOT EXISTS external_identities (
+    provider TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (provider, subject)
+)
+"""
+
+_CREATE_EXTERNAL_USER_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_external_identities_user
+ON external_identities (user_id)
+"""
+
 _CREATE_MEMBER_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_memberships_member
 ON memberships (member_type, member_id)
@@ -111,8 +131,10 @@ class SqliteAccountStore(AccountStore):
         await db.execute(_CREATE_GROUPS_SQL)
         await db.execute(_CREATE_MEMBERSHIPS_SQL)
         await db.execute(_CREATE_USER_QUOTA_SQL)
+        await db.execute(_CREATE_EXTERNAL_IDENTITIES_SQL)
         await db.execute(_CREATE_MEMBER_INDEX_SQL)
         await db.execute(_CREATE_GROUP_INDEX_SQL)
+        await db.execute(_CREATE_EXTERNAL_USER_INDEX_SQL)
         await db.commit()
 
         if is_new_db:
@@ -214,6 +236,66 @@ class SqliteAccountStore(AccountStore):
         ) as cursor:
             rows = await cursor.fetchall()
         return [self._row_to_user(row) for row in rows]
+
+    # ------------------------------------------------------------------
+    # External identities (SSO / federated login)
+    # ------------------------------------------------------------------
+
+    async def get_user_by_external_id(self, provider: str, subject: str) -> User:
+        async with self._db.execute(
+            "SELECT u.id, u.username, u.email, u.password_hash, u.created_at, u.is_active "
+            "FROM users u JOIN external_identities e ON e.user_id = u.id "
+            "WHERE e.provider = ? AND e.subject = ?",
+            (provider, subject),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            raise UserNotFoundError(f"{provider}:{subject}")
+        return self._row_to_user(row)
+
+    async def create_external_user(
+        self, provider: str, subject: str, username: str, email: str | None
+    ) -> User:
+        if not isinstance(username, str) or len(username.strip()) == 0:
+            raise ValueError("username must be a non-empty string")
+        if not provider or not subject:
+            raise ValueError("provider and subject must be non-empty")
+
+        normalized = username.strip()
+        if await self._username_exists(normalized):
+            raise UsernameTakenError(normalized)
+
+        # SSO-only account: store a bcrypt hash of a random, unguessable secret
+        # so the NOT NULL column is satisfied and password login can never
+        # succeed (verify_password returns False, no exception) for this user.
+        sentinel = hash_password(secrets.token_urlsafe(32))
+        created_at = time.time()
+        try:
+            cursor = await self._db.execute(
+                "INSERT INTO users (username, email, password_hash, created_at, is_active) "
+                "VALUES (?, ?, ?, ?, 1)",
+                (normalized, email, bytes(sentinel), created_at),
+            )
+            user_id = _inserted_rowid(cursor)
+            await self._db.execute(
+                "INSERT INTO external_identities (provider, subject, user_id, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (provider, subject, user_id, created_at),
+            )
+        except aiosqlite.IntegrityError as exc:
+            await self._db.rollback()
+            # Username race, or (provider, subject) already linked concurrently.
+            raise UsernameTakenError(normalized) from exc
+        await self._db.commit()
+
+        return User(
+            id=user_id,
+            username=normalized,
+            email=email,
+            password_hash=bytes(sentinel),
+            created_at=created_at,
+            is_active=True,
+        )
 
     # ------------------------------------------------------------------
     # Groups

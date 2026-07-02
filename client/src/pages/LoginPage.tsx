@@ -9,7 +9,11 @@ function nextTarget(): string {
 export default function RelayLoginPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(
+    new URLSearchParams(window.location.search).get("sso_error")
+      ? "Sign-in with Mugyen failed. Please try again."
+      : null,
+  );
   const [busy, setBusy] = useState(false);
 
   async function submit(e: React.FormEvent): Promise<void> {
@@ -67,6 +71,17 @@ export default function RelayLoginPage() {
             {busy ? "Signing in…" : "Sign in"}
           </button>
         </form>
+        <div className="my-4 flex items-center gap-3 text-xs text-gray-400 dark:text-gray-500">
+          <span className="h-px flex-1 bg-gray-200 dark:bg-gray-700" />
+          or
+          <span className="h-px flex-1 bg-gray-200 dark:bg-gray-700" />
+        </div>
+        <a
+          href={`/auth/oidc/login?next=${encodeURIComponent(nextTarget())}`}
+          className="block w-full rounded-lg border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 text-center text-gray-800 dark:text-gray-100 py-2 font-medium"
+        >
+          Sign in with Mugyen
+        </a>
         <div className="mt-4 flex items-center justify-between text-sm">
           <a href="/signup" className="text-blue-600 hover:underline">
             Create account

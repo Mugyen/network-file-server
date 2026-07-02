@@ -58,6 +58,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     state.account_store = account_store
     state.session = RelaySession(config.session_secret)
 
+    # Optional SSO: an OIDC client of the identity broker. Only wired when
+    # issuer + client id/secret + public_url are all configured.
+    if config.oidc_enabled:
+        from relay.app.services.oidc import OidcClient
+
+        state.oidc = OidcClient(
+            issuer=config.oidc_issuer,
+            client_id=config.oidc_client_id,
+            client_secret=config.oidc_client_secret,
+            redirect_uri=config.oidc_redirect_uri,
+            scopes=config.oidc_scopes,
+        )
+        _logger.info("OIDC SSO enabled (issuer=%s)", config.oidc_issuer)
+
     # File TTL tracking on its own connection (same DB file) so TTL traffic
     # doesn't serialize behind registry operations.
     file_ttl_db = await FileTtlDb.create(config.db_path)
@@ -121,6 +135,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await account_store.close()
     state.account_store = None
     state.session = None
+    state.oidc = None
     await registry.close()
     state.registry = None
 
@@ -214,6 +229,11 @@ def create_relay_app(config_path: Path | None = None) -> FastAPI:
     application.include_router(landing_router)
     application.include_router(pages_router)
     application.include_router(auth_router)
+    # Optional SSO login (mounted only when configured).
+    if config.oidc_enabled:
+        from relay.app.routers.oidc_auth import router as oidc_auth_router
+
+        application.include_router(oidc_auth_router)
     application.include_router(admin_router)
     application.include_router(access_requests_router)
     application.include_router(user_storage_router)

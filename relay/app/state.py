@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from accounts import SqliteAccountStore
     from relay.app.services.file_ttl_db import FileTtlDb
     from relay.app.services.local_mount import LocalAsgiMount
+    from relay.app.services.oidc import OidcClient
     from relay.app.services.session import RelaySession
     from relay.app.services.sqlite_registry import SqliteMountRegistry
 
@@ -45,6 +46,8 @@ class RelayState:
     session: "RelaySession | None" = None
     account_store: "SqliteAccountStore | None" = None
     file_ttl_db: "FileTtlDb | None" = None
+    # OIDC client for optional SSO login; None when SSO is not configured.
+    oidc: "OidcClient | None" = None
     # Mounts served by in-process ASGI apps (e.g. the drop box), keyed by
     # mount code. Membership here is what makes a code a "local" mount.
     local_mounts: "dict[str, LocalAsgiMount]" = field(default_factory=dict)
@@ -77,6 +80,12 @@ class RelayState:
                 "RelayState.account_store is not wired (lifespan not run?)"
             )
         return self.account_store
+
+    def require_oidc(self) -> "OidcClient":
+        """Return the OIDC client or raise if SSO is not configured/wired."""
+        if self.oidc is None:
+            raise RuntimeError("RelayState.oidc is not wired (SSO disabled?)")
+        return self.oidc
 
     def require_file_ttl_db(self) -> "FileTtlDb":
         """Return the file-TTL db or raise if not wired."""

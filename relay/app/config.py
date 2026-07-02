@@ -43,6 +43,35 @@ class RelayConfig:
     # Public base URL the relay names itself by (drop box QR etc.).
     # None = no public identity known (dev fallback to local IP).
     public_url: str | None = None
+    # --- Optional SSO (OIDC) login -----------------------------------------
+    # When issuer + client id/secret are all set, an "optional authenticated"
+    # login is enabled ALONGSIDE anonymous access and password accounts. The
+    # relay is a confidential OIDC client of the identity broker (Authentik).
+    oidc_issuer: str | None = None
+    oidc_client_id: str | None = None
+    oidc_client_secret: str | None = None
+    oidc_redirect_path: str = "/auth/oidc/callback"
+    oidc_scopes: str = "openid profile email"
+    # If set, IdP groups with this prefix (e.g. "app:files:") are synced to
+    # local relay groups on login so mount allowlists can reference them.
+    oidc_group_prefix: str | None = None
+
+    @property
+    def oidc_enabled(self) -> bool:
+        """True only when all credentials AND a public base URL are present."""
+        return bool(
+            self.oidc_issuer
+            and self.oidc_client_id
+            and self.oidc_client_secret
+            and self.public_url
+        )
+
+    @property
+    def oidc_redirect_uri(self) -> str | None:
+        """The absolute OIDC redirect_uri (public_url + redirect_path)."""
+        if not self.public_url:
+            return None
+        return self.public_url.rstrip("/") + self.oidc_redirect_path
 
 
 def load_config(config_path: Path) -> RelayConfig:
@@ -189,6 +218,24 @@ def load_config(config_path: Path) -> RelayConfig:
         rate_limits.get("auth_agent_token", "10/minute"),
     )
 
+    # --- Optional SSO (OIDC) ----------------------------------------------
+    oidc_issuer: str | None = (os.environ.get("RELAY_OIDC_ISSUER", "").strip() or None)
+    oidc_client_id: str | None = (
+        os.environ.get("RELAY_OIDC_CLIENT_ID", "").strip() or None
+    )
+    oidc_client_secret: str | None = (
+        os.environ.get("RELAY_OIDC_CLIENT_SECRET", "").strip() or None
+    )
+    oidc_redirect_path: str = (
+        os.environ.get("RELAY_OIDC_REDIRECT_PATH", "").strip() or "/auth/oidc/callback"
+    )
+    oidc_scopes: str = (
+        os.environ.get("RELAY_OIDC_SCOPES", "").strip() or "openid profile email"
+    )
+    oidc_group_prefix: str | None = (
+        os.environ.get("RELAY_OIDC_GROUP_PREFIX", "").strip() or None
+    )
+
     # Validate: production requires explicit allowed_origins
     if env == RelayEnv.PRODUCTION and not allowed_origins:
         raise ValueError(
@@ -216,4 +263,10 @@ def load_config(config_path: Path) -> RelayConfig:
         auth_signup_rate=auth_signup_rate,
         auth_login_rate=auth_login_rate,
         auth_agent_token_rate=auth_agent_token_rate,
+        oidc_issuer=oidc_issuer,
+        oidc_client_id=oidc_client_id,
+        oidc_client_secret=oidc_client_secret,
+        oidc_redirect_path=oidc_redirect_path,
+        oidc_scopes=oidc_scopes,
+        oidc_group_prefix=oidc_group_prefix,
     )
