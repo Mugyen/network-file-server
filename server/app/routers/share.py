@@ -15,6 +15,7 @@ from itsdangerous import BadSignature
 
 from server.app.config import ServerConfig
 from server.app.dependencies import get_config, get_share_service
+from server.app.middleware.mode_guard import require_full_access, require_write_access
 from server.app.models.schemas import CreateShareRequest, ShareLinkInfo
 from server.app.services.file_service import format_file_size, resolve_safe_path
 from server.app.services.share_service import (
@@ -31,7 +32,12 @@ _TEMPLATES_DIR = repo_root() / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 
 
-@router.post("/api/shares", status_code=201, response_model=ShareLinkInfo)
+@router.post(
+    "/api/shares",
+    status_code=201,
+    response_model=ShareLinkInfo,
+    dependencies=[Depends(require_write_access), Depends(require_full_access)],
+)
 async def create_share_link(
     request: Request,
     body: CreateShareRequest,
@@ -64,7 +70,11 @@ async def create_share_link(
     )
 
 
-@router.get("/api/shares", response_model=list[ShareLinkInfo])
+@router.get(
+    "/api/shares",
+    response_model=list[ShareLinkInfo],
+    dependencies=[Depends(require_write_access), Depends(require_full_access)],
+)
 async def list_share_links(
     request: Request,
     service: ShareLinkService = Depends(get_share_service),
@@ -89,7 +99,11 @@ async def list_share_links(
     return result
 
 
-@router.delete("/api/shares/{token}", status_code=204)
+@router.delete(
+    "/api/shares/{token}",
+    status_code=204,
+    dependencies=[Depends(require_write_access), Depends(require_full_access)],
+)
 async def revoke_share_link(
     token: str,
     service: ShareLinkService = Depends(get_share_service),

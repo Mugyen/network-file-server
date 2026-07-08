@@ -103,6 +103,46 @@ async def test_receive_user_download_own_ok_others_404(folder):
     assert pre.status_code == 404
 
 
+async def test_receive_user_zip_own_ok_others_404(folder):
+    app = _mount_app(folder)
+    async with await _client(app) as c:
+        await _upload(c, "alice1.txt", _recv("alice"))
+        await _upload(c, "bob1.txt", _recv("bob"))
+        own = await c.post(
+            "/api/files/download-zip",
+            json={"paths": ["alice1.txt"]},
+            headers=_recv("alice"),
+        )
+        other = await c.post(
+            "/api/files/download-zip",
+            json={"paths": ["alice1.txt", "bob1.txt"]},
+            headers=_recv("alice"),
+        )
+        pre = await c.post(
+            "/api/files/download-zip",
+            json={"paths": ["preexisting.txt"]},
+            headers=_recv("alice"),
+        )
+    assert own.status_code == 200
+    assert other.status_code == 404
+    assert pre.status_code == 404
+
+
+async def test_receive_user_share_management_blocked(folder):
+    app = _mount_app(folder)
+    async with await _client(app) as c:
+        create = await c.post(
+            "/api/shares",
+            json={"file_path": "preexisting.txt", "ttl": 3600},
+            headers=_recv("alice"),
+        )
+        listing = await c.get("/api/shares", headers=_recv("alice"))
+        revoke = await c.delete("/api/shares/fake-token", headers=_recv("alice"))
+    assert create.status_code == 403
+    assert listing.status_code == 403
+    assert revoke.status_code == 403
+
+
 async def test_receive_preview_others_404(folder):
     app = _mount_app(folder)
     async with await _client(app) as c:

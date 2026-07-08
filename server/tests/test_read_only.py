@@ -103,6 +103,36 @@ async def test_create_file_request_blocked_in_read_only(
 
 
 @pytest.mark.anyio
+async def test_create_share_blocked_in_read_only(
+    async_client_read_only: AsyncClient,
+) -> None:
+    """POST /api/shares returns 403 in read-only mode."""
+    response = await async_client_read_only.post(
+        "/api/shares",
+        json={"file_path": "test.txt", "ttl": 3600},
+    )
+    assert response.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_list_shares_blocked_in_read_only(
+    async_client_read_only: AsyncClient,
+) -> None:
+    """GET /api/shares returns 403 in read-only mode."""
+    response = await async_client_read_only.get("/api/shares")
+    assert response.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_revoke_share_blocked_in_read_only(
+    async_client_read_only: AsyncClient,
+) -> None:
+    """DELETE /api/shares/{token} returns 403 in read-only mode."""
+    response = await async_client_read_only.delete("/api/shares/fake-token")
+    assert response.status_code == 403
+
+
+@pytest.mark.anyio
 async def test_fulfill_file_request_blocked_in_read_only(
     async_client_read_only: AsyncClient,
 ) -> None:

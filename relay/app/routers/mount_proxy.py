@@ -258,16 +258,29 @@ async def proxy_request(request: Request, code: str, path: str) -> Response:
         await conn.send_data(request_id, b"")
     except MetadataTooLargeError:
         # Pathological header set from the browser — reject, do not crash.
+        conn.remove_stream(request_id)
         return Response("Request Header Fields Too Large", status_code=431)
     except TunnelSendError:
         # Socket went stale between lookup and send — clean 503, and the
         # heartbeat/receive loop will mark the mount offline shortly.
         logger.warning("Send failed mid-proxy: code=%s path=/%s", code, path)
+        conn.remove_stream(request_id)
         return Response("Mount connection lost", status_code=503)
 
     try:
         first_chunk = await conn.read_stream(request_id, FIRST_BYTE_TIMEOUT_S)
     except FirstByteTimeoutError:
+        try:
+            await conn.send_cancel(request_id)
+        except Exception as exc:
+            logger.debug(
+                "Could not send CANCEL after first-byte timeout: code=%s "
+                "request_id=%s error=%r",
+                code,
+                request_id,
+                exc,
+            )
+        conn.remove_stream(request_id)
         duration_ms: int = round((time.monotonic() - start) * 1000)
         logger.info(
             "%s /%s -> 504 %dms client=%s",
@@ -327,13 +340,16 @@ async def proxy_request(request: Request, code: str, path: str) -> Response:
 
         async def passthrough_generator() -> AsyncGenerator[bytes, None]:
             """Stream the buffered prefix plus the remainder, unrewritten."""
-            for part in body_parts:
-                yield part
-            async for chunk in body_iter:
-                if await request.is_disconnected():
-                    await conn.send_cancel(request_id)
-                    return
-                yield chunk
+            try:
+                for part in body_parts:
+                    yield part
+                async for chunk in body_iter:
+                    if await request.is_disconnected():
+                        await conn.send_cancel(request_id)
+                        return
+                    yield chunk
+            finally:
+                conn.remove_stream(request_id)
 
         logger.info(
             "HTML body exceeds rewrite cap (%d bytes buffered) — streaming "
@@ -349,11 +365,14 @@ async def proxy_request(request: Request, code: str, path: str) -> Response:
 
     async def stream_generator() -> AsyncGenerator[bytes, None]:
         """Yield body chunks from the tunnel stream, cancelling on browser disconnect."""
-        async for chunk in conn.read_stream_iter(request_id):
-            if await request.is_disconnected():
-                await conn.send_cancel(request_id)
-                return
-            yield chunk
+        try:
+            async for chunk in conn.read_stream_iter(request_id):
+                if await request.is_disconnected():
+                    await conn.send_cancel(request_id)
+                    return
+                yield chunk
+        finally:
+            conn.remove_stream(request_id)
 
     duration_ms = round((time.monotonic() - start) * 1000)
     logger.info(
@@ -452,6 +471,7 @@ async def proxy_websocket(websocket: WebSocket, code: str, path: str) -> None:
         # Cannot reach the agent (oversized headers or stale socket) —
         # close the browser socket cleanly instead of crashing the bridge.
         logger.warning("WS open failed: code=%s path=/%s error=%s", code, path, exc)
+        conn.remove_stream(ws_id)
         await websocket.close(code=1011)
         return
 
@@ -518,3 +538,5 @@ async def proxy_websocket(websocket: WebSocket, code: str, path: str) -> None:
                 ws_id,
                 exc,
             )
+        finally:
+            conn.remove_stream(ws_id)

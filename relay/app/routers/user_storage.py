@@ -16,6 +16,7 @@ from server import (
     ConflictResolution,
     DeleteRequest,
     FileConflictError,
+    InvalidFileNameError,
     PathTraversalError,
     delete_paths,
     download_file,
@@ -107,6 +108,8 @@ async def upload(
             written.append(result.name)
     except PathTraversalError as exc:
         return JSONResponse(status_code=403, content={"error": str(exc)})
+    except InvalidFileNameError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
     except FileConflictError as exc:
         return JSONResponse(status_code=409, content={"error": str(exc)})
 

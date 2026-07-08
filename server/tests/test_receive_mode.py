@@ -79,6 +79,23 @@ async def test_list_file_requests_blocked_in_receive_mode(
 
 
 @pytest.mark.anyio
+async def test_share_management_blocked_in_receive_mode(
+    async_client_receive: AsyncClient,
+) -> None:
+    """Share-link management endpoints return 403 in receive mode."""
+    create = await async_client_receive.post(
+        "/api/shares",
+        json={"file_path": "test.txt", "ttl": 3600},
+    )
+    listing = await async_client_receive.get("/api/shares")
+    revoke = await async_client_receive.delete("/api/shares/fake-token")
+
+    assert create.status_code == 403
+    assert listing.status_code == 403
+    assert revoke.status_code == 403
+
+
+@pytest.mark.anyio
 async def test_search_blocked_in_receive_mode(
     async_client_receive: AsyncClient,
 ) -> None:

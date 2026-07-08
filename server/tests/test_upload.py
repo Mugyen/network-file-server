@@ -112,6 +112,30 @@ class TestUploadEndpoint:
         )
         assert response.status_code == 403
 
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "../escape-upload.txt",
+            "subdir/escape-upload.txt",
+            "..\\escape-upload.txt",
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_upload_invalid_filename_returns_400(
+        self,
+        async_client: AsyncClient,
+        tmp_shared_folder: Path,
+        filename: str,
+    ) -> None:
+        response = await async_client.post(
+            "/api/files/upload",
+            params={"path": "", "conflict_resolution": "overwrite"},
+            files={"files": (filename, b"malicious", "text/plain")},
+        )
+        assert response.status_code == 400
+        assert not (tmp_shared_folder.parent / "escape-upload.txt").exists()
+        assert not (tmp_shared_folder / "subdir" / "escape-upload.txt").exists()
+
     @pytest.mark.asyncio
     async def test_upload_nonexistent_dir_returns_404(self, async_client: AsyncClient) -> None:
         response = await async_client.post(

@@ -9,7 +9,7 @@ import os
 import shutil
 import stat
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Generator
 
 import aiofiles
@@ -114,6 +114,30 @@ def _validate_name(name: str) -> None:
         raise InvalidFileNameError(name, "name must not contain null bytes")
 
 
+def validate_upload_filename(filename: str) -> str:
+    """Validate and return a browser-supplied upload filename.
+
+    Upload filenames are joined to an already-validated target directory, so
+    the filename itself must be a single basename. Rejecting path syntax here
+    keeps every upload entrypoint on the same contract.
+    """
+    if not isinstance(filename, str):
+        raise InvalidFileNameError("", "filename must be a string")
+    if filename == "":
+        raise InvalidFileNameError(filename, "filename must not be empty")
+    if "\x00" in filename:
+        raise InvalidFileNameError(filename, "filename must not contain null bytes")
+    if Path(filename).is_absolute() or PureWindowsPath(filename).is_absolute():
+        raise InvalidFileNameError(filename, "filename must not be absolute")
+    if "/" in filename:
+        raise InvalidFileNameError(filename, "filename must not contain '/'")
+    if "\\" in filename:
+        raise InvalidFileNameError(filename, "filename must not contain '\\'")
+    if filename in {".", ".."}:
+        raise InvalidFileNameError(filename, "filename must not be '.' or '..'")
+    return filename
+
+
 def list_directory(base_dir: Path, relative_path: str) -> DirectoryListing:
     """List the contents of a directory within the shared folder.
 
@@ -159,7 +183,7 @@ async def upload_file(
     """
     target_dir = resolve_safe_path(base_dir, relative_dir)
 
-    filename: str = upload.filename  # type: ignore[attr-defined]
+    filename = validate_upload_filename(upload.filename)  # type: ignore[attr-defined]
     destination = target_dir / filename
 
     # Check for conflict
@@ -192,13 +216,12 @@ async def upload_file(
         # OVERWRITE: write to temp file then os.replace for atomicity
 
     # Write file to disk in chunks
-    if conflict_resolution == ConflictResolution.OVERWRITE and (target_dir / upload.filename).exists():  # type: ignore[attr-defined]
+    if conflict_resolution == ConflictResolution.OVERWRITE and (target_dir / filename).exists():
         # Atomic overwrite: write to temp, then replace
         temp_path = destination.with_suffix(destination.suffix + ".tmp")
         bytes_written = await _write_upload_chunks(upload, temp_path)
-        os.replace(temp_path, target_dir / upload.filename)  # type: ignore[attr-defined]
-        destination = target_dir / upload.filename  # type: ignore[attr-defined]
-        filename = upload.filename  # type: ignore[attr-defined]
+        os.replace(temp_path, target_dir / filename)
+        destination = target_dir / filename
     else:
         bytes_written = await _write_upload_chunks(upload, destination)
 

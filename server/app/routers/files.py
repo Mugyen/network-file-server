@@ -205,6 +205,13 @@ async def download_zip(request: Request, body: DownloadZipRequest) -> Any:
     memory-efficient streaming without buffering the full archive.
     """
     config = request.app.state.config
+    scope_user = receive_scope_user(request)
+    if scope_user is not None:
+        for path in body.paths:
+            if not await upload_index.is_owned_by(
+                request.app.state.store, path, scope_user
+            ):
+                raise FileNotFoundError("Not found")
     zip_generator = download_as_zip(config.shared_folder, body.paths)
     return StreamingResponse(
         zip_generator,

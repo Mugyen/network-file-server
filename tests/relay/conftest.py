@@ -24,6 +24,7 @@ class MockTunnelConnection:
     def __init__(self) -> None:
         self.closed: bool = False
         self.opened_streams: list = []
+        self.removed_streams: list = []
         self.sent_opens: list[tuple] = []  # list of (request_id, metadata)
         self.sent_data: list[tuple] = []   # list of (request_id, payload)
         self.cancelled_streams: list = []
@@ -42,6 +43,9 @@ class MockTunnelConnection:
 
     def open_stream(self, request_id) -> None:
         self.opened_streams.append(request_id)
+
+    def remove_stream(self, request_id) -> None:
+        self.removed_streams.append(request_id)
 
     async def send_open(self, request_id, metadata: dict) -> None:
         self.sent_opens.append((request_id, metadata))

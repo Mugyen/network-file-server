@@ -131,6 +131,9 @@ class _OpenFrameHandlers:
             logger.warning("Rejected malformed WS_OPEN metadata: %s", exc)
             await self._conn.send_ws_close(request_id)
             return
+        # Match HTTP OPEN ordering: register before spawning so immediately
+        # following WS_DATA frames are queued for the bridge instead of dropped.
+        self._conn.open_stream(request_id)
         self._track(asyncio.create_task(
             handle_ws_open_frame(self._conn, request_id, ws_metadata, self._app)
         ))

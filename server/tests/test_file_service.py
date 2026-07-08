@@ -20,6 +20,7 @@ from server.app.services.file_service import (
     rename_path,
     resolve_safe_path,
     upload_file,
+    validate_upload_filename,
 )
 
 
@@ -257,6 +258,39 @@ class TestUploadFile:
             await upload_file(
                 tmp_shared_folder, "../outside", fake, ConflictResolution.OVERWRITE
             )
+
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "",
+            ".",
+            "..",
+            "../escape-upload.txt",
+            "subdir/escape-upload.txt",
+            "..\\escape-upload.txt",
+            "/tmp/escape-upload.txt",
+            "C:\\tmp\\escape-upload.txt",
+            "bad\x00name.txt",
+        ],
+    )
+    def test_validate_upload_filename_rejects_path_syntax(
+        self, filename: str
+    ) -> None:
+        with pytest.raises(InvalidFileNameError):
+            validate_upload_filename(filename)
+
+    @pytest.mark.asyncio
+    async def test_upload_rejects_path_bearing_filename(
+        self, tmp_shared_folder: Path
+    ) -> None:
+        fake = FakeUploadFile("../escape-upload.txt", b"malicious")
+
+        with pytest.raises(InvalidFileNameError):
+            await upload_file(
+                tmp_shared_folder, "", fake, ConflictResolution.OVERWRITE
+            )
+
+        assert not (tmp_shared_folder.parent / "escape-upload.txt").exists()
 
     @pytest.mark.asyncio
     async def test_upload_returns_size_display(

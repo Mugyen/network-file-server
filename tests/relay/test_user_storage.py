@@ -63,6 +63,17 @@ async def test_upload_list_download_roundtrip(storage_client):
     assert dl.content == b"hello"
 
 
+async def test_upload_rejects_path_bearing_filename(storage_client, tmp_path):
+    client, _store = storage_client
+    await _signup_login(client, "alice")
+    up = await client.post(
+        "/me/files/upload",
+        files={"files": ("../escape-upload.txt", io.BytesIO(b"x"), "text/plain")},
+    )
+    assert up.status_code == 400
+    assert not (tmp_path / "escape-upload.txt").exists()
+
+
 async def test_quota_exceeded_returns_413(storage_client):
     client, store = storage_client
     await _signup_login(client, "bob")

@@ -144,9 +144,6 @@ async def handle_ws_open_frame(
     query: str = metadata.query
     headers: dict[str, str] = metadata.headers
 
-    # Register the stream so read_stream_iter can receive WS_DATA frames
-    conn.open_stream(ws_id)
-
     local_ws_url = f"ws://local{path}"
     if query:
         local_ws_url = f"{local_ws_url}?{query}"

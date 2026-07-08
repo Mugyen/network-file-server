@@ -7,6 +7,7 @@ import uuid
 
 import httpx
 import pytest
+from tunnel.exceptions import MetadataTooLargeError, TunnelSendError
 
 
 
@@ -234,6 +235,60 @@ async def test_proxy_first_byte_timeout(relay_app):
         response = await client.get("/m/timeoutcode/path")
 
     assert response.status_code == 504
+    assert conn.cancelled_streams == conn.opened_streams
+    assert conn.removed_streams == conn.opened_streams
+
+
+async def test_proxy_metadata_too_large_removes_stream(relay_app):
+    """Metadata serialization failures release the opened stream slot."""
+    from tests.relay.conftest import MockTunnelConnection
+
+    class MetadataTooLargeConnection(MockTunnelConnection):
+        async def send_open(self, request_id, metadata: dict) -> None:
+            raise MetadataTooLargeError("too large")
+
+    transport = httpx.ASGITransport(app=relay_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        registry = relay_app.state.relay.registry
+        conn = MetadataTooLargeConnection()
+        await registry.register(
+            "metacode",
+            conn,
+            agent_ip="127.0.0.1",
+            created_at=time.time(),
+            expires_at=None,
+        )
+
+        response = await client.get("/m/metacode/path")
+
+    assert response.status_code == 431
+    assert conn.removed_streams == conn.opened_streams
+
+
+async def test_proxy_send_failure_removes_stream(relay_app):
+    """Tunnel send failures release the opened stream slot."""
+    from tests.relay.conftest import MockTunnelConnection
+
+    class SendFailureConnection(MockTunnelConnection):
+        async def send_open(self, request_id, metadata: dict) -> None:
+            raise TunnelSendError("stale socket")
+
+    transport = httpx.ASGITransport(app=relay_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        registry = relay_app.state.relay.registry
+        conn = SendFailureConnection()
+        await registry.register(
+            "sendfail",
+            conn,
+            agent_ip="127.0.0.1",
+            created_at=time.time(),
+            expires_at=None,
+        )
+
+        response = await client.get("/m/sendfail/path")
+
+    assert response.status_code == 503
+    assert conn.removed_streams == conn.opened_streams
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +301,7 @@ class MockWSConnection:
 
     def __init__(self) -> None:
         self.opened_streams: list = []
+        self.removed_streams: list = []
         self.sent_ws_opens: list[tuple] = []   # (ws_id, metadata)
         self.sent_ws_data: list[tuple] = []     # (ws_id, payload)
         self.sent_ws_closes: list = []          # ws_id
@@ -258,6 +314,9 @@ class MockWSConnection:
 
     def open_stream(self, request_id: uuid.UUID) -> None:
         self.opened_streams.append(request_id)
+
+    def remove_stream(self, request_id: uuid.UUID) -> None:
+        self.removed_streams.append(request_id)
 
     async def send_ws_open(self, ws_id: uuid.UUID, metadata: dict) -> None:
         self.sent_ws_opens.append((ws_id, metadata))
@@ -320,6 +379,35 @@ async def test_proxy_websocket_sends_ws_open_frame(relay_app):
     _ws_id, metadata = conn.sent_ws_opens[0]
     assert metadata.path == "/ws"
     assert "foo=bar" in metadata.query
+
+
+async def test_proxy_websocket_open_failure_removes_stream(relay_app):
+    """WS_OPEN send failures release the opened stream slot."""
+    from httpx_ws import aconnect_ws
+    from httpx_ws.transport import ASGIWebSocketTransport
+
+    class FailingWSConnection(MockWSConnection):
+        async def send_ws_open(self, ws_id: uuid.UUID, metadata: dict) -> None:
+            raise TunnelSendError("stale socket")
+
+    registry = relay_app.state.relay.registry
+    conn = FailingWSConnection()
+    await registry.register(
+        "wsfail",
+        conn,
+        agent_ip="127.0.0.1",
+        created_at=time.time(),
+        expires_at=None,
+    )
+
+    async with ASGIWebSocketTransport(app=relay_app) as ws_transport:
+        async with aconnect_ws(
+            "ws://test/m/wsfail/ws",
+            httpx.AsyncClient(transport=ws_transport),
+        ):
+            pass
+
+    assert conn.removed_streams == conn.opened_streams
 
 
 async def test_proxy_websocket_sends_ws_close_on_disconnect(relay_app):

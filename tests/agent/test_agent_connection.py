@@ -1,5 +1,6 @@
 """Tests for agent connection loop and reconnect behavior."""
 
+import asyncio
 import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -297,19 +298,61 @@ async def test_open_frame_handlers_dispatch_ws_open() -> None:
 
     ws_id = uuid.uuid4()
     payload = WsOpenMetadata(path="/ws", query="", headers={}).to_payload()
+    conn = MagicMock()
 
     dispatched_meta: list = []
 
     async def fake_handle_ws(c, request_id, metadata, app) -> None:
         dispatched_meta.append(metadata)
 
-    handlers = _OpenFrameHandlers(MagicMock(), MagicMock(), MagicMock())
+    handlers = _OpenFrameHandlers(conn, MagicMock(), MagicMock())
     with patch("agent.connection.handle_ws_open_frame", side_effect=fake_handle_ws):
         await handlers.on_ws_open(ws_id, payload)
         await handlers.drain()
 
+    conn.open_stream.assert_called_once_with(ws_id)
     assert len(dispatched_meta) == 1
     assert dispatched_meta[0].path == "/ws"
+
+
+@pytest.mark.asyncio
+async def test_ws_open_registers_stream_before_back_to_back_data() -> None:
+    """Back-to-back WS_OPEN + WS_DATA queues the first message instead of dropping it."""
+    from agent.connection import _OpenFrameHandlers
+    from tunnel.connection import TunnelConnection
+    from tunnel.enums import FrameType
+    from tunnel.frames import serialize_frame
+    from tunnel.metadata import WsOpenMetadata
+
+    ws_id = uuid.uuid4()
+    first_payload = b"first browser message"
+    ws = MagicMock()
+    ws.receive = AsyncMock(
+        side_effect=[
+            {
+                "bytes": serialize_frame(
+                    FrameType.WS_OPEN,
+                    ws_id,
+                    WsOpenMetadata(path="/ws", query="", headers={}).to_payload(),
+                )
+            },
+            {"bytes": serialize_frame(FrameType.WS_DATA, ws_id, first_payload)},
+            {"type": "websocket.disconnect"},
+        ]
+    )
+    conn = TunnelConnection(ws)
+    release_handler = asyncio.Event()
+
+    async def fake_handle_ws(c, request_id, metadata, app) -> None:
+        await release_handler.wait()
+
+    handlers = _OpenFrameHandlers(conn, MagicMock(), MagicMock())
+    with patch("agent.connection.handle_ws_open_frame", side_effect=fake_handle_ws):
+        await conn.run_receive_loop_with_handlers(handlers.on_open, handlers.on_ws_open)
+        state = conn.get_stream(ws_id)
+        assert state.queue.get_nowait() == first_payload
+        release_handler.set()
+        await handlers.drain()
 
 
 @pytest.mark.asyncio
